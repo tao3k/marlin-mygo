@@ -5,10 +5,11 @@
 #+title: 00 — Frontend Engine Positioning, Organization & Performance SLOs
 #+filetags: :tao3k:marlin:mygo:engine:architecture:benchmark:
 
-* 1. Positioning: Marlin Frontend Engine
+* 1. Positioning: High-Performance Modular UI Engine
 
-=marlin-mygo= is positioned as a *Frontend Engine (前端引擎)* paired symmetrically
-with =marlin-agent-core='s *Backend Authority Engine (Rust + Gerbil Scheme)*:
+=marlin-mygo= is a *high-performance, modular, hot-pluggable UI engine and
+plugin host* paired symmetrically with =marlin-agent-core='s *Authority Kernel
+and Policy Engine (Rust + Gerbil Scheme)*:
 
 - *Backend Authority Engine (=marlin-agent-core=)*: owns execution authority,
   durable Org & Session journals, Graph-Loop state machines, capability catalogs,
