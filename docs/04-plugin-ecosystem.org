@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 04 — Marlin MyGo Plugin Ecosystem & Developer Guide
+#+filetags: :tao3k:marlin:mygo:plugins:marketplace:security:
+
+* 1. Ecosystem Philosophy: Zero-Authority Presentation Plugins
+
+A =marlin-mygo= plugin is strictly a *Presentation & Scoped Proposal Unit* — never an
+unrestricted host process. This clean split distinguishes the Marlin Marketplace from
+untrusted desktop extension models:
+
+- *Rust Authority Kernel (=marlin-agent-core=)* owns credentials, LLM gateways,
+  filesystem/shell tool execution, human approval gates (=marlin.gate.v1=), and
+  cryptographic receipts.
+- *Gerbil Scheme Policy Plane* owns workbench composition, slot declarations,
+  keymaps (Meow/Hydra), semantic themes, and profile overlays.
+- *MyGo Frontend Engine (=marlin-mygo=)* owns native GPU rendering, slot mounting,
+  automatic fallback, =CallerPage == Host= WebView isolation, =wazero= WASM sandboxes,
+  and =marlin.device.v1= OS permission enforcement.
+- *Plugins* render into Scheme-declared slots, consume only allowlisted =read_scopes=
+  event topics, and submit only allowlisted =declared_actions= via typed receipts.
+
+* 2. Choosing a Plugin Runtime (Developer Decision Matrix)
+
+| Runtime (=marlin-plugin.toml=) | Language & SDK                  | Rendering Pipeline                   | Measured Cost (M2 Pro)     | Platforms                | Best Fit                                    |
+|--------------------------------+---------------------------------+--------------------------------------+----------------------------+--------------------------+---------------------------------------------|
+| =webview-untrusted=            | TypeScript + =@tao3k/marlin-panel-sdk= | Isolated OS WebView (=Untrusted: true=) | ~16 ns/msg JS routing      | Desktop (mac/Linux/Win)  | Kanban boards, rich Canvas/SVG, Markdown    |
+| =wasm-ui-ir=                   | Go 1.27+ (=GOOS=wasip1 -buildmode=c-shared=) + =sdk/go-ui-ir= | Native MyGo GPU (=engine/arena= diff) | *106 µs / 6.4 KB / frame* | Desktop (mac/Linux/Win)  | Graph inspectors, telemetry, 120Hz lists    |
+| =declarative=                  | Pure TOML / Scheme UI-IR / Theme | Native MyGo GPU (zero guest code)    | ~14 ns restyle-only diff   | *Desktop + iOS + Android* | Themes, profiles, keymaps, App Store OTA    |
+| =mygo-js-wasm=                 | Go (=GOOS=js GOARCH=wasm=)       | Isolated OS WebView DOM/Canvas       | WebView-isolated           | Desktop (mac/Linux/Win)  | Complex interactive Go widgets in WebView   |
+
+** Why Native iOS/Android Protocols Are NOT Third-Party Marketplace Code
+iOS (=Photos=, =EventKit=, =Contacts=, =AppIntents=, Share Extension) and Android
+(=ContentResolver=, =Accessibility=, =NotificationListener=) native protocols compile
+directly into the signed host app via =//mygo:native= Swift/Kotlin modules and
+=runtime/device.Bridge=. Plugins can never inject arbitrary native Swift/Kotlin code;
+mutating device operations ALWAYS require both OS permission AND a one-shot Rust
+=GateReceiptID= verified by =spec/quint/frontend-security.qnt=.
+
+* 3. Five-Step Developer Workflow (Pure Go CLI, Zero Bash)
+
+** Step 1: Scaffold a Compliant Plugin
+Use =cmd/marlin-mygo-tool init-plugin= (or =just init-plugin=). It validates namespaced
+plugin IDs (=pkg/schema.ParsePluginID=) and immediately blocks host-restricted slots
+(=approval.gate=, =host.auth=, =host.secrets=):
+
+#+begin_src shell
+# TypeScript Untrusted WebView plugin
+just init-plugin acme.sprint-board ts workbench.main ./my-plugins/sprint-board
+
+# Go Resident WASM-IR plugin (sub-millisecond native GPU rendering)
+just init-plugin acme.trace-radar go-wasm workbench.inspector ./my-plugins/trace-radar
+
+# Declarative theme/profile pack (Desktop + iOS + Android App Store safe)
+just init-plugin acme.nord-theme declarative workbench.theme ./my-plugins/nord-theme
+#+end_src
+
+** Step 2: Declare Minimal Least-Privilege Manifest (=marlin-plugin.toml=)
+Every plugin manifest is validated against strict static bounds (=pkg/schema/manifest.go=):
+- Maximum manifest size: =16 KiB=
+- Maximum capabilities: =32=; maximum contributions: =16=
+- Every contribution =requires= entry must reference a declared capability with zero duplicates
+- Every =ui-panel= must name a valid dot-separated =slot_id=, supported =runtime=,
+  explicit =read_scopes= (topics), and explicit =declared_actions=.
+
+** Step 3: Build & Test Locally
+
+*** TypeScript WebView Plugin (=webview-untrusted=)
+- Communicate ONLY via =@tao3k/marlin-panel-sdk= (=createMarlinPanel=):
+  - Incoming events arrive exclusively via =mygo.Event.EmitPage= (never window-wide broadcast)
+    and are automatically filtered by =pluginId= + =activationGeneration=.
+  - Outgoing actions =POST= to =marlin-plugin://<plugin-id>/__marlin/action= (64 KiB cap)
+    where =WebViewProtocolHandler= verifies =mygo.CallerPage(ctx) == Host= before calling
+    =ScopedProxy.SubmitAction=.
+  - Use host-injected =--marlin-canvas=, =--marlin-ink=, =--marlin-accent=, etc. CSS variables
+    so Scheme theme switches restyle plugins instantly without reloading pages.
+
+*** Go Resident WASM-IR Plugin (=wasm-ui-ir=)
+- Compile as a WASI Reactor so the Go runtime initializes ONCE via =_initialize= and each
+  frame invokes =//go:wasmexport marlin_ui_render= in warm linear memory:
+  #+begin_src shell
+  GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -buildmode=c-shared -o plugin.wasm .
+  #+end_src
+- Emit bounded =schema.UIElement= trees via =sdk/go-ui-ir= (=<= 2048= nodes, =<= 32= depth).
+- The host validates bounds (=DecodeAndAdmitWasmUITree=), compiles into =engine/arena=,
+  and applies dual Merkle =Diff= so unchanged subtrees skip layout and GPU work in O(1).
+
+** Step 4: Sign & Verify Release Bundle
+Releases are signed offline by the publisher's Ed25519 key over the canonical domain-separated
+envelope (=schema.ReleaseSigningDomain = "marlin.unified.release.v1\x00"=):
+- =SourceRevision= (20-byte Git SHA)
+- =BuildEvidenceDigest= (32-byte reproducible build provenance SHA-256)
+- Raw =marlin-plugin.toml= bytes
+- Per-contribution client asset SHA-256 digests (=control/marketplace.Manager.VerifyAndStage=).
+
+** Step 5: Automated Marketplace Certification Gate
+Before a plugin enters the public Marketplace catalog, CI enforces 5 mandatory gates:
+1. *Schema & Bounds Gate*: =PluginManifest.Validate()= + SPDX license compliance (=reuse lint=).
+2. *Cryptographic Integrity Gate*: Ed25519 signature + CAS asset SHA-256 verification.
+3. *Formal Security Gate*: Engine invariants proven by =spec/quint/frontend-security.qnt=
+   (=just model-gate=: 1000 simulation traces + 7 adversarial negative controls) and mirrored
+   by the 2,000-step Go adversarial property test (=runtime/pluginhost/security_prop_test.go=).
+4. *Fuzz & Race Robustness Gate*: Zero panics across protocol/schema/WASM-IR fuzzers and
+   zero data races under =go test -race=.
+5. *120Hz Performance & Memory SLO Gate*:
+   - WASM-IR linear memory =<= 16 MiB= (256 pages)
+   - Resident =marlin_ui_render= p99 =<= 2.0 ms= (current baseline: =0.106 ms=)
+   - Event queue backpressure strictly bounded via power-of-two =CoalescingRing=.
+
+* 4. Trust Tiers & Slot Governance
+
+| Tier   | Identity Prefix     | Trust Root                       | Restricted Slots (=approval.gate=) | Hot-Reload & Circuit Breaker |
+|--------+---------------------+----------------------------------+------------------------------------+------------------------------|
+| Tier 0 | =native.*=          | Compiled into =marlin-mygo= host | *Allowed (Exclusive Owner)*        | Host-owned fallback          |
+| Tier 1 | =tao3k.*=           | Official =tao3k= Ed25519 key     | Denied (untrusted presentation)    | Atomic gen bump + fallback   |
+| Tier 2 | =<publisher>.*=     | Verified Publisher Ed25519 key   | Denied (untrusted presentation)    | Atomic gen bump + fallback   |
+| Tier 3 | =dev.*= (local opt) | Ephemeral local dev key (Desktop)| Denied + visible =DEV= status tag  | Atomic gen bump + fallback   |
+
+* 5. Runtime Lifecycle & Fault Isolation State Machine
+
+#+begin_example
+  [Discovered] --(Ed25519 + SHA-256)--> [Staged] --(Scheme/Rust Policy)--> [Active (gen N)]
+                                                                               |
+                   +--(Hot-Reload: gen N+1 live, gen N ScopedProxy revoked)----+
+                   |
+                   +--(3 Faults / Trap / Timeout: CircuitBreaker OPEN)---------+
+                                                                               v
+                                            [Deactivated + Native Fallback Restored Atomically]
+#+end_example
+
+Key formal guarantees verified in both Quint and Go:
+- A tampered bundle can *never* transition to =Active=.
+- Hot-reloading from =gen N= to =gen N+1= atomically calls =prev.proxy.Revoke()= so in-flight
+  stale callbacks from =gen N= fail locally with =ErrProxyRevoked= before reaching gRPC.
+- Tripping a plugin's =CircuitBreaker= atomically unmounts the plugin and restores the slot's
+  trusted native fallback so the user never sees a blank pane or wedged workbench.

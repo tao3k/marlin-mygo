@@ -1,0 +1,11 @@
+{
+  "name": "@tao3k/marlin-mygo-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test"
+  }
+}

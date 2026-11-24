@@ -1,0 +1,18 @@
+# Reference Marketplace manifest: Go WASM-IR native GPU plugin (wazero, zero-cgo)
+id = "tao3k.graph-inspector"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-panel"]
+
+[capabilities.read-topology]
+kind = "projection.read"
+surface = "topology"
+
+[contributions.graph-panel]
+kind = "ui-panel"
+runtime = "wasm-ui-ir"
+slot = "sidebar.panels"
+cardinality = "list"
+entry = "dist/graph-inspector.wasm"
+read_scopes = ["graph.trajectory", "graph.receipts"]
+declared_actions = ["graph.replay.select-node"]

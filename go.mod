@@ -1,0 +1,24 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+module github.com/tao3k/marlin-mygo
+
+go 1.27.3
+
+require (
+	github.com/egoist/mygo v0.10.1-0.20261124135225-7232afc726f0
+	github.com/tetratelabs/wazero v1.12.0
+	google.golang.org/grpc v1.85.0
+	google.golang.org/protobuf v1.36.12
+)
+
+require (
+	github.com/ebitengine/purego v0.11.1 // indirect
+	github.com/go-text/typesetting v0.3.5 // indirect
+	golang.org/x/image v0.46.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
+)

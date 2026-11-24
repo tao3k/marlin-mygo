@@ -1,0 +1,24 @@
+# Reference Marketplace manifest: TypeScript Untrusted WebView plugin
+id = "tao3k.org-kanban"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["workflow-preset", "ui-panel"]
+
+[capabilities.read-org]
+kind = "projection.read"
+surface = "content"
+
+[contributions.kanban-policy]
+kind = "workflow-preset"
+policy_module = "marlin.org.kanban"
+settings_schema = "marlin.org.kanban.settings.v1"
+requires = ["read-org"]
+
+[contributions.kanban-panel]
+kind = "ui-panel"
+runtime = "webview-untrusted"
+slot = "workbench.main"
+cardinality = "single"
+entry = "dist/index.html"
+read_scopes = ["org.tasks", "session.summary"]
+declared_actions = ["org.task.move-state"]

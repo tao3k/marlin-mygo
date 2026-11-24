@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: Marlin MyGo — Cross-Platform Modular Agent Frontend Engine
+#+filetags: :tao3k:marlin:mygo:frontend-engine:ui:grpc:
+
+=marlin-mygo= is the *Frontend Presentation Engine (前端引擎)* paired
+symmetrically with [[https://github.com/tao3k/marlin-agent-core][Marlin Agent CORE]]
+(Rust Authority Kernel + Gerbil Scheme Policy Engine), built on
+[[https://github.com/egoist/mygo][MyGo]] (pure Go, zero cgo on desktop, native
+GPU rendering + isolated OS WebViews + iOS/Android native modules).
+
+See [[file:docs/00-engine-positioning.org][00 — Frontend Engine Positioning, Organization & Performance SLOs]]
+for the full positioning statement, layered architecture, algorithm invariants,
+and 120Hz frame-budget targets.
+
+* Layered Engine Architecture (Strict Acyclic Planes)
+
+#+begin_example
+Plane 5 [Verification]  spec/quint/             Quint formal adversarial security model (7 negative controls)
+                        bench/                  Go + TS E2E Engine Benchmark Harness
+Plane 4 [Ecosystem]     packages/panel-sdk/     @tao3k/marlin-panel-sdk (TS Untrusted WebView)
+                        sdk/go-ui-ir/           Go WASM-IR Builder SDK (GOOS=wasip1 reactor)
+                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, model-gate, init-plugin)
+Plane 3 [Control Plane] control/transport/      TargetRegistry (Local Sidecar | Embedded | Remote gRPC)
+                        control/grpcwire/       HTTP/2 gRPC 6-service adapters
+                        control/marketplace/    Ed25519 + SHA-256 staging & rollback
+Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy + CallerPage protocol + WASM ABI + fuzz/prop tests
+                        runtime/wazeroir/       SHA-256 AOT-cached wazero + Resident //go:wasmexport reactor
+                        runtime/mygoshell/      MyGo GPU UI workbench + Untrusted WebView host
+                        runtime/device/         //mygo:native iOS Swift / Android Kotlin / Desktop bridge
+Plane 1 [Engine Core]   engine/arena/           Flat BFS UI IR Arena + Dual Merkle incremental Diff
+                        engine/bus/             Lock-free COW TopicBus + 2^k CoalescingRing + Breaker
+                        engine/input/           Compiled KeyTrie (Meow/Hydra) + zero-alloc Fuzzy scorer
+                        engine/viewport/        Fenwick BIT virtual height index (100k+ rows, O(log N))
+                        engine/scheduler/       P0/P1/P2 frame-budget scheduler (input never starved)
+                        engine/shell/           SlotRegistry (single/list/keyed) + WorkbenchController
+Plane 0 [Contract]      proto/ & gen/           7 orthogonal marlin.*.v1 Protobuf packages (buf STANDARD)
+                        pkg/schema/             Zero-dependency semantic IDs, Ed25519 trust, UI IR bounds
+#+end_example
+
+* Quick Start
+
+#+begin_src shell
+# Enter reproducible Go 1.27.3 + Buf + Protoc + Bun environment
+direnv allow
+
+# Validate Protobuf contracts, Quint formal security gate, tests, race detector & build
+just check
+
+# Run short native Go fuzzing across protocol, schema, arena, and input boundaries
+just fuzz-smoke
+
+# Scaffold a new Marketplace plugin (ts | go-wasm | declarative)
+just init-plugin acme.sprint-board ts workbench.main ./tmp-plugin
+
+# Run complete Go + TypeScript Frontend Engine benchmark suite
+just bench
+
+# Launch runnable zero-cgo native GPU demo host
+CGO_ENABLED=0 go run ./cmd/marlin-app
+#+end_src
+
+* Documentation
+
+- [[file:docs/00-engine-positioning.org][docs/00-engine-positioning.org]] — Engine positioning, org planes, algorithms & 120Hz SLOs
+- [[file:docs/01-unified-schema.org][docs/01-unified-schema.org]] — 4-layer Scheme/Rust/Protobuf/Go/TS schema mapping
+- [[file:docs/02-plugin-packaging.org][docs/02-plugin-packaging.org]] — TS WebView + Go =wazero= + Go =js/wasm= plugin isolation
+- [[file:docs/03-target-overlays.org][docs/03-target-overlays.org]] — Desktop/iOS/Android target overlays & C ABI native bridge
+- [[file:docs/04-plugin-ecosystem.org][docs/04-plugin-ecosystem.org]] — Marketplace ecosystem design, trust tiers, lifecycle & certification gate
+- [[file:spec/quint/frontend-security.qnt][spec/quint/frontend-security.qnt]] — Quint formal adversarial security specification
+
+* License
+
+Licensed under =Apache-2.0 AND LGPL-2.1-or-later=, matching =marlin-agent-core=.
+See [[file:LICENSE][LICENSE]] and [[file:LICENSES/][LICENSES/]].

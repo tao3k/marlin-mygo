@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    # app_server.proto preserves upstream marlin-agent-core service & stream names byte-for-byte.
+    SERVICE_SUFFIX:
+      - proto/marlin/app/v1/app_server.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/marlin/app/v1/app_server.proto
+breaking:
+  use:
+    - FILE

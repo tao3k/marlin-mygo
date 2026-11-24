@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 01 — Unified Schema & gRPC Contract Projection
+#+filetags: :tao3k:marlin:mygo:schema:grpc:
+
+* Purpose
+
+This document specifies how =marlin-mygo= projects Marlin Agent CORE's
+authoritative domain types across Gerbil Scheme, Rust, Protobuf/gRPC, Pure Go,
+and TypeScript/WASM plugin runtimes without introducing shadow protocols.
+
+* Four-Layer Ownership Chain
+
+| Layer | Owner | Permitted Responsibility | Forbidden Responsibility |
+|-------+-------+--------------------------+--------------------------|
+| Policy & UI IR | Gerbil Scheme (Yuanxu POO) | Profile Overlays, =UiPackage=, =UiElement= trees, keymaps, tool governance | Outer text/wire serialization, direct OS/file effects |
+| Authority & Wire | Rust (=marlin-agent-*=) | Domain newtypes, catalogs, =admit_successor=, =ActivationGate=, Receipts, Protobuf/TOML encoding | UI painting, platform windowing |
+| Client Shell Host | Go (=github.com/tao3k/marlin-mygo=) | Multi-target gRPC registry, =SlotRegistry=, =Untrusted WebView= & =wazero= isolation, =//mygo:native= device bridge | Manufacturing receipts, bypassing host approval gates |
+| Marketplace Plugins | TS WebView / Go WASM-IR / Go =js/wasm= | Presentation, visual interactivity, scoped action proposals | Raw gRPC credentials, =mygo.Bind= access, cross-plugin reads |
+
+* Wire Service Decomposition
+
+All seven packages compile into =proto/marlin-wire-v1.bin= via
+=go run ./cmd/marlin-mygo-tool descriptor=:
+
+1. =marlin.common.v1= — shared =TargetKind=, =ArtifactRef=, =ReceiptRef=,
+   =TypedDenial=, bounded cursor pagination.
+2. =marlin.app.v1= — wire-compatible with =marlin-agent-core='s 9 Session/Turn
+   RPCs plus additive =ToolCallEvent=, =HumanGateEvent=, and provider-neutral
+   =ToolCard= payloads.
+3. =marlin.gate.v1= — one-shot approval claims for tool =Ask= prompts, graph
+   human gates, and mutating device capability invocations.
+4. =marlin.ui.v1= — declarative =UiWorkbenchSnapshot=, 13 =UiElement= IR
+   primitives, =SlotDeclaration= (=single= / =list= / =keyed=), =UiTheme=,
+   =UiEvent= → =UiIntent=.
+5. =marlin.plugin.v1= — RFC 40.166 signed release operator RPCs and
+   host-mediated =OpenScopedPanelStream= / =SubmitScopedPanelAction=.
+6. =marlin.device.v1= — reverse native-protocol registration (iOS Swift,
+   Android Kotlin, Desktop), bidirectional gated invocation channel, and
+   proactive capture ingestion (=IngestCapture=).
+7. =marlin.projection.v1= — read-only Org, Workspace Diff, Managed Processes,
+   and Graph Trajectory projections with secret visibility denied by default.
+
+* Cross-Language Encoding Invariants
+
+- *Unsigned 64-bit values* (=ordinal=, =sequence=, =generation=, =byte_size=)
+  cross Go ↔ TypeScript JSON as decimal strings (=json:",string"=) to avoid
+  JavaScript's 2^53 precision ceiling.
+- *Opaque cursors* (=event_id=, =next_cursor=) are never parsed or reordered;
+  clients persist view state and applied cursor atomically.
+- *Ed25519 signing domain*: unified v1 bundles sign
+  =marlin.unified.release.v1\0 || u64_be(len(publisher)) || publisher || source_rev[20] || build_digest[32] || manifest_toml=.

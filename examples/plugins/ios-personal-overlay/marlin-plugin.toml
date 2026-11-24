@@ -1,0 +1,22 @@
+# Reference Target Profile Overlay manifest: iOS Personal Agent (declarative + Swift native bridge)
+id = "tao3k.ios-personal-capture"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["workflow-preset", "device-profile"]
+
+[capabilities.ios-screenshot-intent]
+kind = "device.capability"
+target = "mobile-ios"
+protocol = "ios.app-intent.screenshot"
+
+[capabilities.ios-photos-recent]
+kind = "device.capability"
+target = "mobile-ios"
+protocol = "ios.photos.recent"
+optional = true
+
+[contributions.personal-capture-overlay]
+kind = "workflow-preset"
+policy_module = "marlin.personal.capture-ios"
+settings_schema = "marlin.personal.capture.settings.v1"
+requires = ["ios-screenshot-intent", "ios-photos-recent"]

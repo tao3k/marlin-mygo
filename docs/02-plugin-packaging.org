@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 02 — Dual-Stack Hot-Pluggable Plugin Packaging & Isolation
+#+filetags: :tao3k:marlin:mygo:plugins:marketplace:
+
+* Runtime Matrix
+
+Every Marketplace package ships a single signed =marlin-plugin.toml= manifest
+(Ed25519 over domain =marlin.unified.release.v1\0=) and selects one or more
+client runtimes per UI contribution:
+
+| Runtime | Language / Ecosystem | Sandbox & Transport | Hot-Plug & Platform Support |
+|---------+----------------------+---------------------+-----------------------------|
+| =declarative= | Data-only TOML + Scheme module binding | Zero client executable code | Desktop, iOS, Android, TUI (100% App Store compliant) |
+| =webview-untrusted= | TypeScript, React, Svelte, Vue, Tailwind, Canvas, Three.js | =mygo.WebView= with =PageOptions{Untrusted: true}=; =marlin-plugin://<id>/= verified by =CallerPage(ctx)=; =EmitPage= only | Desktop instant hot-swap; zero access to host =mygo.Bind= or gRPC tokens |
+| =wasm-ui-ir= | Go (=GOOS=wasip1=), Rust, Zig | Pure-Go =wazero= (zero cgo, bounded memory); emits =schema.UIElement= IR rendered natively on Metal/D3D11/OpenGL | Desktop instant hot-swap; zero extra WebView process overhead |
+| =mygo-js-wasm= | Go writing =mygo/ui= + =ui/shader= (=GOOS=js/wasm=) | Runs in =Untrusted: true= =mygo.WebView= on WebGL 2 | Desktop instant hot-swap; same Go view code compiles natively for custom enterprise builds |
+
+* Why =plugin.Open= (=.so=) Is Forbidden
+
+Go's stdlib =plugin= package requires =CGO_ENABLED=1=, lacks Windows support,
+cannot unload modules cleanly, and demands byte-identical Go toolchain and
+dependency graphs between host and plugin. =marlin-mygo= therefore standardizes
+hot-pluggable Go UI on =wazero= (=wasm-ui-ir=) and =GOOS=js/wasm= (=mygo-js-wasm=).
+
+* Security Invariants
+
+1. *Manifest Allowlist Enforcement*: =pkg/pluginhost.ScopedProxy= rejects any
+   action not listed in =declared_actions= and drops any event topic outside
+   =read_scopes= before crossing gRPC or touching the plugin page.
+2. *CallerPage Origin Pinning*: =pkg/pluginhost.WebViewProtocolHandler= resolves
+   =mygo.CallerPage(r.Context())= and verifies =callerPluginID == r.URL.Host=
+   on every asset GET and =POST /__marlin/action=.
+3. *Transactional Fallback*: Unmounting, crashing, or rolling back any plugin
+   immediately restores the Scheme/native fallback renderer declared in
+   =pkg/shell.SlotRegistry=.
