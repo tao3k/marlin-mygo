@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+[profile]
+name = "ios-personal"
+layout = "mobile-stack"
+capture_channels = ["device.ios.share.drain", "device.ios.voice.transcribe", "device.ios.photos.recent"]
+
+[theme]
+canvas = "#1e222a"
+ink = "#d8dee9"
+accent = "#88c0d0"

@@ -17,9 +17,9 @@ import (
 
 type testTarget struct{ meta transport.TargetMeta }
 
-func (t *testTarget) Meta() transport.TargetMeta  { return t.meta }
-func (t *testTarget) Ping(context.Context) error  { return nil }
-func (t *testTarget) Close() error                { return nil }
+func (t *testTarget) Meta() transport.TargetMeta { return t.meta }
+func (t *testTarget) Ping(context.Context) error { return nil }
+func (t *testTarget) Close() error               { return nil }
 
 func TestWorkbenchAppHeadlessMultiTargetSlotHotPlugAndGate(t *testing.T) {
 	targets := transport.NewTargetRegistry()
@@ -33,10 +33,10 @@ func TestWorkbenchAppHeadlessMultiTargetSlotHotPlugAndGate(t *testing.T) {
 	}})
 
 	slots := shell.NewSlotRegistry()
-	fallback := NewUIElementRenderer("native.main", true, slots, func() schema.UIElement {
+	fallback := NewUIElementRenderer("host.main", true, slots, func() schema.UIElement {
 		return schema.UIElement{
 			Kind:  schema.ElemPanel,
-			Title: "Native Fallback Transcript",
+			Title: "Host Core Fallback Transcript",
 			Tone:  schema.ToneInfo,
 			Children: []schema.UIElement{
 				{Kind: schema.ElemText, Spans: []schema.UISpan{{Text: "Fallback Active", Tone: schema.ToneSuccess}}},
@@ -45,7 +45,7 @@ func TestWorkbenchAppHeadlessMultiTargetSlotHotPlugAndGate(t *testing.T) {
 	})
 	if err := slots.Declare(schema.SlotDeclaration{
 		SlotID: "workbench.main", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.main", AllowUntrustedPlugin: true,
+		FallbackRenderer: "host.main", AllowUntrustedPlugin: true,
 	}, fallback); err != nil {
 		t.Fatal(err)
 	}

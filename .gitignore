@@ -11,6 +11,7 @@
 .bin/
 .env
 .mygo/
+.build/
 build/
 dist/
 node_modules/

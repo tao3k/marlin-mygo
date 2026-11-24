@@ -199,10 +199,10 @@ func NewUIElementRenderer(id string, trusted bool, slots *shell.SlotRegistry, ge
 	return &UIElementRenderer{id: id, trusted: trusted, slots: slots, getTree: getTree}
 }
 
-func (r *UIElementRenderer) ID() string                      { return r.id }
-func (r *UIElementRenderer) Trusted() bool                   { return r.trusted }
+func (r *UIElementRenderer) ID() string                        { return r.id }
+func (r *UIElementRenderer) Trusted() bool                     { return r.trusted }
 func (r *UIElementRenderer) HandleEvent(shell.HostEvent) error { return nil }
-func (r *UIElementRenderer) Dispose()                        {}
+func (r *UIElementRenderer) Dispose()                          {}
 
 func (r *UIElementRenderer) Render(ctx shell.RenderContext) {
 	c, ok := ctx.Surface.(*ui.Context)

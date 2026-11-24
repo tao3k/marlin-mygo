@@ -40,12 +40,12 @@ type ScopedEvent struct {
 
 // ScopedActionRequest mirrors marlin.plugin.v1.SubmitScopedPanelActionRequest.
 type ScopedActionRequest struct {
-	PluginID             schema.PluginID `json:"pluginId"`
+	PluginID             schema.PluginID       `json:"pluginId"`
 	ContributionID       schema.ContributionID `json:"contributionId"`
-	ActivationGeneration uint64          `json:"activationGeneration,string"`
-	ActionName           string          `json:"actionName"`
-	Args                 json.RawMessage `json:"args"`
-	IdempotencyKey       string          `json:"idempotencyKey"`
+	ActivationGeneration uint64                `json:"activationGeneration,string"`
+	ActionName           string                `json:"actionName"`
+	Args                 json.RawMessage       `json:"args"`
+	IdempotencyKey       string                `json:"idempotencyKey"`
 }
 
 // ScopedActionReceipt mirrors marlin.plugin.v1.ScopedPanelActionReceipt.
@@ -69,6 +69,7 @@ type ScopedScope struct {
 	Runtime              schema.PanelRuntimeKind
 	SlotID               schema.SlotID
 	SlotKey              string
+	EntryPath            string
 	ReadScopes           []string
 	DeclaredActions      []string
 	Assets               fs.FS

@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-// Package device bridges platform-specific native OS protocols (iOS Swift,
-// Android Kotlin, Desktop OS APIs) into marlin.device.v1.DeviceBridgeService.
+// Package device bridges per-target platform.* capability adapters (iOS,
+// Android, Desktop) into marlin.device.v1.DeviceBridgeService under the
+// uniform device.* capability namespace.
 package device
 
 import (
@@ -61,8 +62,8 @@ type InvocationResult struct {
 	ErrorMessage string          `json:"errorMessage,omitempty"`
 }
 
-// CapabilityProvider is implemented per platform protocol family (photos, pim,
-// capture, actions) backed by //mygo:native Swift/Kotlin/Rust modules.
+// CapabilityProvider is implemented per platform protocol family (platform.ios,
+// platform.android, platform.desktop) behind clean device.* capability IDs.
 type CapabilityProvider interface {
 	Family() string
 	Descriptors(ctx context.Context) ([]CapabilityDescriptor, error)
@@ -70,7 +71,7 @@ type CapabilityProvider interface {
 }
 
 // Bridge validates OS permissions and one-shot Rust gate receipts before
-// dispatching any host-originated device invocation to native Swift/Kotlin/Desktop code.
+// dispatching any host-originated device.* invocation to platform adapters.
 type Bridge struct {
 	targetKind       schema.TargetKind
 	mu               sync.RWMutex

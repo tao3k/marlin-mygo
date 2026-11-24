@@ -114,8 +114,8 @@ type webViewInstance struct {
 	once     sync.Once
 }
 
-func (i *webViewInstance) Scope() pluginhost.ScopedScope  { return i.scope }
-func (i *webViewInstance) Renderer() shell.SlotRenderer   { return i.renderer }
+func (i *webViewInstance) Scope() pluginhost.ScopedScope { return i.scope }
+func (i *webViewInstance) Renderer() shell.SlotRenderer  { return i.renderer }
 func (i *webViewInstance) DeliverEvent(ev pluginhost.ScopedEvent) error {
 	return PanelEvent.EmitPage(i.page, ev)
 }
@@ -139,10 +139,10 @@ type webViewSlotRenderer struct {
 	inst *webViewInstance
 }
 
-func (r *webViewSlotRenderer) ID() string              { return string(r.inst.scope.PluginID) }
-func (r *webViewSlotRenderer) Trusted() bool           { return false }
+func (r *webViewSlotRenderer) ID() string                        { return string(r.inst.scope.PluginID) }
+func (r *webViewSlotRenderer) Trusted() bool                     { return false }
 func (r *webViewSlotRenderer) HandleEvent(shell.HostEvent) error { return nil }
-func (r *webViewSlotRenderer) Dispose()                { _ = r.inst.Close() }
+func (r *webViewSlotRenderer) Dispose()                          { _ = r.inst.Close() }
 
 func (r *webViewSlotRenderer) Render(ctx shell.RenderContext) {
 	c, ok := ctx.Surface.(*ui.Context)

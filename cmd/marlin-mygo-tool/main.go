@@ -87,6 +87,10 @@ func main() {
 		err = runPack(os.Args[2:])
 	case "verify":
 		err = runVerify(os.Args[2:])
+	case "catalog":
+		err = runCatalog(os.Args[2:])
+	case "build-examples":
+		err = runBuildExamples(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -98,7 +102,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples> [flags]")
 }
 
 func runDescriptor(args []string) error {

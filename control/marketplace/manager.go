@@ -22,15 +22,20 @@ var (
 	ErrPackageNotFound     = errors.New("marketplace: package not found in registry")
 )
 
-// CatalogEntry represents one discoverable item in a Marketplace registry index.
+// CatalogEntry represents one discoverable item in a signed Marketplace registry index.
 type CatalogEntry struct {
-	PluginID    schema.PluginID           `json:"pluginId"`
-	Version     string                    `json:"version"`
-	PublisherID schema.PublisherID        `json:"publisherId"`
-	Summary     string                    `json:"summary"`
-	Runtimes    []schema.PanelRuntimeKind `json:"runtimes"`
-	Targets     []schema.TargetKind       `json:"targets"`
-	DownloadURL string                    `json:"downloadUrl"`
+	PluginID       schema.PluginID           `json:"pluginId"`
+	Version        string                    `json:"version"`
+	PublisherID    schema.PublisherID        `json:"publisherId"`
+	Summary        string                    `json:"summary"`
+	SlotID         schema.SlotID             `json:"slotId,omitempty"`
+	Runtimes       []schema.PanelRuntimeKind `json:"runtimes"`
+	Targets        []schema.TargetKind       `json:"targets"`
+	PackageFile    string                    `json:"packageFile,omitempty"`
+	PackageSHA256  string                    `json:"packageSha256,omitempty"`
+	PackageBytes   int64                     `json:"packageBytes,omitempty"`
+	ManifestDigest string                    `json:"manifestDigest,omitempty"`
+	DownloadURL    string                    `json:"downloadUrl,omitempty"`
 }
 
 // StagedBundle holds an authenticated release plus hash-verified client asset bytes.

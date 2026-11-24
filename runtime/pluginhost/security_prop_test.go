@@ -37,11 +37,11 @@ type stubRenderer struct {
 	trusted bool
 }
 
-func (r *stubRenderer) ID() string                      { return r.id }
-func (r *stubRenderer) Trusted() bool                   { return r.trusted }
-func (r *stubRenderer) Render(shell.RenderContext)      {}
+func (r *stubRenderer) ID() string                        { return r.id }
+func (r *stubRenderer) Trusted() bool                     { return r.trusted }
+func (r *stubRenderer) Render(shell.RenderContext)        {}
 func (r *stubRenderer) HandleEvent(shell.HostEvent) error { return nil }
-func (r *stubRenderer) Dispose()                        {}
+func (r *stubRenderer) Dispose()                          {}
 
 type modelInstance struct {
 	scope    pluginhost.ScopedScope
@@ -51,9 +51,9 @@ type modelInstance struct {
 	events   []pluginhost.ScopedEvent
 }
 
-func (m *modelInstance) Scope() pluginhost.ScopedScope  { return m.scope }
-func (m *modelInstance) Renderer() shell.SlotRenderer   { return m.renderer }
-func (m *modelInstance) Close() error                   { return nil }
+func (m *modelInstance) Scope() pluginhost.ScopedScope { return m.scope }
+func (m *modelInstance) Renderer() shell.SlotRenderer  { return m.renderer }
+func (m *modelInstance) Close() error                  { return nil }
 func (m *modelInstance) DeliverEvent(ev pluginhost.ScopedEvent) error {
 	m.mu.Lock()
 	m.events = append(m.events, ev)
@@ -130,14 +130,14 @@ func TestAdversarialSecurityStateMachineProperty(t *testing.T) {
 	slots := shell.NewSlotRegistry()
 	if err := slots.Declare(schema.SlotDeclaration{
 		SlotID: "workbench.main", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.main", AllowUntrustedPlugin: true,
-	}, &stubRenderer{id: "native.main", trusted: true}); err != nil {
+		FallbackRenderer: "host.main", AllowUntrustedPlugin: true,
+	}, &stubRenderer{id: "host.main", trusted: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := slots.Declare(schema.SlotDeclaration{
 		SlotID: "approval.gate", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.gate", AllowUntrustedPlugin: false,
-	}, &stubRenderer{id: "native.gate", trusted: true}); err != nil {
+		FallbackRenderer: "host.gate", AllowUntrustedPlugin: false,
+	}, &stubRenderer{id: "host.gate", trusted: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,9 +319,9 @@ func TestAdversarialSecurityStateMachineProperty(t *testing.T) {
 
 		// --- Assert ALL Formal Quint Invariants After Every Single Step ---
 
-		// Inv 1: approval.gate is ALWAYS owned by trusted native.gate.
+		// Inv 1: approval.gate is ALWAYS owned by trusted host.gate.
 		gateRenderers := slots.Resolve("approval.gate")
-		if len(gateRenderers) != 1 || gateRenderers[0].ID() != "native.gate" || !gateRenderers[0].Trusted() {
+		if len(gateRenderers) != 1 || gateRenderers[0].ID() != "host.gate" || !gateRenderers[0].Trusted() {
 			t.Fatalf("step %d: invRestrictedSlotAlwaysTrusted violated: %+v", step, gateRenderers)
 		}
 

@@ -79,7 +79,7 @@ func TestLiveCrossProcessGoToRustBridgeE2E(t *testing.T) {
 	}
 	foundLockedGate := false
 	for _, sl := range snap.Slots {
-		if sl.SlotID == "approval.gate" && !sl.AllowUntrustedPlugin {
+		if sl.SlotID == "approval.gate" && sl.FallbackRenderer == "host.gate" && !sl.AllowUntrustedPlugin {
 			foundLockedGate = true
 		}
 	}

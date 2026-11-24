@@ -218,9 +218,13 @@ func (r *Runtime) Instantiate(ctx context.Context, scope pluginhost.ScopedScope,
 	if scope.Assets == nil {
 		return nil, fmt.Errorf("wazeroir: plugin %q has no asset filesystem", scope.PluginID)
 	}
-	wasmBytes, err := fs.ReadFile(scope.Assets, "panel.wasm")
+	entry := scope.EntryPath
+	if entry == "" {
+		entry = "panel.wasm"
+	}
+	wasmBytes, err := fs.ReadFile(scope.Assets, entry)
 	if err != nil {
-		return nil, fmt.Errorf("wazeroir: read panel.wasm for %q: %w", scope.PluginID, err)
+		return nil, fmt.Errorf("wazeroir: read %s for %q: %w", entry, scope.PluginID, err)
 	}
 
 	eng := r.engine
@@ -343,4 +347,12 @@ func (w *wasmInstance) currentTree() schema.UIElement {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.tree
+}
+
+// RenderDrawList exposes the mounted reactor's zero-JSON binary GPU DrawList path.
+func (w *wasmInstance) RenderDrawList(ctx context.Context, dst []schema.DrawCmd) ([]schema.DrawCmd, error) {
+	if w.resident == nil {
+		return nil, fmt.Errorf("wazeroir: plugin %q is not a resident reactor", w.scope.PluginID)
+	}
+	return w.resident.RenderDrawList(ctx, dst)
 }

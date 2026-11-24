@@ -17,23 +17,23 @@ type stubRenderer struct {
 	disposed bool
 }
 
-func (r *stubRenderer) ID() string              { return r.id }
-func (r *stubRenderer) Trusted() bool           { return r.trusted }
-func (r *stubRenderer) Render(RenderContext)    {}
+func (r *stubRenderer) ID() string                  { return r.id }
+func (r *stubRenderer) Trusted() bool               { return r.trusted }
+func (r *stubRenderer) Render(RenderContext)        {}
 func (r *stubRenderer) HandleEvent(HostEvent) error { return nil }
-func (r *stubRenderer) Dispose()                { r.disposed = true }
+func (r *stubRenderer) Dispose()                    { r.disposed = true }
 
 func TestSlotHotPlugAndFallback(t *testing.T) {
 	reg := NewSlotRegistry()
-	fallback := &stubRenderer{id: "native.main", trusted: true}
+	fallback := &stubRenderer{id: "host.main", trusted: true}
 	if err := reg.Declare(schema.SlotDeclaration{
 		SlotID: "workbench.main", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.main", AllowUntrustedPlugin: true,
+		FallbackRenderer: "host.main", AllowUntrustedPlugin: true,
 	}, fallback); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := reg.Resolve("workbench.main"); len(got) != 1 || got[0].ID() != "native.main" {
+	if got := reg.Resolve("workbench.main"); len(got) != 1 || got[0].ID() != "host.main" {
 		t.Fatalf("expected fallback renderer, got %+v", got)
 	}
 
@@ -50,7 +50,7 @@ func TestSlotHotPlugAndFallback(t *testing.T) {
 	if !pluginView.disposed {
 		t.Fatal("expected unmounted plugin renderer to be disposed")
 	}
-	if got := reg.Resolve("workbench.main"); len(got) != 1 || got[0].ID() != "native.main" {
+	if got := reg.Resolve("workbench.main"); len(got) != 1 || got[0].ID() != "host.main" {
 		t.Fatalf("expected automatic fallback after unmount, got %+v", got)
 	}
 }
@@ -59,8 +59,8 @@ func TestUntrustedRejectedOnRestrictedSlot(t *testing.T) {
 	reg := NewSlotRegistry()
 	if err := reg.Declare(schema.SlotDeclaration{
 		SlotID: "approval.gate", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.gate", AllowUntrustedPlugin: false,
-	}, &stubRenderer{id: "native.gate", trusted: true}); err != nil {
+		FallbackRenderer: "host.gate", AllowUntrustedPlugin: false,
+	}, &stubRenderer{id: "host.gate", trusted: true}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := reg.Mount("approval.gate", "", &stubRenderer{id: "thirdparty", trusted: false})

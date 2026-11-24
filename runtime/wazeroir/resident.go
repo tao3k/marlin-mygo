@@ -21,13 +21,13 @@ import (
 // warm in linear memory across frames so OnEvent(), Render(), and zero-JSON
 // RenderDrawList() execute in microseconds without rebooting the guest runtime.
 type ResidentInstance struct {
-	mu           sync.Mutex
-	eng          *ModuleEngine
-	mod          api.Module
-	allocFn      api.Function
-	onEventFn    api.Function
-	renderFn     api.Function
-	drawListFn   api.Function
+	mu         sync.Mutex
+	eng        *ModuleEngine
+	mod        api.Module
+	allocFn    api.Function
+	onEventFn  api.Function
+	renderFn   api.Function
+	drawListFn api.Function
 }
 
 // InstantiateResident boots a compiled WASI reactor module once (running _initialize)

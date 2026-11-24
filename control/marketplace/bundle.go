@@ -26,17 +26,17 @@ import (
 )
 
 const (
-	MaxBundleBytes       = 16 << 20 // 16 MiB archive ceiling
-	MaxBundleFileCount   = 256
-	BundleManifestFile   = "marlin-plugin.toml"
-	BundleAttestation    = "attestation.json"
-	BundleSignatureFile  = "signature.ed25519"
-	BundleAssetsPrefix   = "assets/"
+	MaxBundleBytes      = 16 << 20 // 16 MiB archive ceiling
+	MaxBundleFileCount  = 256
+	BundleManifestFile  = "marlin-plugin.toml"
+	BundleAttestation   = "attestation.json"
+	BundleSignatureFile = "signature.ed25519"
+	BundleAssetsPrefix  = "assets/"
 )
 
 var (
-	ErrInvalidBundle     = errors.New("marketplace: invalid or malformed .marlinpkg bundle")
-	ErrBundleTampered    = errors.New("marketplace: bundle signature or asset digest failed verification")
+	ErrInvalidBundle  = errors.New("marketplace: invalid or malformed .marlinpkg bundle")
+	ErrBundleTampered = errors.New("marketplace: bundle signature or asset digest failed verification")
 )
 
 // BundleAttestationDoc is serialized deterministically into attestation.json.

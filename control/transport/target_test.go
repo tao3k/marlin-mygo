@@ -16,9 +16,9 @@ type fakeTarget struct {
 	closed bool
 }
 
-func (f *fakeTarget) Meta() TargetMeta          { return f.meta }
+func (f *fakeTarget) Meta() TargetMeta           { return f.meta }
 func (f *fakeTarget) Ping(context.Context) error { return nil }
-func (f *fakeTarget) Close() error              { f.closed = true; return nil }
+func (f *fakeTarget) Close() error               { f.closed = true; return nil }
 
 func TestTargetRegistryMultiMachineSwitch(t *testing.T) {
 	reg := NewTargetRegistry()

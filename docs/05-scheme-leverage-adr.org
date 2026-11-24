@@ -25,7 +25,7 @@ frame-rate tax, and four strict *anti-redundancy guardrails* prohibiting misuse.
 ** 2.1 Collapsing M x N x K Combinatorial Explosion into M + N + K
 Marlin spans:
 - *M Surfaces*: Terminal TUI (=marlin-agent-tui=), Desktop GPU (=marlin-mygo=),
-  iOS Personal Assistant (Swift =//mygo:native=), Android (Kotlin), Remote Headless.
+  iOS Personal Assistant (=platform.ios= / =device.ios.*=), Android (=platform.android= / =device.android.*=), Remote Headless.
 - *N Profiles*: Coding Agent, Org Knowledge Workbench, iOS Personal Assistant,
   Review Mode, Enterprise Restricted.
 - *K Policy Dimensions*: Meow/Hydra modal keymaps, Centaur tabs, hook conditions,
@@ -87,7 +87,7 @@ To prevent Scheme from ever turning into redundant wrapper glue, four hard rules
 3. *Never replace simple typed TOML configuration with Scheme.*
    Ports, Ed25519 trust keys, versions, and asset SHA-256 digests stay in typed TOML.
 4. *Never allow Scheme to execute side effects or manufacture Rust handlers.*
-   Authority, credentials, receipts, and native iOS/Android OS calls remain owned
+   Authority, credentials, receipts, and =device.*= OS capability calls remain owned
    by Rust (=marlin-agent-core=) and =runtime/device.Bridge=.
 
 * 5. One-Line Architectural Summary

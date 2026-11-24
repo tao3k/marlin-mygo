@@ -25,7 +25,7 @@ func NewVirtualHeightIndex(initialCap int) *VirtualHeightIndex {
 	}
 }
 
-func (v *VirtualHeightIndex) Len() int           { return len(v.heights) }
+func (v *VirtualHeightIndex) Len() int            { return len(v.heights) }
 func (v *VirtualHeightIndex) TotalHeight() uint64 { return v.total }
 
 func (v *VirtualHeightIndex) RowHeight(row int) uint32 {

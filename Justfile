@@ -35,11 +35,12 @@ test-go:
     CGO_ENABLED=0 go test ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
     go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device
 
-# Run short smoke fuzzing across protocol, schema, drawlist, arena, and input boundaries.
+# Run short smoke fuzzing across protocol, schema, manifest, drawlist, arena, and input boundaries.
 fuzz-smoke time="2s":
     CGO_ENABLED=0 go test -fuzz=FuzzValidateDotIdentifier -fuzztime={{time}} ./pkg/schema
     CGO_ENABLED=0 go test -fuzz=FuzzParseSubmissionID -fuzztime={{time}} ./pkg/schema
     CGO_ENABLED=0 go test -fuzz=FuzzDecodeDrawList -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -fuzz=FuzzParsePluginManifestTOML -fuzztime={{time}} ./pkg/schema
     CGO_ENABLED=0 go test -fuzz=FuzzArenaCompileAndDiff -fuzztime={{time}} ./engine/arena
     CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime={{time}} ./engine/input
     CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost

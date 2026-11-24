@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
 // Package bench provides end-to-end Frontend Engine microbenchmarks covering:
-// - Plane 1 (Engine Core): BFS Arena + Dual Merkle Diff, Lock-Free COW Bus +
-//   Coalescing Ring, Compiled KeyTrie, Zero-Alloc Fuzzy Ranker, 100k-row Fenwick
-//   VirtualHeightIndex
-// - Plane 2 (Runtimes): AOT-Cached wazero Go WASM-IR execution, Headless MyGo
-//   GPU Workbench frame render
-// - Plane 3 (Control Plane): Real HTTP/2 loopback gRPC ScopedPanelAction RTT
+//   - Plane 1 (Engine Core): BFS Arena + Dual Merkle Diff, Lock-Free COW Bus +
+//     Coalescing Ring, Compiled KeyTrie, Zero-Alloc Fuzzy Ranker, 100k-row Fenwick
+//     VirtualHeightIndex
+//   - Plane 2 (Runtimes): AOT-Cached wazero Go WASM-IR execution, Headless MyGo
+//     GPU Workbench frame render
+//   - Plane 3 (Control Plane): Real HTTP/2 loopback gRPC ScopedPanelAction RTT
 package bench
 
 import (
@@ -25,8 +25,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	"google.golang.org/grpc"
 
-	commonv1 "github.com/tao3k/marlin-mygo/gen/marlin/common/v1"
-	pluginv1 "github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1"
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/arena"
@@ -34,6 +32,8 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/engine/viewport"
+	commonv1 "github.com/tao3k/marlin-mygo/gen/marlin/common/v1"
+	pluginv1 "github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
@@ -375,9 +375,9 @@ func BenchmarkGRPC_LoopbackScopedPanelAction(b *testing.B) {
 
 type benchTarget struct{ meta transport.TargetMeta }
 
-func (t benchTarget) Meta() transport.TargetMeta  { return t.meta }
-func (t benchTarget) Ping(context.Context) error  { return nil }
-func (t benchTarget) Close() error                { return nil }
+func (t benchTarget) Meta() transport.TargetMeta { return t.meta }
+func (t benchTarget) Ping(context.Context) error { return nil }
+func (t benchTarget) Close() error               { return nil }
 
 func BenchmarkMyGoShell_HeadlessFrame(b *testing.B) {
 	targets := transport.NewTargetRegistry()
@@ -388,8 +388,8 @@ func BenchmarkMyGoShell_HeadlessFrame(b *testing.B) {
 	slots := shell.NewSlotRegistry()
 	_ = slots.Declare(schema.SlotDeclaration{
 		SlotID: "workbench.main", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.main", AllowUntrustedPlugin: true,
-	}, mygoshell.NewUIElementRenderer("native.main", true, slots, func() schema.UIElement {
+		FallbackRenderer: "host.main", AllowUntrustedPlugin: true,
+	}, mygoshell.NewUIElementRenderer("host.main", true, slots, func() schema.UIElement {
 		return schema.UIElement{
 			Kind:  schema.ElemPanel,
 			Title: "Transcript",

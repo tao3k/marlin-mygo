@@ -15,14 +15,14 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/shell"
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 	commonv1 "github.com/tao3k/marlin-mygo/gen/marlin/common/v1"
 	devicev1 "github.com/tao3k/marlin-mygo/gen/marlin/device/v1"
 	gatev1 "github.com/tao3k/marlin-mygo/gen/marlin/gate/v1"
 	pluginv1 "github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1"
 	uiv1 "github.com/tao3k/marlin-mygo/gen/marlin/ui/v1"
-	"github.com/tao3k/marlin-mygo/control/transport"
-	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
@@ -92,7 +92,7 @@ func (s *fakeMarlinHost) OpenWorkbench(ctx context.Context, req *uiv1.OpenWorkbe
 				},
 			},
 			Slots: []*uiv1.SlotDeclaration{
-				{SlotId: slotID, Cardinality: uiv1.SlotCardinality_SLOT_CARDINALITY_SINGLE, FallbackRenderer: "native.main", AllowUntrustedPlugin: true},
+				{SlotId: slotID, Cardinality: uiv1.SlotCardinality_SLOT_CARDINALITY_SINGLE, FallbackRenderer: "host.main", AllowUntrustedPlugin: true},
 			},
 		},
 	}, nil

@@ -16,13 +16,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/tao3k/marlin-mygo/control/transport"
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 	devicev1 "github.com/tao3k/marlin-mygo/gen/marlin/device/v1"
 	gatev1 "github.com/tao3k/marlin-mygo/gen/marlin/gate/v1"
 	pluginv1 "github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1"
 	projectionv1 "github.com/tao3k/marlin-mygo/gen/marlin/projection/v1"
 	uiv1 "github.com/tao3k/marlin-mygo/gen/marlin/ui/v1"
-	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
@@ -113,11 +113,11 @@ func (t *Target) Ping(ctx context.Context) error {
 	return nil
 }
 
-func (t *Target) App() appv1.AppServerClient                       { return t.app }
-func (t *Target) Gate() gatev1.ApprovalGateServiceClient           { return t.gate }
-func (t *Target) UI() uiv1.UiWorkbenchServiceClient                { return t.ui }
-func (t *Target) Plugin() pluginv1.PluginServiceClient             { return t.plugin }
-func (t *Target) Device() devicev1.DeviceBridgeServiceClient       { return t.device }
+func (t *Target) App() appv1.AppServerClient                            { return t.app }
+func (t *Target) Gate() gatev1.ApprovalGateServiceClient                { return t.gate }
+func (t *Target) UI() uiv1.UiWorkbenchServiceClient                     { return t.ui }
+func (t *Target) Plugin() pluginv1.PluginServiceClient                  { return t.plugin }
+func (t *Target) Device() devicev1.DeviceBridgeServiceClient            { return t.device }
 func (t *Target) Projection() projectionv1.ProjectionQueryServiceClient { return t.projection }
 
 func (t *Target) Close() error {

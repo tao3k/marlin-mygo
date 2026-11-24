@@ -8,8 +8,8 @@
 //   2. Slot trust boundaries (restricted slots like approval.gate never mount untrusted plugins).
 //   3. Untrusted WebView CallerPage == Host origin pinning & action allowlists.
 //   4. Monotonic activation generation pinning across hot-reload races.
-//   5. Circuit breaker fault isolation with atomic native fallback restoration.
-//   6. Mutating native device capabilities (iOS/Android) requiring Rust one-shot GateReceipt + OS permission.
+//   5. Circuit breaker fault isolation with atomic host fallback restoration.
+//   6. Mutating platform device capabilities (device.ios.* / device.android.*) requiring Rust one-shot GateReceipt + OS permission.
 //
 // Includes 7 explicit adversarial negative-control step actions (badStep*) — one
 // per security invariant — that MUST violate `safe` when checked by
@@ -31,7 +31,7 @@ module frontendPluginSecurity {
     else Set()
 
   pure def slotFallback(sl: str): str =
-    if (sl == "workbench.main") "native.main" else "native.gate"
+    if (sl == "workbench.main") "host.main" else "host.gate"
 
   pure def slotAllowsUntrusted(sl: str): bool =
     sl == "workbench.main"
@@ -61,7 +61,7 @@ module frontendPluginSecurity {
     tampered: Map("pA" -> false, "pB" -> false, "pEvil" -> true),
     gen: Map("pA" -> 0, "pB" -> 0, "pEvil" -> 0),
     breakerOpen: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
-    slotOwner: Map("workbench.main" -> "native.main", "approval.gate" -> "native.gate"),
+    slotOwner: Map("workbench.main" -> "host.main", "approval.gate" -> "host.gate"),
     slotTrusted: Map("workbench.main" -> true, "approval.gate" -> true),
     gateId: 0,
     gateState: "none",
@@ -122,7 +122,7 @@ module frontendPluginSecurity {
     hotReload(p)
   }
 
-  // Fault/circuit-breaker trip or unmount: atomically restores native fallback on any owned slot.
+  // Fault/circuit-breaker trip or unmount: atomically restores host fallback on any owned slot.
   action tripBreakerOrUnmount(p: str): bool = all {
     plugins.contains(p),
     s.gen.get(p) > 0,
@@ -271,7 +271,7 @@ module frontendPluginSecurity {
     },
   }
 
-  // Control 4: trips circuit breaker but forgets to restore native slot fallback.
+  // Control 4: trips circuit breaker but forgets to restore host slot fallback.
   action badStepBreakerForgetsFallback = any {
     step,
     all {
@@ -315,7 +315,7 @@ module frontendPluginSecurity {
   // --- Formal Safety Invariants ---
 
   val invRestrictedSlotAlwaysTrusted =
-    s.slotOwner.get("approval.gate") == "native.gate" and s.slotTrusted.get("approval.gate")
+    s.slotOwner.get("approval.gate") == "host.gate" and s.slotTrusted.get("approval.gate")
 
   val invNoTamperedPluginActive =
     plugins.forall(p => s.gen.get(p) > 0 implies (s.verified.get(p) and not(s.tampered.get(p))))
@@ -370,7 +370,7 @@ module frontendPluginSecurity {
         assert(safe),
         assert(s.admittedActions.length() == 1),
         assert(s.deliveredEvents.length() == 1),
-        assert(s.slotOwner.get("workbench.main") == "native.main"),
+        assert(s.slotOwner.get("workbench.main") == "host.main"),
         s' = s,
       })
   }

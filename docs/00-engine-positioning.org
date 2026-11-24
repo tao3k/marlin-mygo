@@ -41,7 +41,7 @@ Plane 3 [Control Plane] control/transport/      Multi-target Registry (Sidecar /
 Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy + CallerPage protocol + WASM ABI
                         runtime/wazeroir/       AOT-cached pure-Go wazero WASM-IR sandbox
                         runtime/mygoshell/      MyGo GPU renderer + Untrusted WebView host
-                        runtime/device/         //mygo:native iOS Swift / Android Kotlin / Desktop bridge
+                        runtime/device/         device.* capability bridge (platform.ios / platform.android / platform.desktop)
                            │
 Plane 1 [Engine Core]   engine/arena/           Flat UI IR Arena + Merkle dual-hash incremental Diff
                         engine/bus/             COW lock-free topic bus + 2^k coalescing ring + breaker
@@ -58,7 +58,7 @@ Dependency direction is strictly downward:
   zero third-party runtime dependencies) so algorithmic microbenchmarks and
   property tests run deterministically in milliseconds.
 - =runtime/*= binds =engine/*= to MyGo GPU rendering, Untrusted WebViews,
-  =wazero=, and platform native modules.
+  =wazero=, and =platform.*= / =device.*= capability providers.
 - =control/*= owns remote/local gRPC transport and Marketplace distribution.
 
 * 3. Core Engine Algorithms & Complexity Guarantees

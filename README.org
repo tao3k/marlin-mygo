@@ -20,10 +20,10 @@ iOS/Android bridges).
   compiled Meow/Hydra =KeyTrie= lookup, and a Fenwick BIT virtual height index
   built for 100k+ row streaming transcripts.
 - *Modular & Extensible by Construction*: Every workbench surface is composed
-  of hot-pluggable slots (=single= / =list= / =keyed=) with automatic native
-  fallback, unified multi-target remote gRPC machine switching, and single-source
-  Protobuf + =BoundedSchema= contracts that derive Go stubs, TypeScript SDK
-  types, and zero-WebView native GPU forms without drift.
+  of hot-pluggable slots (=single= / =list= / =keyed=) with automatic =host.*=
+  fallback, unified multi-machine federated gRPC sidebar switching, and
+  single-source Protobuf + =BoundedSchema= contracts that derive Go stubs,
+  TypeScript SDK types, and zero-WebView GPU forms without drift.
 - *Open, Sandboxed Plugin Ecosystem (Marketplace)*: Downstream developers can
   build hot-pluggable panels in *TypeScript* (=webview-untrusted= via
   =@tao3k/marlin-panel-sdk=), *Go 1.27 WASI Reactors* (=wasm-ui-ir= & zero-JSON
@@ -35,7 +35,7 @@ iOS/Android bridges).
   pinning, unforgeable WASM module proxy binding, monotonic generation
   revocation, circuit-breaker fallback, and one-shot Rust =GateReceipt= device
   writes) are formally challenged in Quint with 7 adversarial negative controls,
-  2,000-step Go adversarial state-machine property tests, and 7 native fuzzers.
+  2,000-step Go adversarial state-machine property tests, and 8 Go fuzzers.
 
 * Measured Engine Benchmarks (Apple M2 Pro, Zero CGO)
 
@@ -60,14 +60,15 @@ Plane 5 [Verification]  spec/quint/             Quint formal adversarial securit
                         bench/                  Go + TS E2E Engine Benchmark Harness
 Plane 4 [Ecosystem]     packages/panel-sdk/     @tao3k/marlin-panel-sdk (TS Untrusted WebView + generated wire types)
                         sdk/go-ui-ir/           Go WASM-IR & DrawList SDK (GOOS=wasip1 reactor + emit_action)
-                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, gen-ts, model-gate, init-plugin, keygen, pack, verify)
-Plane 3 [Control Plane] control/transport/      TargetRegistry (Local Sidecar | Embedded | Remote gRPC)
+                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, gen-ts, model-gate, init-plugin, keygen, pack, verify, catalog)
+Plane 3 [Control Plane] control/transport/      TargetRegistry + FederationSupervisor (Local Sidecar | Embedded | Remote gRPC)
                         control/grpcwire/       HTTP/2 gRPC 6-service adapters
-                        control/marketplace/    Deterministic .marlinpkg Ed25519 + SHA-256 staging & verification
+                        control/marketplace/    Deterministic .marlinpkg + signed catalog.json Ed25519 verification & hot-install
 Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy (atomic Revoke) + CallerPage protocol + fuzz/prop tests
                         runtime/wazeroir/       SHA-256 AOT-cached wazero + bidirectional Resident Reactor & DrawList
                         runtime/mygoshell/      MyGo GPU workbench, full UI-IR + BoundedSchema auto-form + WebView host
-                        runtime/device/         //mygo:native iOS Swift / Android Kotlin / Desktop bridge + one-shot receipts
+                        runtime/device/         device.* protocol bridge + platform.* adapters (iOS/Android/Desktop) + one-shot receipts
+                        platform/ios/           platform.ios Swift device capability adapter (Photos/Vision/Speech/Share)
 Plane 1 [Engine Core]   engine/arena/           Flat BFS UI IR Arena + non-commutative dual Merkle incremental Diff
                         engine/bus/             Lock-free COW TopicBus + 2^k CoalescingRing + CircuitBreaker
                         engine/input/           Compiled KeyTrie (Meow/Hydra) + zero-alloc Fuzzy scorer
@@ -111,7 +112,7 @@ CGO_ENABLED=0 go run ./cmd/marlin-app
 - [[file:docs/00-engine-positioning.org][docs/00-engine-positioning.org]] — Architecture planes, core algorithms & 120Hz SLO budgets
 - [[file:docs/01-unified-schema.org][docs/01-unified-schema.org]] — 4-layer Scheme/Rust/Protobuf/Go/TS schema mapping
 - [[file:docs/02-plugin-packaging.org][docs/02-plugin-packaging.org]] — TS WebView + Go =wazero= + Go =js/wasm= plugin isolation
-- [[file:docs/03-target-overlays.org][docs/03-target-overlays.org]] — Desktop/iOS/Android target overlays & C ABI native bridge
+- [[file:docs/03-target-overlays.org][docs/03-target-overlays.org]] — Desktop/iOS/Android target overlays, =platform.*= adapters & =device.*= bridge
 - [[file:docs/04-plugin-ecosystem.org][docs/04-plugin-ecosystem.org]] — Marketplace ecosystem design, trust tiers, lifecycle & certification gate
 - [[file:docs/05-scheme-leverage-adr.org][docs/05-scheme-leverage-adr.org]] — ADR: Why Gerbil Scheme, three-plane separation & anti-redundancy guardrails
 - [[file:spec/quint/frontend-security.qnt][spec/quint/frontend-security.qnt]] — Quint formal adversarial security specification

@@ -31,13 +31,14 @@ untrusted desktop extension models:
 | =declarative=                  | Pure TOML / Scheme UI-IR / Theme | Native MyGo GPU (zero guest code)    | ~14 ns restyle-only diff   | *Desktop + iOS + Android* | Themes, profiles, keymaps, App Store OTA    |
 | =mygo-js-wasm=                 | Go (=GOOS=js GOARCH=wasm=)       | Isolated OS WebView DOM/Canvas       | WebView-isolated           | Desktop (mac/Linux/Win)  | Complex interactive Go widgets in WebView   |
 
-** Why Native iOS/Android Protocols Are NOT Third-Party Marketplace Code
-iOS (=Photos=, =EventKit=, =Contacts=, =AppIntents=, Share Extension) and Android
-(=ContentResolver=, =Accessibility=, =NotificationListener=) native protocols compile
-directly into the signed host app via =//mygo:native= Swift/Kotlin modules and
-=runtime/device.Bridge=. Plugins can never inject arbitrary native Swift/Kotlin code;
-mutating device operations ALWAYS require both OS permission AND a one-shot Rust
-=GateReceiptID= verified by =spec/quint/frontend-security.qnt=.
+** Why Platform =device.*= Protocols Are NOT Third-Party Marketplace Code
+iOS (=device.ios.photos=, =device.ios.eventkit=, =device.ios.contacts=, =device.ios.voice=,
+=device.ios.share=) and Android (=device.android.media=, =device.android.share=,
+=device.android.intents=) platform device protocols compile directly into the
+signed host app via =platform/*= adapters and =runtime/device.Bridge=. Plugins can
+never inject arbitrary platform OS code; mutating =device.*= operations ALWAYS
+require both OS permission AND a one-shot Rust =GateReceiptID= verified by
+=spec/quint/frontend-security.qnt=.
 
 * 3. Five-Step Developer Workflow (Pure Go CLI, Zero Bash)
 
@@ -113,7 +114,7 @@ Before a plugin enters the public Marketplace catalog, CI enforces 5 mandatory g
 
 | Tier   | Identity Prefix     | Trust Root                       | Restricted Slots (=approval.gate=) | Hot-Reload & Circuit Breaker |
 |--------+---------------------+----------------------------------+------------------------------------+------------------------------|
-| Tier 0 | =native.*=          | Compiled into =marlin-mygo= host | *Allowed (Exclusive Owner)*        | Host-owned fallback          |
+| Tier 0 | =host.*=            | Compiled into =marlin-mygo= host | *Allowed (Exclusive Owner)*        | Host-owned fallback          |
 | Tier 1 | =tao3k.*=           | Official =tao3k= Ed25519 key     | Denied (untrusted presentation)    | Atomic gen bump + fallback   |
 | Tier 2 | =<publisher>.*=     | Verified Publisher Ed25519 key   | Denied (untrusted presentation)    | Atomic gen bump + fallback   |
 | Tier 3 | =dev.*= (local opt) | Ephemeral local dev key (Desktop)| Denied + visible =DEV= status tag  | Atomic gen bump + fallback   |
@@ -127,7 +128,7 @@ Before a plugin enters the public Marketplace catalog, CI enforces 5 mandatory g
                    |
                    +--(3 Faults / Trap / Timeout: CircuitBreaker OPEN)---------+
                                                                                v
-                                            [Deactivated + Native Fallback Restored Atomically]
+                                            [Deactivated + Host Fallback Restored Atomically]
 #+end_example
 
 Key formal guarantees verified in both Quint and Go:
@@ -135,4 +136,4 @@ Key formal guarantees verified in both Quint and Go:
 - Hot-reloading from =gen N= to =gen N+1= atomically calls =prev.proxy.Revoke()= so in-flight
   stale callbacks from =gen N= fail locally with =ErrProxyRevoked= before reaching gRPC.
 - Tripping a plugin's =CircuitBreaker= atomically unmounts the plugin and restores the slot's
-  trusted native fallback so the user never sees a blank pane or wedged workbench.
+  trusted =host.*= fallback so the user never sees a blank pane or wedged workbench.

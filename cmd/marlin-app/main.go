@@ -29,9 +29,9 @@ import (
 
 type demoTarget struct{ meta transport.TargetMeta }
 
-func (t *demoTarget) Meta() transport.TargetMeta  { return t.meta }
-func (t *demoTarget) Ping(context.Context) error  { return nil }
-func (t *demoTarget) Close() error                { return nil }
+func (t *demoTarget) Meta() transport.TargetMeta { return t.meta }
+func (t *demoTarget) Ping(context.Context) error { return nil }
+func (t *demoTarget) Close() error               { return nil }
 
 type demoDispatcher struct{}
 
@@ -55,10 +55,10 @@ func main() {
 	}})
 
 	slots := shell.NewSlotRegistry()
-	fallback := mygoshell.NewUIElementRenderer("native.main", true, slots, func() schema.UIElement {
+	fallback := mygoshell.NewUIElementRenderer("host.main", true, slots, func() schema.UIElement {
 		return schema.UIElement{
 			Kind:  schema.ElemPanel,
-			Title: "Scheme UI IR Native Fallback (workbench.main)",
+			Title: "Host Core UI-IR Fallback (workbench.main)",
 			Tone:  schema.ToneInfo,
 			Children: []schema.UIElement{
 				{Kind: schema.ElemText, Spans: []schema.UISpan{
@@ -70,7 +70,7 @@ func main() {
 	})
 	if err := slots.Declare(schema.SlotDeclaration{
 		SlotID: "workbench.main", Cardinality: schema.SlotSingle,
-		FallbackRenderer: "native.main", AllowUntrustedPlugin: true,
+		FallbackRenderer: "host.main", AllowUntrustedPlugin: true,
 	}, fallback); err != nil {
 		log.Fatal(err)
 	}

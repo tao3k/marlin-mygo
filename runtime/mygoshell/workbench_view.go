@@ -29,9 +29,11 @@ type PendingGateView struct {
 // Overlays (Command Palette, Approval Gate, Hydra chord bar) are drawn last so
 // they float above any embedded Untrusted WebView plugin slot.
 type WorkbenchApp struct {
-	Targets   *transport.TargetRegistry
-	Slots     *shell.SlotRegistry
-	Workbench *shell.WorkbenchController
+	Targets           *transport.TargetRegistry
+	Federation        *transport.FederationSupervisor
+	Slots             *shell.SlotRegistry
+	Workbench         *shell.WorkbenchController
+	TargetWorkbenches map[string]*shell.WorkbenchController
 
 	// Admitted Scheme/Marketplace command catalog and compiled Meow/Hydra KeyTrie.
 	Commands []input.CommandEntry
@@ -105,39 +107,44 @@ func (a *WorkbenchApp) ShowPendingGate(gate PendingGateView) {
 	a.mu.Unlock()
 }
 
+// activeWorkbench resolves the WorkbenchController for the currently selected target,
+// ensuring isolated multi-machine sessions never bleed snapshots across targets.
+func (a *WorkbenchApp) activeWorkbench() *shell.WorkbenchController {
+	if a.TargetWorkbenches != nil && a.selectedID != "" {
+		if wb, ok := a.TargetWorkbenches[a.selectedID]; ok && wb != nil {
+			return wb
+		}
+	}
+	return a.Workbench
+}
+
 // View is the ui.View callback passed directly to mygo.NewWindow or ui.NewTester.
 func (a *WorkbenchApp) View(c *ui.Context) {
 	if c.Shortcut(ui.Cmd, ui.KeyK) {
 		a.paletteOpen = !a.paletteOpen
 	}
 
-	snap, hasSnap := a.Workbench.Snapshot()
+	if active, ok := a.Targets.Active(); ok {
+		a.selectedID = active.Meta().ID
+	}
+
+	activeWB := a.activeWorkbench()
+	var snap *schema.UIWorkbenchSnapshot
+	var hasSnap bool
+	if activeWB != nil {
+		snap, hasSnap = activeWB.Snapshot()
+	}
 	theme := schema.DefaultUITheme()
 	if hasSnap {
 		theme = snap.Theme
 	}
 	t := ApplyMarlinTheme(c, theme)
 
-	targets := a.Targets.List()
-	if active, ok := a.Targets.Active(); ok {
-		a.selectedID = active.Meta().ID
-	}
-
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		// Left sidebar: unified multi-target switcher (Local + Mobile + Remote gRPC).
-		ui.Column(c).Width(220).Padding(10).Gap(8).
+		// Left sidebar: unified multi-machine federated topology (Local + Remote + Mobile).
+		ui.Column(c).Width(240).Padding(10).Gap(8).
 			Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
-			ui.Text(c, "MARLIN TARGETS").FontSize(11).Bold().TextColor(t.TextMuted)
-			prev := a.selectedID
-			ui.Sidebar(c, &a.selectedID, func() {
-				for _, tm := range targets {
-					label := fmt.Sprintf("%s (%s)", tm.DisplayName, tm.Mode)
-					ui.SidebarItem(c, tm.ID, nil, label)
-				}
-			}).Grow(1)
-			if a.selectedID != prev && a.selectedID != "" {
-				_, _ = a.Targets.Switch(a.selectedID)
-			}
+			a.renderTargetSidebar(c, t)
 			if a.OnTogglePlugin != nil {
 				label := "Mount Plugin"
 				if a.PluginMountedFn != nil && a.PluginMountedFn() {
@@ -170,6 +177,79 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 
 	// Overlays painted last so they float above any embedded ui.WebView plugin.
 	a.renderOverlays(c, t)
+}
+
+func (a *WorkbenchApp) renderTargetSidebar(c *ui.Context, t *ui.Theme) {
+	if a.Federation != nil {
+		fed := a.Federation.Snapshot()
+		header := "MARLIN FEDERATION"
+		if fed.TotalPendingGates > 0 {
+			header = fmt.Sprintf("MARLIN FEDERATION [%d GATE]", fed.TotalPendingGates)
+		}
+		ui.Text(c, header).FontSize(11).Bold().TextColor(t.TextMuted)
+		if gateTarget, hasRemoteGate := a.Federation.NextGateTarget(); hasRemoteGate && gateTarget != a.selectedID {
+			if ui.PrimaryButton(c.Key("jump-gate"), fmt.Sprintf("Jump to Gate (%s)", gateTarget)).Clicked() {
+				_, _ = a.Targets.Switch(gateTarget)
+				a.selectedID = gateTarget
+			}
+		}
+		prev := a.selectedID
+		ui.Sidebar(c, &a.selectedID, func() {
+			var lastRole transport.NodeRole
+			for _, node := range fed.Nodes {
+				if node.Role != lastRole {
+					ui.Text(c, roleSectionHeading(node.Role)).FontSize(10).Bold().TextColor(t.TextMuted)
+					lastRole = node.Role
+				}
+				label := formatFederatedNodeLabel(node)
+				ui.SidebarItem(c, node.Meta.ID, nil, label)
+			}
+		}).Grow(1)
+		if a.selectedID != prev && a.selectedID != "" {
+			_, _ = a.Targets.Switch(a.selectedID)
+		}
+		return
+	}
+
+	targets := a.Targets.List()
+	ui.Text(c, "MARLIN TARGETS").FontSize(11).Bold().TextColor(t.TextMuted)
+	prev := a.selectedID
+	ui.Sidebar(c, &a.selectedID, func() {
+		for _, tm := range targets {
+			label := fmt.Sprintf("%s (%s)", tm.DisplayName, tm.Mode)
+			ui.SidebarItem(c, tm.ID, nil, label)
+		}
+	}).Grow(1)
+	if a.selectedID != prev && a.selectedID != "" {
+		_, _ = a.Targets.Switch(a.selectedID)
+	}
+}
+
+func roleSectionHeading(role transport.NodeRole) string {
+	switch role {
+	case transport.RoleLocalWorkstation:
+		return "LOCAL WORKSTATION"
+	case transport.RoleRemoteAgent:
+		return "REMOTE AGENTS"
+	case transport.RoleMobileCompanion:
+		return "MOBILE COMPANIONS"
+	default:
+		return "TARGETS"
+	}
+}
+
+func formatFederatedNodeLabel(n transport.FederatedNode) string {
+	var b strings.Builder
+	b.WriteString(n.Meta.DisplayName)
+	b.WriteString(" · ")
+	b.WriteString(string(n.Health.Phase))
+	if n.Health.LatencyMS > 0 {
+		fmt.Fprintf(&b, " %dms", n.Health.LatencyMS)
+	}
+	if n.Health.PendingGates > 0 {
+		fmt.Fprintf(&b, " [%d GATE]", n.Health.PendingGates)
+	}
+	return b.String()
 }
 
 func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIWorkbenchSnapshot) {
