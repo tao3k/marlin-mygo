@@ -5,14 +5,18 @@
 package mygoshell
 
 import (
+	"strings"
+
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
 
-// RenderUIElement maps Marlin's host-neutral Scheme UI IR (also emitted by
-// wazero Go WASM-IR plugins) onto MyGo's native GPU UI primitives.
+const logicalCellDP float32 = 20 // 1 logical Scheme row/cell = 20dp on GPU surface
+
+// RenderUIElement maps Marlin's 13 host-neutral Scheme UI IR primitives (also
+// emitted by wazero Go WASM-IR plugins) onto MyGo's native GPU UI primitives.
 // Whenever an ElemSlot node is encountered, it resolves the active renderer(s)
 // from slots—automatically falling back to the Scheme/native fallback if any
 // Marketplace plugin is absent or unmounted.
@@ -20,14 +24,18 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 	t := c.Theme()
 	switch node.Kind {
 	case schema.ElemRows:
-		ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
+		col := ui.Column(c).Grow(1).MinWidth(0).Gap(8)
+		applyLayoutConstraints(col, node)
+		col.Children(func() {
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)
 			}
 		})
 
 	case schema.ElemColumns:
-		ui.Row(c).Grow(1).MinWidth(0).Gap(10).AlignItems(ui.Stretch).Children(func() {
+		row := ui.Row(c).Grow(1).MinWidth(0).Gap(10).AlignItems(ui.Stretch)
+		applyLayoutConstraints(row, node)
+		row.Children(func() {
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)
 			}
@@ -38,10 +46,12 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 		if node.Tone != "" && node.Tone != schema.ToneNormal {
 			border = ToneColor(rctx.Theme, node.Tone)
 		}
-		ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(6).Radius(8).
-			Background(t.Surface).Border(1, border).Children(func() {
+		panel := ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(6).Radius(8).
+			Background(t.Surface).Border(1, border)
+		applyLayoutConstraints(panel, node)
+		panel.Children(func() {
 			if node.Title != "" {
-				ui.Text(c, node.Title).Bold().FontSize(13).TextColor(ToneColor(rctx.Theme, node.Tone))
+				ui.Text(c, interpolateBindings(node.Title, rctx.Bindings)).Bold().FontSize(13).TextColor(ToneColor(rctx.Theme, node.Tone))
 			}
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)
@@ -55,11 +65,45 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 			}
 		})
 
+	case schema.ElemTemplate:
+		ui.Row(c).Gap(2).Children(func() {
+			for _, sp := range node.Spans {
+				ui.Text(c, interpolateBindings(sp.Text, rctx.Bindings)).TextColor(ToneColor(rctx.Theme, sp.Tone))
+			}
+		})
+
+	case schema.ElemChoice:
+		// First child whose ComponentID matches a true fact in rctx.Facts wins;
+		// last child acts as the Scheme ui-choice fallback branch.
+		if len(node.Children) == 0 {
+			return
+		}
+		chosen := node.Children[len(node.Children)-1]
+		for i := 0; i < len(node.Children)-1; i++ {
+			ch := node.Children[i]
+			if ch.ID != "" && rctx.Facts[string(ch.ID)] {
+				chosen = ch
+				break
+			}
+		}
+		RenderUIElement(c, chosen, slots, rctx)
+
 	case schema.ElemBar:
 		ui.Row(c).Padding(6, 12).Gap(12).AlignItems(ui.Center).
 			Background(toColor(rctx.Theme.Bar)).Children(func() {
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)
+			}
+		})
+
+	case schema.ElemPrompt, schema.ElemInput:
+		ui.Row(c).Padding(6, 10).Gap(8).AlignItems(ui.Center).Radius(6).
+			Background(t.Surface).Border(1, ToneColor(rctx.Theme, node.Tone)).Children(func() {
+			if node.Title != "" {
+				ui.Text(c, interpolateBindings(node.Title, rctx.Bindings)).Bold().TextColor(ToneColor(rctx.Theme, schema.ToneAccent))
+			}
+			for _, sp := range node.Spans {
+				ui.Text(c, interpolateBindings(sp.Text, rctx.Bindings)).TextColor(ToneColor(rctx.Theme, sp.Tone))
 			}
 		})
 
@@ -71,11 +115,9 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 			r.Render(rctx)
 		}
 
-	case schema.ElemRegion, schema.ElemSized, schema.ElemList, schema.ElemChoice:
+	case schema.ElemRegion, schema.ElemSized, schema.ElemList:
 		col := ui.Column(c).MinWidth(0).Gap(6)
-		if node.Flex > 0 {
-			col.Grow(float32(node.Flex))
-		}
+		applyLayoutConstraints(col, node)
 		col.Children(func() {
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)
@@ -87,6 +129,61 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 			ui.Text(c, node.Title).TextColor(t.TextMuted)
 		}
 	}
+}
+
+// RenderDrawList renders high-frequency zero-JSON binary DrawList commands
+// emitted from a resident Go WASM plugin directly onto MyGo's GPU scene graph.
+func RenderDrawList(c *ui.Context, cmds []schema.DrawCmd) {
+	ui.Column(c).Gap(4).Children(func() {
+		for _, cmd := range cmds {
+			col := unpackRGBA(cmd.RGBA)
+			w := cmd.W
+			if w <= 0 {
+				w = 8
+			}
+			h := cmd.H
+			if h <= 0 {
+				h = 8
+			}
+			switch cmd.Op {
+			case schema.DrawOpFillRect, schema.DrawOpBadge:
+				ui.Box(c).Width(w).Height(h).Radius(float32(cmd.Radius)).Background(col)
+			case schema.DrawOpStrokeRect:
+				ui.Box(c).Width(w).Height(h).Radius(float32(cmd.Radius)).Border(1, col)
+			case schema.DrawOpLine:
+				ui.Box(c).Width(w).Height(2).Background(col)
+			}
+		}
+	})
+}
+
+func applyLayoutConstraints(el ui.Element, node schema.UIElement) {
+	if node.Flex > 0 {
+		el.Grow(float32(node.Flex))
+	}
+	if node.Cells > 0 {
+		el.MinHeight(float32(node.Cells) * logicalCellDP)
+	}
+}
+
+func unpackRGBA(v uint32) ui.Color {
+	return ui.Color{
+		R: uint8((v >> 24) & 0xff),
+		G: uint8((v >> 16) & 0xff),
+		B: uint8((v >> 8) & 0xff),
+		A: uint8(v & 0xff),
+	}
+}
+
+func interpolateBindings(raw string, bindings map[string]string) string {
+	if len(bindings) == 0 || !strings.Contains(raw, "{{") {
+		return raw
+	}
+	out := raw
+	for k, v := range bindings {
+		out = strings.ReplaceAll(out, "{{"+k+"}}", v)
+	}
+	return out
 }
 
 // UIElementRenderer adapts a static or dynamically refreshed schema.UIElement
@@ -102,10 +199,10 @@ func NewUIElementRenderer(id string, trusted bool, slots *shell.SlotRegistry, ge
 	return &UIElementRenderer{id: id, trusted: trusted, slots: slots, getTree: getTree}
 }
 
-func (r *UIElementRenderer) ID() string              { return r.id }
-func (r *UIElementRenderer) Trusted() bool           { return r.trusted }
+func (r *UIElementRenderer) ID() string                      { return r.id }
+func (r *UIElementRenderer) Trusted() bool                   { return r.trusted }
 func (r *UIElementRenderer) HandleEvent(shell.HostEvent) error { return nil }
-func (r *UIElementRenderer) Dispose()                {}
+func (r *UIElementRenderer) Dispose()                        {}
 
 func (r *UIElementRenderer) Render(ctx shell.RenderContext) {
 	c, ok := ctx.Surface.(*ui.Context)

@@ -6,11 +6,13 @@ package mygoshell
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
@@ -24,15 +26,20 @@ type PendingGateView struct {
 }
 
 // WorkbenchApp renders the full modular Marlin shell on MyGo's native GPU UI.
-// Overlays (Command Palette, Approval Gate) are drawn last so they float above
-// any embedded Untrusted WebView plugin slot.
+// Overlays (Command Palette, Approval Gate, Hydra chord bar) are drawn last so
+// they float above any embedded Untrusted WebView plugin slot.
 type WorkbenchApp struct {
 	Targets   *transport.TargetRegistry
 	Slots     *shell.SlotRegistry
 	Workbench *shell.WorkbenchController
 
+	// Admitted Scheme/Marketplace command catalog and compiled Meow/Hydra KeyTrie.
+	Commands []input.CommandEntry
+	KeyTrie  *input.KeyTrie
+
 	// Optional callbacks invoked by top-level chrome controls.
 	OnGateDecision  func(gateID string, approve bool)
+	OnCommandInvoke func(commandName string)
 	OnTogglePlugin  func()
 	PluginMountedFn func() bool
 
@@ -40,6 +47,8 @@ type WorkbenchApp struct {
 	selectedID   string
 	paletteOpen  bool
 	paletteQuery string
+	rankedBuf    []input.RankedCommand
+	activeChord  []string
 	gateOpen     bool
 	pendingGate  *PendingGateView
 }
@@ -58,6 +67,33 @@ func NewWorkbenchApp(
 		app.selectedID = active.Meta().ID
 	}
 	return app
+}
+
+// HandleKeyToken feeds one normalized key token (e.g. "SPC", "w", "v") through
+// the compiled Scheme KeyTrie in O(chord_len). On MatchPrefix it retains the
+// chord for Hydra hint rendering; on MatchExact it invokes OnCommandInvoke.
+func (a *WorkbenchApp) HandleKeyToken(mode input.KeyScope, token string) (input.MatchKind, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.KeyTrie == nil || token == "" {
+		a.activeChord = a.activeChord[:0]
+		return input.MatchNone, ""
+	}
+	a.activeChord = append(a.activeChord, token)
+	kind, binding := a.KeyTrie.Lookup(mode, a.activeChord)
+	switch kind {
+	case input.MatchPrefix:
+		return input.MatchPrefix, strings.Join(a.activeChord, " ")
+	case input.MatchExact:
+		a.activeChord = a.activeChord[:0]
+		if a.OnCommandInvoke != nil && binding.CommandName != "" {
+			a.OnCommandInvoke(binding.CommandName)
+		}
+		return input.MatchExact, binding.CommandName
+	default:
+		a.activeChord = a.activeChord[:0]
+		return input.MatchNone, ""
+	}
 }
 
 // ShowPendingGate opens the authoritative Approval Gate modal above all slots.
@@ -147,6 +183,12 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 		if snap != nil {
 			ui.Textf(c, "profile:%s gen:%d", snap.ProfileName, snap.Generation).FontSize(12).TextColor(t.Accent)
 		}
+		a.mu.Lock()
+		chord := strings.Join(a.activeChord, " ")
+		a.mu.Unlock()
+		if chord != "" {
+			ui.Textf(c, "HYDRA: %s …", chord).FontSize(12).Bold().TextColor(t.Warning)
+		}
 		ui.Spacer(c)
 		if ui.Button(c.Key("open-palette"), "Cmd+K Commands").Clicked() {
 			a.paletteOpen = true
@@ -163,6 +205,21 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 	ui.Modal(c, &a.paletteOpen, func() {
 		ui.Text(c, "Command Palette (marlin.ui.v1)").FontSize(16).Bold()
 		ui.TextInput(c, &a.paletteQuery).Placeholder("Type a Scheme command...").AutoFocus()
+		if len(a.Commands) > 0 {
+			a.rankedBuf = input.RankCommands(a.paletteQuery, a.Commands, a.rankedBuf[:0])
+			limit := min(len(a.rankedBuf), 8)
+			ui.Column(c).Gap(4).Children(func() {
+				for i := 0; i < limit; i++ {
+					cmd := a.Commands[a.rankedBuf[i].Index]
+					if ui.Button(c.Key("cmd-"+cmd.Name), cmd.Name).Clicked() {
+						a.paletteOpen = false
+						if a.OnCommandInvoke != nil {
+							a.OnCommandInvoke(cmd.Name)
+						}
+					}
+				}
+			})
+		}
 		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
 			if ui.Button(c.Key("close-palette"), "Close").Clicked() {
 				a.paletteOpen = false

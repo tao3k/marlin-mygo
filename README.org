@@ -69,6 +69,7 @@ CGO_ENABLED=0 go run ./cmd/marlin-app
 - [[file:docs/02-plugin-packaging.org][docs/02-plugin-packaging.org]] — TS WebView + Go =wazero= + Go =js/wasm= plugin isolation
 - [[file:docs/03-target-overlays.org][docs/03-target-overlays.org]] — Desktop/iOS/Android target overlays & C ABI native bridge
 - [[file:docs/04-plugin-ecosystem.org][docs/04-plugin-ecosystem.org]] — Marketplace ecosystem design, trust tiers, lifecycle & certification gate
+- [[file:docs/05-scheme-leverage-adr.org][docs/05-scheme-leverage-adr.org]] — ADR: Why Gerbil Scheme, three-plane separation & 4 anti-redundancy guardrails
 - [[file:spec/quint/frontend-security.qnt][spec/quint/frontend-security.qnt]] — Quint formal adversarial security specification
 
 * License

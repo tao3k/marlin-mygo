@@ -9,7 +9,9 @@ import {
   createPanelClient,
   parseThemeTokens,
   type MyGoEventBridge,
+  type PluginV1PanelRuntimeKind,
   type ScopedPanelEvent,
+  type UiV1SlotDeclaration,
 } from "./index";
 
 describe("@tao3k/marlin-panel-sdk", () => {
@@ -92,5 +94,16 @@ describe("@tao3k/marlin-panel-sdk", () => {
     const tokens = parseThemeTokens({ "--marlin-accent": "#ff00aa" });
     expect(tokens.accent).toBe("#ff00aa");
     expect(tokens.canvas).toBe("#282c34");
+  });
+
+  test("exports zero-drift generated Protobuf wire contracts", () => {
+    const runtime: PluginV1PanelRuntimeKind = "PANEL_RUNTIME_KIND_WEBVIEW_UNTRUSTED";
+    const slot: UiV1SlotDeclaration = {
+      slotId: "workbench.main",
+      cardinality: "SLOT_CARDINALITY_SINGLE",
+      allowUntrustedPlugin: true,
+    };
+    expect(runtime).toBe("PANEL_RUNTIME_KIND_WEBVIEW_UNTRUSTED");
+    expect(slot.slotId).toBe("workbench.main");
   });
 });

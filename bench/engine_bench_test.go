@@ -284,6 +284,46 @@ func BenchmarkWazeroIR_ResidentReactorRender(b *testing.B) {
 	}
 }
 
+func BenchmarkWazeroIR_ZeroCopyDrawList_64Cmds(b *testing.B) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		b.Skip("go not in PATH")
+	}
+	wasmOut := filepath.Join(b.TempDir(), "graph-inspector-reactor.wasm")
+	build := exec.Command(goBin, "build", "-buildmode=c-shared", "-o", wasmOut, "../examples/plugins/go-graph-inspector-reactor")
+	build.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		b.Fatalf("build wasip1 reactor plugin failed: %v\n%s", err, string(out))
+	}
+	wasmBytes, err := os.ReadFile(wasmOut)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	ctx := context.Background()
+	eng, err := wazeroir.NewModuleEngine(ctx)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer eng.Close(ctx)
+
+	resident, err := eng.InstantiateResident(ctx, wasmBytes)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer resident.Close(ctx)
+
+	var cmdBuf [64]schema.DrawCmd
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmds, err := resident.RenderDrawList(ctx, cmdBuf[:0])
+		if err != nil || len(cmds) != 64 {
+			b.Fatalf("drawlist failed: len=%d err=%v", len(cmds), err)
+		}
+	}
+}
+
 type benchPluginSrv struct {
 	pluginv1.UnimplementedPluginServiceServer
 }

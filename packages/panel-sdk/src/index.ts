@@ -20,6 +20,10 @@ export type Uint64String = string;
 export const ACTION_ENDPOINT = "/__marlin/action";
 export const PANEL_EVENT_CHANNEL = "marlin:panel-event";
 
+// Re-export generated canonical Protobuf wire types (marlin.*.v1) so plugin
+// authors get zero-drift strongly typed contracts directly from proto/.
+export * from "./generated/wire_types";
+
 export interface ScopedPanelEvent<T = unknown> {
   eventId: EventCursor;
   pluginId: string;

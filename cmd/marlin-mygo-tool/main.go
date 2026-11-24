@@ -73,12 +73,20 @@ func main() {
 		err = runDescriptor(os.Args[2:])
 	case "gen":
 		err = runGen(os.Args[2:])
+	case "gen-ts":
+		err = runGenTS(os.Args[2:])
 	case "compat-check":
 		err = runCompatCheck(os.Args[2:])
 	case "model-gate":
 		err = runModelGate(os.Args[2:])
 	case "init-plugin":
 		err = runInitPlugin(os.Args[2:])
+	case "keygen":
+		err = runKeygen(os.Args[2:])
+	case "pack":
+		err = runPack(os.Args[2:])
+	case "verify":
+		err = runVerify(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -90,7 +98,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|compat-check|model-gate|init-plugin> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify> [flags]")
 }
 
 func runDescriptor(args []string) error {

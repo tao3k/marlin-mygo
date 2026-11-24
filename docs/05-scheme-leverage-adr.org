@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 05 — ADR: Why Gerbil Scheme + Three-Plane Separation & Anti-Redundancy Guardrails
+#+filetags: :tao3k:marlin:mygo:adr:scheme:architecture:
+
+* 1. Context & The Skeptic's Question
+
+Marlin already uses Rust (=marlin-agent-core=), Protobuf/gRPC (=marlin.*.v1=),
+pure Go (=marlin-mygo=), and TypeScript/WASM plugins. A legitimate architectural
+challenge is:
+
+#+begin_quote
+Why keep Gerbil Scheme between Rust and MyGo? Does Scheme -> Rust -> Protobuf -> Go -> MyGo
+introduce redundant glue or runtime latency?
+#+end_quote
+
+This ADR documents the first-principles justification for Scheme as Marlin's
+programmable composition plane, the exact performance boundary proving zero
+frame-rate tax, and four strict *anti-redundancy guardrails* prohibiting misuse.
+
+* 2. Four Irreducible Problems Solved by Scheme
+
+** 2.1 Collapsing M x N x K Combinatorial Explosion into M + N + K
+Marlin spans:
+- *M Surfaces*: Terminal TUI (=marlin-agent-tui=), Desktop GPU (=marlin-mygo=),
+  iOS Personal Assistant (Swift =//mygo:native=), Android (Kotlin), Remote Headless.
+- *N Profiles*: Coding Agent, Org Knowledge Workbench, iOS Personal Assistant,
+  Review Mode, Enterprise Restricted.
+- *K Policy Dimensions*: Meow/Hydra modal keymaps, Centaur tabs, hook conditions,
+  context budgets, and slot trust rules.
+
+Without a programmable pure-value composition plane, teams either duplicate
+imperative =if (target == iOS && mode == review ...)= state machines across Rust,
+Go, Swift, and Kotlin (drift guaranteed) or invent an untyped Turing-complete
+DSL inside TOML/JSON. Gerbil Scheme POO prototype inheritance (=.o (:: @ base) ...=,
+=.mix=) lets each surface/profile declare *only its delta overlay*, while every
+surface interprets the same bounded 13-primitive UI IR, =KeyTrie=, and =Slot= table.
+
+** 2.2 Safe Full Programmability Without Authority Escalation
+- *Rust / Go host edits* require recompiling/re-signing binaries (no runtime user
+  composition, no iOS App Store OTA updates, full host privileges).
+- *TS WebView / WASM plugins* are rightly confined inside isolated slot sandboxes
+  and must never govern global workbench chrome, restricted =approval.gate= slots,
+  or agent hook chains.
+- *Gerbil Scheme* executes as an effect-free, contract-validated composition plane
+  whose outputs cross a strict Rust typed admission gate. Users gain Emacs-grade
+  programmability with zero privilege escalation and 100% App Store compliance.
+
+** 2.3 Yuanxu Declaration Splitting -> Zero-Cost Lazy Marketplace
+=marlin-agent-core/scheme/ui/package.ss= separates static =catalog= declaration
+(=yuanxu-module-declaration=) from runtime =publication=. Installing 50 Marketplace
+plugins populates commands (=Cmd+K=), keybindings (=KeyTrie=), and slot metadata
+immediately with *0 running WebViews and 0 bytes of WASM linear memory* until a
+slot or command is explicitly activated.
+
+** 2.4 Control Plane vs. 120Hz Data Plane Separation (Zero Frame Tax)
+Scheme runs *only on low-frequency structural transitions* (profile switch,
+plugin install/unmount, focus/workbench topology change) via native Gambit/Gerbil
+C ABI vectors (zero text serialization). All 120Hz hot paths stay strictly inside
+=marlin-mygo='s pure-Go engine and runtimes:
+- =engine/arena= incremental Merkle Diff: *~163 ns/op, 0 allocs*
+- =engine/arena= pure theme restyle: *~14 ns/op, 0 allocs*
+- =engine/viewport= 100k-row Fenwick BIT scroll lookup: *~72 ns/op, 0 allocs*
+- =engine/input= compiled 3-key =KeyTrie= lookup: *~28 ns/op, 0 allocs*
+- =runtime/wazeroir= resident Go WASM-IR frame render: *~106 µs/op, 6.4 KB*
+
+* 3. Symmetric Target Extension (=scheme/ui-mygo= vs =scheme/ui-tui=)
+
+Just as =scheme/ui-tui/= publishes a terminal layout scope without embedding
+Ratatui calls into Scheme, =scheme/ui-mygo/= publishes pure-Scheme multi-pane
+desktop and mobile layout scopes plus =desktop= / =ios= / =android= profile
+overlays. Actual widget, GPU, WebView, and CSS variable projection lives strictly
+in =marlin-mygo/runtime/mygoshell/=.
+
+* 4. Four Strict Anti-Redundancy Guardrails
+
+To prevent Scheme from ever turning into redundant wrapper glue, four hard rules apply:
+
+1. *Never wrap MyGo widget APIs 1:1 in Scheme.*
+   Scheme emits semantic structure and policy (=panel=, =slot=, =tone: accent=,
+   =allow-untrusted: #f=, =profile: ios-personal=). Corner radius, elevation,
+   Metal/Vulkan shaders, animations, and WebView DOM layout belong exclusively to
+   =marlin-mygo=.
+2. *Never put Scheme on the 120Hz frame/scroll/drag hot path.*
+3. *Never replace simple typed TOML configuration with Scheme.*
+   Ports, Ed25519 trust keys, versions, and asset SHA-256 digests stay in typed TOML.
+4. *Never allow Scheme to execute side effects or manufacture Rust handlers.*
+   Authority, credentials, receipts, and native iOS/Android OS calls remain owned
+   by Rust (=marlin-agent-core=) and =runtime/device.Bridge=.
+
+* 5. One-Line Architectural Summary
+
+#+begin_quote
+Rust is the *Authority Kernel* (may this happen?), Gerbil Scheme is the
+*Programmable Composition & Policy Brain* (how does the workbench compose across
+surfaces and profiles?), MyGo is the *120Hz Presentation & Sandbox Engine* (render
+fast, native, and isolated), and TS/Go plugins are the *Hot-Pluggable Ecosystem*.
+#+end_quote

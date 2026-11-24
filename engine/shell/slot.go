@@ -29,6 +29,8 @@ type RenderContext struct {
 	Theme     schema.UITheme
 	TargetID  string
 	SessionID string
+	Facts     map[string]bool
+	Bindings  map[string]string
 }
 
 // HostEvent represents a mediated UI event routed from the shell to a slot.

@@ -25,9 +25,10 @@ func TestCanonicalProtosAndQuintSpecExistOnDisk(t *testing.T) {
 	}
 }
 
-func TestInitPluginScaffoldsAllRuntimesAndBlocksRestrictedSlots(t *testing.T) {
+func TestInitPluginKeygenPackAndVerifyEndToEnd(t *testing.T) {
+	tmp := t.TempDir()
 	for _, rt := range []string{"ts", "go-wasm", "declarative"} {
-		dir := filepath.Join(t.TempDir(), rt)
+		dir := filepath.Join(tmp, rt)
 		if err := runInitPlugin([]string{"-id", "acme.demo-" + rt, "-runtime", rt, "-slot", "workbench.main", "-out", dir}); err != nil {
 			t.Fatalf("init-plugin %s failed: %v", rt, err)
 		}
@@ -40,10 +41,32 @@ func TestInitPluginScaffoldsAllRuntimesAndBlocksRestrictedSlots(t *testing.T) {
 		}
 	}
 
-	if err := runInitPlugin([]string{"-id", "unnamespaced", "-out", t.TempDir()}); err == nil {
+	// End-to-end keygen -> pack -> verify on scaffolded TS plugin.
+	keyPrefix := filepath.Join(tmp, "keys", "acme")
+	if err := runKeygen([]string{"-out", keyPrefix}); err != nil {
+		t.Fatalf("keygen failed: %v", err)
+	}
+	pkgPath := filepath.Join(tmp, "acme-demo-ts.marlinpkg")
+	if err := runPack([]string{
+		"-dir", filepath.Join(tmp, "ts"),
+		"-publisher", "acme.dev",
+		"-key", keyPrefix + ".key",
+		"-out", pkgPath,
+	}); err != nil {
+		t.Fatalf("pack failed: %v", err)
+	}
+	if err := runVerify([]string{
+		"-pkg", pkgPath,
+		"-publisher", "acme.dev",
+		"-pub", keyPrefix + ".pub",
+	}); err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+
+	if err := runInitPlugin([]string{"-id", "unnamespaced", "-out", filepath.Join(tmp, "bad1")}); err == nil {
 		t.Fatal("expected error for non-namespaced plugin ID")
 	}
-	if err := runInitPlugin([]string{"-id", "acme.evil", "-slot", "approval.gate", "-out", t.TempDir()}); err == nil {
+	if err := runInitPlugin([]string{"-id", "acme.evil", "-slot", "approval.gate", "-out", filepath.Join(tmp, "bad2")}); err == nil {
 		t.Fatal("expected error when targeting host-restricted approval.gate slot")
 	}
 }

@@ -35,11 +35,12 @@ jobs:
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 
-      - name: Verify Protobuf lint, FileDescriptorSet, and zero stub drift
+      - name: Verify Protobuf lint, FileDescriptorSet, Go stubs, and TS wire types zero drift
         run: |
           CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool descriptor
           CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen
-          git diff --exit-code -- gen/
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen-ts
+          git diff --exit-code -- gen/ packages/panel-sdk/src/generated/
 
   formal-security-quint:
     name: Quint Formal Adversarial Security Gate
@@ -81,10 +82,11 @@ jobs:
       - name: Run Go race detector on concurrent engine & security planes
         run: go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device
 
-      - name: Run native Go fuzz smoke tests on protocol, schema, arena & input boundaries
+      - name: Run native Go fuzz smoke tests on protocol, schema, drawlist, arena & input boundaries
         run: |
           CGO_ENABLED=0 go test -fuzz=FuzzValidateDotIdentifier -fuzztime=3s ./pkg/schema
           CGO_ENABLED=0 go test -fuzz=FuzzParseSubmissionID -fuzztime=3s ./pkg/schema
+          CGO_ENABLED=0 go test -fuzz=FuzzDecodeDrawList -fuzztime=3s ./pkg/schema
           CGO_ENABLED=0 go test -fuzz=FuzzArenaCompileAndDiff -fuzztime=3s ./engine/arena
           CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime=3s ./engine/input
           CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime=3s ./runtime/pluginhost

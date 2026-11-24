@@ -12,6 +12,11 @@ proto-descriptor:
 # Lint and generate Go protobuf + gRPC stubs under gen/ via Go tool.
 proto-gen:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen-ts
+
+# Generate TypeScript wire types from compiled FileDescriptorSet.
+proto-gen-ts:
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen-ts
 
 # Verify marlin.app.v1 compatibility against a local marlin-agent-core checkout.
 proto-compat core="../..":
@@ -30,10 +35,11 @@ test-go:
     CGO_ENABLED=0 go test ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
     go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device
 
-# Run short smoke fuzzing across protocol, schema, arena, and input boundaries.
+# Run short smoke fuzzing across protocol, schema, drawlist, arena, and input boundaries.
 fuzz-smoke time="2s":
     CGO_ENABLED=0 go test -fuzz=FuzzValidateDotIdentifier -fuzztime={{time}} ./pkg/schema
     CGO_ENABLED=0 go test -fuzz=FuzzParseSubmissionID -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -fuzz=FuzzDecodeDrawList -fuzztime={{time}} ./pkg/schema
     CGO_ENABLED=0 go test -fuzz=FuzzArenaCompileAndDiff -fuzztime={{time}} ./engine/arena
     CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime={{time}} ./engine/input
     CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost

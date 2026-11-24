@@ -12,15 +12,18 @@ import (
 )
 
 // WasmUIABIVersion identifies the zero-cgo wazero host/guest ABI contract for
-// Go/Rust/Zig wasip1 plugins emitting marlin.ui.v1 / schema.UIElement trees.
+// Go/Rust/Zig wasip1 plugins emitting marlin.ui.v1 / schema.UIElement trees
+// or high-frequency zero-JSON binary DrawList buffers.
 const (
-	WasmUIABIVersion       = 1
-	WasmDefaultMemoryPages = 256 // 16 MiB linear memory ceiling per plugin
-	WasmExportAlloc        = "marlin_alloc"
-	WasmExportOnEvent      = "marlin_ui_on_event"
-	WasmExportRender       = "marlin_ui_render"
-	WasmHostModule         = "marlin_host_v1"
-	WasmHostEmitAction     = "emit_action"
+	WasmUIABIVersion         = 1
+	WasmDefaultMemoryPages   = 256 // 16 MiB linear memory ceiling per plugin
+	WasmMaxEventBytes        = 64 << 10
+	WasmExportAlloc          = "marlin_alloc"
+	WasmExportOnEvent        = "marlin_ui_on_event"
+	WasmExportRender         = "marlin_ui_render"
+	WasmExportRenderDrawList = "marlin_ui_render_drawlist"
+	WasmHostModule           = "marlin_host_v1"
+	WasmHostEmitAction       = "emit_action"
 )
 
 // WasmIRGuest abstracts a sandboxed WASM-IR instance (implemented over wazero
