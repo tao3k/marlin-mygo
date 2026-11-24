@@ -59,8 +59,8 @@ jobs:
       - name: Install Quint formal model checker
         run: npm install -g @informalsystems/quint
 
-      - name: Run Pure-Go Quint model-gate (safe + 7 adversarial negative controls)
-        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate
+      - name: Run Pure-Go Quint model-gate (safe + 7 adversarial negative controls, offline TS backend)
+        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate -backend=typescript -samples=500
 
   go-engine-race-and-fuzz:
     name: Go Engine Tests, Race, Fuzz & Zero-CGO Build (${{ matrix.os }})

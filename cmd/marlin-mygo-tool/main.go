@@ -184,6 +184,7 @@ func runModelGate(args []string) error {
 	samples := fs.Int("samples", 1000, "number of random simulation traces for safe model")
 	steps := fs.Int("steps", 25, "max steps per simulation trace")
 	seed := fs.Int("seed", 42, "deterministic simulation PRNG seed")
+	backend := fs.String("backend", "rust", "quint simulator backend: rust | typescript")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,17 +201,18 @@ func runModelGate(args []string) error {
 		return fmt.Errorf("typecheck failed: %w\n%s", err, string(out))
 	}
 
-	fmt.Printf("[2/4] quint test --main=frontendPluginSecurity %s\n", *specPath)
-	if out, err := exec.Command(quintBin, "test", "--main=frontendPluginSecurity", *specPath).CombinedOutput(); err != nil {
+	fmt.Printf("[2/4] quint test --main=frontendPluginSecurity --backend=%s %s\n", *backend, *specPath)
+	if out, err := exec.Command(quintBin, "test", "--main=frontendPluginSecurity", "--backend="+*backend, *specPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("quint test failed: %w\n%s", err, string(out))
 	} else {
 		fmt.Print(string(out))
 	}
 
-	fmt.Printf("[3/4] quint run (%d samples x %d steps, invariant=safe)\n", *samples, *steps)
+	fmt.Printf("[3/4] quint run (%d samples x %d steps, backend=%s, invariant=safe)\n", *samples, *steps, *backend)
 	runCmd := exec.Command(
 		quintBin, "run",
 		"--main=frontendPluginSecurity",
+		"--backend="+*backend,
 		"--seed="+strconv.Itoa(*seed),
 		"--max-samples="+strconv.Itoa(*samples),
 		"--max-steps="+strconv.Itoa(*steps),
@@ -233,6 +235,7 @@ func runModelGate(args []string) error {
 		negCmd := exec.Command(
 			quintBin, "run",
 			"--main=frontendPluginSecurity",
+			"--backend="+*backend,
 			"--seed="+strconv.Itoa(*seed),
 			"--max-samples=300",
 			"--max-steps="+strconv.Itoa(*steps),
