@@ -42,6 +42,7 @@ type AdaptiveShellConfig struct {
 	Workbench        *shell.WorkbenchController
 	Projection       *ProjectionController
 	Auth             *AuthController
+	Notifications    *NotificationController
 	OnThemeChange    func(DerivedTheme)
 }
 
@@ -76,6 +77,9 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	if cfg.Projection == nil {
 		cfg.Projection = NewProjectionController(ProjectionSnapshot{})
 	}
+	if cfg.Notifications == nil {
+		cfg.Notifications = NewNotificationController(nil)
+	}
 	if cfg.CompactThreshold <= 0 {
 		cfg.CompactThreshold = DefaultCompactBreakpoint
 	}
@@ -109,6 +113,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	desktop.Transcript = transcript
 	desktop.Projection = cfg.Projection
 	desktop.Auth = cfg.Auth
+	desktop.Notifications = cfg.Notifications
 	desktop.Windows = tree
 	desktop.WindowBuffers = []shell.PaneBuffer{bufMain, bufSecondary, bufChat, bufProj, bufDock}
 	desktop.OnSelectPerspective = func(name string) {

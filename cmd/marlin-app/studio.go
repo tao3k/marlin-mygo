@@ -24,6 +24,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/marketplace"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -124,6 +125,22 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			stopLiveSession = wireLiveSession(ctx, cfg, conn.provider, wb, federation, host, app, transcript, win, fireHook, publishProjection)
 		} else {
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
+		}
+		if app.Notifications != nil {
+			app.Notifications.OnChanged = win.Invalidate
+			app.Notifications.Center.SetActionHandler(func(_ notify.Item, actionID string) {
+				switch actionID {
+				case "open-auth":
+					app.OpenAuth()
+				case "review-gate":
+					app.HandleActiveKeyToken("SPC")
+				case "unlock-vault":
+					if app.Auth != nil {
+						app.Auth.ToggleVaultLock()
+					}
+				}
+				win.Invalidate()
+			})
 		}
 		if app.Auth != nil && app.Auth.Manager != nil {
 			app.Auth.OnChanged = win.Invalidate
@@ -277,8 +294,18 @@ func buildWorkbenchApp(
 		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
 	}
 	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
+	notifyCenter := notify.NewCenter(notify.CenterConfig{})
+	notifyCtrl := mygoshell.NewNotificationController(notifyCenter)
+	app.Notifications = notifyCtrl
+
 	if restored, rErr := authMgr.RestoreFromVault(ctx); rErr == nil && restored > 0 {
 		log.Printf("rehydrated %d signed-in account(s) from %s", restored, vaultInfo.BackendName)
+		_, _ = notifyCenter.Publish(notify.NotificationSpec{
+			Severity: notify.SeveritySuccess,
+			Source:   notify.SourceAuth,
+			Title:    fmt.Sprintf("Restored %d signed-in account(s)", restored),
+			Message:  fmt.Sprintf("Unlocked via %s (%s)", vaultInfo.BackendName, vaultInfo.CipherSuite),
+		})
 	}
 	authCtrl := mygoshell.NewAuthController(authMgr)
 	authCtrl.VaultInfo = vaultInfo
@@ -350,6 +377,7 @@ func buildWorkbenchApp(
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
 		{Name: "workbench.open-marketplace", Description: "Open Tier-0 built-in Marketplace drawer"},
 		{Name: "studio.open-auth", Description: "Open Tier-0 Account & OAuth Sign-In Center"},
+		{Name: "studio.open-notifications", Description: "Open Tier-0 Notifications & Activity Center"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}

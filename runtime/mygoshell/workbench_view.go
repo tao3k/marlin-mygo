@@ -63,6 +63,9 @@ type WorkbenchApp struct {
 	// Optional Tier-0 Host GPU Authentication & Account Center modal (OAuth 2.1 PKCE / Email).
 	Auth *AuthController
 
+	// Optional Tier-0 Host Notification Toast Stack & Activity Center modal.
+	Notifications *NotificationController
+
 	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
 	Projection *ProjectionController
 
@@ -105,6 +108,7 @@ type WorkbenchApp struct {
 	bufferPickerQuery string
 	marketplaceOpen   bool
 	authOpen          bool
+	activityOpen      bool
 	settingsOpen      bool
 	projectionOpen    bool
 	addRemoteOpen     bool
@@ -278,6 +282,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.marketplaceOpen = true
 	case "studio.open-auth":
 		a.OpenAuth()
+	case "studio.open-notifications":
+		a.OpenActivityCenter()
 	case shell.CmdStudioOpenProjection:
 		a.projectionOpen = true
 	case shell.CmdStudioOpenPalette:
@@ -610,6 +616,15 @@ func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedThe
 				a.bufferPickerQuery = ""
 			}
 		}
+		if a.Notifications != nil {
+			bellVar := BtnGlass
+			if a.Notifications.Center != nil && a.Notifications.Center.Snapshot().AlertCount > 0 {
+				bellVar = BtnTinted
+			}
+			if ApplePillButton(c, "status-activity", a.Notifications.BellLabel(), bellVar, dt, a.Notifications.BellIcon(), true).Clicked() {
+				a.OpenActivityCenter()
+			}
+		}
 		if a.KeyTrie != nil {
 			mode := a.ActiveKeyMode()
 			modeLbl := "NORMAL · SPC"
@@ -823,6 +838,25 @@ func (a *WorkbenchApp) OpenAuth() {
 
 // IsAuthOpen reports whether the Tier-0 Host Auth modal is currently visible.
 func (a *WorkbenchApp) IsAuthOpen() bool { return a.authOpen }
+
+// OpenActivityCenter opens the Tier-0 Notification & Activity Center modal.
+func (a *WorkbenchApp) OpenActivityCenter() {
+	if a.Notifications == nil {
+		return
+	}
+	a.activityOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.marketplaceOpen = false
+	a.authOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
+// IsActivityCenterOpen reports whether the Tier-0 Activity Center modal is open.
+func (a *WorkbenchApp) IsActivityCenterOpen() bool { return a.activityOpen }
 
 // ToggleSidebar collapses or expands the persistent left navigation sidebar
 // (`Cmd+B` / `SPC w B`) to reclaim 228px of split workspace width on demand.
@@ -1149,6 +1183,15 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		ui.Modal(c, &a.authOpen, func() {
 			a.Auth.Render(c, t, dt, func() {
 				a.authOpen = false
+			})
+		})
+	}
+
+	if a.Notifications != nil {
+		a.Notifications.RenderFloatingToasts(c, dt)
+		ui.Modal(c, &a.activityOpen, func() {
+			a.Notifications.RenderActivityCenter(c, t, dt, func() {
+				a.activityOpen = false
 			})
 		})
 	}
