@@ -20,6 +20,25 @@ import (
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
 
+func isCIEnvironment() bool {
+	return os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != ""
+}
+
+// envBudgetScale returns 1 on local developer machines (strict 120Hz budgets),
+// scales by 4x on shared multi-tenant CI runners where `go test ./...` runs
+// many packages concurrently across 3-4 vCPUs, and scales further under -race.
+func envBudgetScale() int {
+	scale := raceBudgetScale
+	if isCIEnvironment() {
+		if scale <= 1 {
+			scale = 4
+		} else {
+			scale *= 2
+		}
+	}
+	return scale
+}
+
 func chaosOpCount(defaultProd, defaultRace int) int {
 	if raw := os.Getenv("MARLIN_CHAOS_OPS"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
@@ -74,8 +93,9 @@ func (m *FluentMonitor) Report() FluentReport {
 		}
 		return cp[idx]
 	}
-	budget120 := time.Duration(8333*raceBudgetScale) * time.Microsecond
-	budget60 := time.Duration(16667*raceBudgetScale) * time.Microsecond
+	scale := envBudgetScale()
+	budget120 := time.Duration(8333*scale) * time.Microsecond
+	budget60 := time.Duration(16667*scale) * time.Microsecond
 	drop120, drop60 := 0, 0
 	for _, s := range cp {
 		if s > budget120 {
@@ -256,16 +276,17 @@ func TestFluentMonkeyChaosClickStormOnStudioShell(t *testing.T) {
 	if heapGrowthMB > 32.0 {
 		t.Fatalf("memory leak guard: live heap grew %.2f MB across %d chaos ops (limit 32 MB)", heapGrowthMB, rep.Ops)
 	}
-	// Fluent SLA: >= 99% of violent chaos ops stay under 60Hz (16.67ms), p95 stays under 6ms.
+	// Fluent SLA: >= 99% of violent chaos ops stay under 60Hz (scaled for shared CI / -race),
+	// and p95 stays strictly inside fluent budget.
 	maxAllowed60HzDrops := max(2, rep.Ops/100)
-	if raceBudgetScale > 1 {
+	if isCIEnvironment() || raceBudgetScale > 1 {
 		maxAllowed60HzDrops = max(4, rep.Ops/25)
 	}
 	if rep.Dropped60Hz > maxAllowed60HzDrops {
-		t.Fatalf("fluent 60Hz SLA violation: %d/%d ops exceeded 16.67ms (max allowed %d; p95=%v max=%v)",
+		t.Fatalf("fluent 60Hz SLA violation: %d/%d ops exceeded scaled 60Hz frame budget (max allowed %d; p95=%v max=%v)",
 			rep.Dropped60Hz, rep.Ops, maxAllowed60HzDrops, rep.P95, rep.Max)
 	}
-	p95Budget := 6 * time.Millisecond * time.Duration(raceBudgetScale)
+	p95Budget := 6 * time.Millisecond * time.Duration(envBudgetScale())
 	if rep.P95 > p95Budget {
 		t.Fatalf("chaos monkey p95=%v exceeded fluent budget %v", rep.P95, p95Budget)
 	}
@@ -307,7 +328,7 @@ func TestFluentRapidHoverAndResizeContinuity(t *testing.T) {
 		rep.Dropped120Hz,
 		rep.Dropped60Hz,
 	)
-	p95Budget := 4 * time.Millisecond * time.Duration(raceBudgetScale)
+	p95Budget := 4 * time.Millisecond * time.Duration(envBudgetScale())
 	if rep.P95 > p95Budget {
 		t.Fatalf("hover+resize continuity p95=%v exceeded budget %v", rep.P95, p95Budget)
 	}

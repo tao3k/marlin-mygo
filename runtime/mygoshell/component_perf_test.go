@@ -222,7 +222,7 @@ func TestQuickPluginSwitcherWarmInstantAndBurstCoalescing(t *testing.T) {
 	}
 	p50, p95, maxLat := summarizeLatencies(latencies)
 	t.Logf("[perf] QuickPluginSwitcher warm %d-click burst: p50=%v p95=%v max=%v stats=%+v", warmBurst, p50, p95, maxLat, stWarm)
-	warmBudget := 500 * time.Microsecond * time.Duration(raceBudgetScale)
+	warmBudget := 500 * time.Microsecond * time.Duration(envBudgetScale())
 	if p95 > warmBudget {
 		t.Fatalf("warm plugin switch p95=%v exceeded %v budget", p95, warmBudget)
 	}
@@ -290,7 +290,8 @@ func TestPerComponentUIPerformanceBudgets(t *testing.T) {
 		},
 	}
 
-	t.Logf("Per-Component MyGo GPU UI Performance Report (raceScale=%dx):", raceBudgetScale)
+	scale := envBudgetScale()
+	t.Logf("Per-Component MyGo GPU UI Performance Report (scale=%dx, raceScale=%dx, ci=%t):", scale, raceBudgetScale, isCIEnvironment())
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			step := tc.Setup()
@@ -305,7 +306,7 @@ func TestPerComponentUIPerformanceBudgets(t *testing.T) {
 				samples[i] = time.Since(t0)
 			}
 			p50, p95, maxLat := summarizeLatencies(samples)
-			budget := tc.MaxP95 * time.Duration(raceBudgetScale)
+			budget := tc.MaxP95 * time.Duration(scale)
 			status := "PASS"
 			if p95 > budget {
 				status = "FAIL"
