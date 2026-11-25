@@ -96,104 +96,17 @@ func prepareShowcaseCatalog(ctx context.Context) (catalogDir, pubKeyFile string,
 	return tmpDir, pubPath, clean, nil
 }
 
-type showcaseGitFile struct {
-	Path        string `json:"path"`
-	State       string `json:"state"`
-	Additions   int    `json:"additions"`
-	Deletions   int    `json:"deletions"`
-	HunkSummary string `json:"hunkSummary"`
-}
-
-type showcaseGitHubItem struct {
-	Number          int      `json:"number"`
-	Kind            string   `json:"kind"`
-	Title           string   `json:"title"`
-	Author          string   `json:"author"`
-	Branch          string   `json:"branch,omitempty"`
-	ReviewRequested bool     `json:"reviewRequested"`
-	CIState         string   `json:"ciState"`
-	Labels          []string `json:"labels"`
-	UpdatedAgo      string   `json:"updatedAgo"`
-}
-
-// showcaseDispatcher wires live bidirectional cross-runtime linkage during
-// `-showcase`: actions submitted by a React 19 WebView (e.g. `org.clock.in`,
-// `git.file.stage`, `github.pr.checkout`, `workflow.gate.focus`) immediately
-// update sibling Git/GitHub panels, the Go WASI GPU Focus Clock reactor, or
-// open the Tier-0 Host Approval Gate floating overlay!
+// showcaseDispatcher is a thin demo-only ActionDispatcher used when no live
+// Rust gRPC backend (-host/-sidecar) is attached. Real sessions forward all
+// panel actions directly over gRPC to the Rust backend without UI-side state.
 type showcaseDispatcher struct {
 	mu           sync.Mutex
 	host         *pluginhost.Host
 	app          *mygoshell.WorkbenchApp
 	win          *mygo.Window
-	repo         RepoContext
-	gitFiles     []showcaseGitFile
-	ghItems      []showcaseGitHubItem
 	clockRunning bool
 	activeTitle  string
 	evSeq        atomic.Uint64
-}
-
-func newShowcaseDispatcher(repo RepoContext) *showcaseDispatcher {
-	return &showcaseDispatcher{
-		repo: repo,
-		gitFiles: []showcaseGitFile{
-			{Path: "control/marketplace/official_sync.go", State: "staged", Additions: 214, Deletions: 0, HunkSummary: "ValidateOfficialRegistryURL + ParseThemePackTOML"},
-			{Path: "runtime/mygoshell/marketplace_view.go", State: "modified", Additions: 132, Deletions: 18, HunkSummary: "3-stream Plugins | Themes | Layouts switcher"},
-			{Path: "engine/shell/keymap_profile.go", State: "untracked", Additions: 64, Deletions: 0, HunkSummary: "Dual-modal SPC Normal & Emacs Insert Which-Key HUD"},
-		},
-		ghItems: []showcaseGitHubItem{
-			{Number: 1, Kind: "pr", Title: "High-performance modular Marlin MyGo UI engine & plugin ecosystem", Author: "tao3k", Branch: repo.Branch, ReviewRequested: true, CIState: "passing", Labels: []string{"ui-engine", "marketplace"}, UpdatedAgo: "just now"},
-			{Number: 12, Kind: "pr", Title: "Official UI Marketplace 3-stream sync (Plugins, Themes, Emacs Layouts)", Author: "tao3k", Branch: "feat/official-marketplace-sync", ReviewRequested: true, CIState: "running", Labels: []string{"marketplace", "security"}, UpdatedAgo: "5m ago"},
-			{Number: 24, Kind: "issue", Title: "Community submission: Diff & Blame gutter lens for Git Workbench", Author: "community-dev", ReviewRequested: false, CIState: "none", Labels: []string{"community-plugin"}, UpdatedAgo: "42m ago"},
-		},
-	}
-}
-
-func (d *showcaseDispatcher) SetRepoURL(raw string) error {
-	rc, err := NormalizeRepoURL(raw)
-	if err != nil {
-		return err
-	}
-	d.mu.Lock()
-	if d.repo.Branch != "" {
-		rc.Branch = d.repo.Branch
-	}
-	d.repo = rc
-	d.mu.Unlock()
-	d.publishRepoProjections()
-	return nil
-}
-
-func (d *showcaseDispatcher) RepoContext() RepoContext {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.repo
-}
-
-func (d *showcaseDispatcher) publishRepoProjections() {
-	d.mu.Lock()
-	repo := d.repo
-	files := append([]showcaseGitFile(nil), d.gitFiles...)
-	items := append([]showcaseGitHubItem(nil), d.ghItems...)
-	d.mu.Unlock()
-
-	d.publishTopic("git.status", map[string]any{
-		"repoName":       repo.RepoSlug,
-		"repoUrl":        repo.WebURL,
-		"branch":         repo.Branch,
-		"upstream":       "origin/" + repo.Branch,
-		"ahead":          1,
-		"behind":         0,
-		"recentBranches": []string{repo.Branch, "main"},
-		"changes":        files,
-	})
-	d.publishTopic("github.workspace", map[string]any{
-		"repo":          repo.RepoSlug,
-		"repoUrl":       repo.WebURL,
-		"defaultBranch": "main",
-		"items":         items,
-	})
 }
 
 func (d *showcaseDispatcher) attach(host *pluginhost.Host, app *mygoshell.WorkbenchApp, win *mygo.Window) {
@@ -288,94 +201,6 @@ func (d *showcaseDispatcher) SubmitScopedPanelAction(_ context.Context, req plug
 				w.Invalidate()
 			}
 		}
-
-	case "git.repo.connect", "github.repo.connect":
-		rawURL, _ := body["repoUrl"].(string)
-		if err := d.SetRepoURL(rawURL); err != nil {
-			return pluginhost.ScopedActionReceipt{
-				Admitted:  false,
-				ReceiptID: fmt.Sprintf("rcpt-showcase-%d", d.evSeq.Add(1)),
-				Result:    json.RawMessage(fmt.Sprintf(`{"error":%q}`, err.Error())),
-			}, err
-		}
-		go d.publishTopic("org.clock", map[string]any{
-			"schemaVersion": 1,
-			"quickNote":     "Connected repo: " + d.RepoContext().RepoSlug,
-		})
-
-	case "git.file.stage":
-		targetPath, _ := body["path"].(string)
-		d.mu.Lock()
-		for i := range d.gitFiles {
-			if d.gitFiles[i].Path == targetPath {
-				d.gitFiles[i].State = "staged"
-			}
-		}
-		d.mu.Unlock()
-		go d.publishRepoProjections()
-
-	case "git.file.unstage":
-		targetPath, _ := body["path"].(string)
-		d.mu.Lock()
-		for i := range d.gitFiles {
-			if d.gitFiles[i].Path == targetPath {
-				d.gitFiles[i].State = "modified"
-			}
-		}
-		d.mu.Unlock()
-		go d.publishRepoProjections()
-
-	case "git.commit.create":
-		msg, _ := body["message"].(string)
-		d.mu.Lock()
-		remaining := d.gitFiles[:0]
-		for _, f := range d.gitFiles {
-			if f.State != "staged" {
-				remaining = append(remaining, f)
-			}
-		}
-		d.gitFiles = remaining
-		d.mu.Unlock()
-		go d.publishRepoProjections()
-		go d.publishTopic("org.clock", map[string]any{
-			"schemaVersion": 1,
-			"quickNote":     "Git commit queued: " + msg,
-		})
-
-	case "git.branch.checkout", "github.pr.checkout":
-		br, _ := body["branch"].(string)
-		if br != "" {
-			d.mu.Lock()
-			d.repo.Branch = br
-			d.mu.Unlock()
-			go d.publishRepoProjections()
-			go d.publishTopic("org.clock", map[string]any{
-				"schemaVersion": 1,
-				"quickNote":     "Checked out branch: " + br,
-			})
-		}
-
-	case "github.checks.rerun":
-		prNum, _ := body["pr"].(float64)
-		d.mu.Lock()
-		for i := range d.ghItems {
-			if d.ghItems[i].Number == int(prNum) {
-				d.ghItems[i].CIState = "running"
-			}
-		}
-		d.mu.Unlock()
-		go d.publishRepoProjections()
-
-	case "github.pr.review":
-		prNum, _ := body["pr"].(float64)
-		d.mu.Lock()
-		for i := range d.ghItems {
-			if d.ghItems[i].Number == int(prNum) {
-				d.ghItems[i].ReviewRequested = false
-			}
-		}
-		d.mu.Unlock()
-		go d.publishRepoProjections()
 	}
 
 	return pluginhost.ScopedActionReceipt{

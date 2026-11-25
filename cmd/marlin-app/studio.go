@@ -53,9 +53,8 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	var showcaseDisp *showcaseDispatcher
 	var dispatcher pluginhost.ActionDispatcher = demoDispatcher{}
-	repoCtx := detectInitialRepoContext(cfg.repoURL)
 	if cfg.showcase {
-		showcaseDisp = newShowcaseDispatcher(repoCtx)
+		showcaseDisp = &showcaseDispatcher{}
 		dispatcher = showcaseDisp
 	}
 
@@ -379,7 +378,6 @@ func mountShowcaseStudio(
 		if _, err := lazySess.InstallOrUpgrade(ctx, "tao3k.focus-clock-reactor"); err != nil {
 			log.Printf("[showcase] mount inspector focus-clock failed: %v", err)
 		}
-		showcaseDisp.publishRepoProjections()
 		syncMarketplace()
 		win.Invalidate()
 	}()
