@@ -8,12 +8,26 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
+
+// LazyProfilerSummary projects real-time LazyLoader telemetry into the Tier-0
+// Marketplace header (inspired by lazy.nvim's `:Lazy` profiler strip).
+type LazyProfilerSummary struct {
+	TotalDeclared     int
+	ActiveCount       int
+	DormantCount      int
+	MaxActiveLazy     int
+	TotalWakes        uint64
+	TotalReaped       uint64
+	TotalEvicted      uint64
+	ReconcileDuration time.Duration
+}
 
 // MarketplaceItem projects a cryptographically verified Marketplace plugin
 // entry and its live host lifecycle state into the Tier-0 GPU Marketplace drawer.
@@ -36,6 +50,7 @@ type MarketplaceItem struct {
 	InstalledVersion string
 	PreviousVersion  string
 	ActiveGeneration uint64
+	LastWakeDuration time.Duration
 	HealthState      string // "HEALTHY", "BREAKER_OPEN", "HOT_RELOADING", "DORMANT", "IDLE"
 	LastMessage      string
 
@@ -79,7 +94,11 @@ func (it *MarketplaceItem) refreshLabels() {
 		if health == "" {
 			health = "HEALTHY"
 		}
-		it.healthBadge = fmt.Sprintf("ACTIVE v%s · gen:%d · %s", it.InstalledVersion, it.ActiveGeneration, health)
+		if it.LastWakeDuration > 0 {
+			it.healthBadge = fmt.Sprintf("ACTIVE v%s · gen:%d · wake:%s · %s", it.InstalledVersion, it.ActiveGeneration, formatDurationCompact(it.LastWakeDuration), health)
+		} else {
+			it.healthBadge = fmt.Sprintf("ACTIVE v%s · gen:%d · %s", it.InstalledVersion, it.ActiveGeneration, health)
+		}
 	} else {
 		it.healthBadge = "NOT INSTALLED"
 	}
@@ -109,6 +128,7 @@ type MarketplaceController struct {
 	runtimeFilter schema.PanelRuntimeKind // empty = All
 	statusBanner  string
 	statusIsErr   bool
+	profilerLine  string
 
 	// Reused scratch slices to avoid per-frame allocations.
 	renderMu      sync.Mutex
@@ -228,6 +248,26 @@ func (m *MarketplaceController) SetStatus(msg string, isErr bool) {
 	m.mu.Unlock()
 }
 
+// SetProfilerSummary precomputes the live lazy-loader profiler strip rendered in
+// the Tier-0 Marketplace drawer (zero per-frame string formatting).
+func (m *MarketplaceController) SetProfilerSummary(s LazyProfilerSummary) {
+	line := fmt.Sprintf("Lazy Engine: %d active / %d dormant (0MB RAM) · LRU cap:%d · wakes:%d · reaped:%d · evicted:%d · startup:%s",
+		s.ActiveCount, s.DormantCount, s.MaxActiveLazy, s.TotalWakes, s.TotalReaped, s.TotalEvicted, formatDurationCompact(s.ReconcileDuration))
+	m.mu.Lock()
+	m.profilerLine = line
+	m.mu.Unlock()
+}
+
+func formatDurationCompact(d time.Duration) string {
+	if d <= 0 {
+		return "0ms"
+	}
+	if d < time.Millisecond {
+		return fmt.Sprintf("%.1fus", float64(d.Nanoseconds())/1000.0)
+	}
+	return fmt.Sprintf("%.2fms", float64(d.Microseconds())/1000.0)
+}
+
 // Render paints the built-in Tier-0 Marketplace drawer onto MyGo's GPU scene graph.
 func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func()) {
 	m.renderMu.Lock()
@@ -238,6 +278,7 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 	rtFilter := m.runtimeFilter
 	statusMsg := m.statusBanner
 	statusErr := m.statusIsErr
+	profilerLine := m.profilerLine
 	m.renderItems = append(m.renderItems[:0], m.items...)
 	m.mu.RUnlock()
 
@@ -305,6 +346,10 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 
 		ui.Text(c, "Ed25519-verified catalog & hot-plug lifecycle rendered inside the trusted host GPU plane.").
 			FontSize(12).TextColor(t.TextMuted)
+
+		if profilerLine != "" {
+			ui.Text(c, profilerLine).FontSize(11).Bold().TextColor(t.Accent)
+		}
 
 		// Zero-alloc fuzzy search + runtime filter chips.
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {

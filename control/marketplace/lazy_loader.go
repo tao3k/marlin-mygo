@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,7 +72,43 @@ type LazyPluginStatus struct {
 	ActiveGeneration uint64
 	WakeCount        uint64
 	EvictCount       uint64
+	LastWakeDuration time.Duration
 	LastUsed         time.Time
+}
+
+// LazyLoaderStats summarizes real-time lazy-loader profiler metrics (inspired by
+// lazy.nvim's `:Lazy profile` and Emacs `use-package-compute-statistics`).
+type LazyLoaderStats struct {
+	TotalDeclared         int
+	ActiveCount           int
+	DormantCount          int
+	DisabledCount         int
+	MaxActiveLazy         int
+	TotalWakes            uint64
+	TotalReaped           uint64
+	TotalEvicted          uint64
+	LastReconcileDuration time.Duration
+}
+
+// LoadProfileFile reads and parses a declarative marlin-plugins.toml lockfile.
+// If the file does not exist yet, it returns an empty schema v1 profile.
+func LoadProfileFile(path string) (*PluginProfile, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &PluginProfile{SchemaVersion: 1}, nil
+		}
+		return nil, err
+	}
+	return ParsePluginProfileTOML(raw)
+}
+
+// SaveProfileFile atomically persists p as a deterministic marlin-plugins.toml lockfile.
+func SaveProfileFile(path string, p PluginProfile) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, MarshalPluginProfileTOML(p), 0o644)
 }
 
 // ParsePluginProfileTOML parses a declarative Emacs-style marlin-plugins.toml
@@ -300,13 +338,14 @@ type LazyLoaderConfig struct {
 }
 
 type lazyEntry struct {
-	spec       PluginSpec
-	state      LazyState
-	activeFlag atomic.Bool // lock-free fast-path probe for hot-path dispatch
-	activeGen  uint64
-	wakeCount  uint64
-	evictCount uint64
-	lastUsed   time.Time
+	spec        PluginSpec
+	state       LazyState
+	activeFlag  atomic.Bool // lock-free fast-path probe for hot-path dispatch
+	activeGen   uint64
+	wakeCount   uint64
+	evictCount  uint64
+	lastWakeDur time.Duration
+	lastUsed    time.Time
 
 	// Intrusive doubly-linked LRU pointers (only linked while active & evictable).
 	inLRU   bool
@@ -349,6 +388,12 @@ type LazyLoader struct {
 	lruCount int
 	// Earliest idle expiry hint (unix nano) for O(1) zero-alloc ReapIdle fast-path.
 	minIdleUnloadSec atomic.Uint32
+
+	// Live profiler counters (updated only on cold Wake/Reap/Evict/Reconcile).
+	totalWakes       uint64
+	totalReaped      uint64
+	totalEvicted     uint64
+	lastReconcileDur time.Duration
 }
 
 func NewLazyLoader(cfg LazyLoaderConfig) (*LazyLoader, error) {
@@ -377,6 +422,7 @@ func NewLazyLoader(cfg LazyLoaderConfig) (*LazyLoader, error) {
 //   - Eager plugins activate immediately;
 //   - Trigger & hook lookup tables are atomically swapped as an immutable COW snapshot.
 func (l *LazyLoader) Reconcile(ctx context.Context, profile PluginProfile) error {
+	reconcileStart := time.Now()
 	desired := make(map[schema.PluginID]PluginSpec, len(profile.Plugins))
 	for _, sp := range profile.Plugins {
 		if _, err := schema.ParsePluginID(string(sp.PluginID)); err != nil {
@@ -455,7 +501,87 @@ func (l *LazyLoader) Reconcile(ctx context.Context, profile PluginProfile) error
 			return err
 		}
 	}
+	l.mu.Lock()
+	l.lastReconcileDur = time.Since(reconcileStart)
+	l.mu.Unlock()
 	return nil
+}
+
+// UpsertSpec inserts or updates one plugin specification in the live lazy index,
+// atomically publishes a fresh COW trigger table, and optionally wakes/reloads it.
+func (l *LazyLoader) UpsertSpec(ctx context.Context, sp PluginSpec, wakeNow bool) (*InstalledPanel, error) {
+	if _, err := schema.ParsePluginID(string(sp.PluginID)); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProfileInvalid, err)
+	}
+	if sp.Activation == "" {
+		sp.Activation = schema.ActivationOnSlot
+	}
+	if !schema.ValidActivationPolicy(sp.Activation) {
+		return nil, fmt.Errorf("%w: invalid activation %q for %s", ErrProfileInvalid, sp.Activation, sp.PluginID)
+	}
+
+	var needDeactivate bool
+	l.mu.Lock()
+	ent, exists := l.entries[sp.PluginID]
+	if !exists {
+		ent = &lazyEntry{spec: sp, state: LazyStateDormant}
+		l.entries[sp.PluginID] = ent
+	} else {
+		ent.spec = sp
+	}
+	if !sp.Enabled {
+		if ent.state == LazyStateActive {
+			l.lruRemoveLocked(ent)
+			ent.activeFlag.Store(false)
+			needDeactivate = true
+		}
+		ent.state = LazyStateDisabled
+		ent.activeGen = 0
+	} else {
+		if ent.state == LazyStateDisabled {
+			ent.state = LazyStateDormant
+		}
+		if wakeNow && ent.state == LazyStateActive {
+			// Force reload with the updated version/pin on Wake below.
+			l.lruRemoveLocked(ent)
+			ent.state = LazyStateDormant
+			ent.activeFlag.Store(false)
+		}
+	}
+	l.rebuildTriggersLocked()
+	l.mu.Unlock()
+
+	if needDeactivate {
+		if err := l.cfg.Host.Deactivate(sp.PluginID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if sp.Enabled && (wakeNow || sp.Activation == schema.ActivationEager) {
+		return l.Wake(ctx, sp.PluginID)
+	}
+	return nil, nil
+}
+
+func (l *LazyLoader) rebuildTriggersLocked() {
+	tbl := &triggerTable{
+		byCommand: make(map[string][]*lazyEntry),
+		byTopic:   make(map[string][]*lazyEntry),
+		bySlot:    make(map[schema.SlotID][]*lazyEntry),
+		byHook:    make(map[string][]*lazyEntry),
+	}
+	var minIdle uint32
+	for _, ent := range l.entries {
+		if !ent.spec.Enabled {
+			continue
+		}
+		if ent.spec.IdleUnloadSec > 0 && (minIdle == 0 || ent.spec.IdleUnloadSec < minIdle) {
+			minIdle = ent.spec.IdleUnloadSec
+		}
+		indexTriggersInto(tbl, ent)
+	}
+	l.triggers.Store(tbl)
+	l.minIdleUnloadSec.Store(minIdle)
 }
 
 // EnsureForCommand wakes any dormant plugins registered for commandName.
@@ -555,7 +681,9 @@ func (l *LazyLoader) Wake(ctx context.Context, id schema.PluginID) (*InstalledPa
 	spec := ent.spec
 	l.mu.Unlock()
 
+	wakeStart := time.Now()
 	panel, err := l.activateSpec(ctx, spec)
+	wakeDur := time.Since(wakeStart)
 
 	var evictedIDs []schema.PluginID
 	l.mu.Lock()
@@ -565,8 +693,10 @@ func (l *LazyLoader) Wake(ctx context.Context, id schema.PluginID) (*InstalledPa
 			cur.state = LazyStateActive
 			cur.activeGen = panel.Instance.Scope().ActivationGeneration
 			cur.wakeCount++
+			cur.lastWakeDur = wakeDur
 			cur.lastUsed = l.cfg.Now()
 			cur.activeFlag.Store(true)
+			l.totalWakes++
 			if isEvictable(cur.spec) {
 				l.lruPushFrontLocked(cur)
 				if l.cfg.MaxActiveLazy > 0 {
@@ -577,6 +707,7 @@ func (l *LazyLoader) Wake(ctx context.Context, id schema.PluginID) (*InstalledPa
 						victim.activeGen = 0
 						victim.evictCount++
 						victim.activeFlag.Store(false)
+						l.totalEvicted++
 						evictedIDs = append(evictedIDs, victim.spec.PluginID)
 					}
 				}
@@ -655,6 +786,7 @@ func (l *LazyLoader) ReapIdle(now time.Time) []schema.PluginID {
 			cur.activeGen = 0
 			cur.evictCount++
 			cur.activeFlag.Store(false)
+			l.totalReaped++
 			toSleep = append(toSleep, cur.spec.PluginID)
 		}
 		cur = prev
@@ -678,6 +810,7 @@ func (l *LazyLoader) States() []LazyPluginStatus {
 			ActiveGeneration: ent.activeGen,
 			WakeCount:        ent.wakeCount,
 			EvictCount:       ent.evictCount,
+			LastWakeDuration: ent.lastWakeDur,
 			LastUsed:         ent.lastUsed,
 		})
 	}
@@ -686,6 +819,68 @@ func (l *LazyLoader) States() []LazyPluginStatus {
 		return strings.Compare(string(a.Spec.PluginID), string(b.Spec.PluginID))
 	})
 	return out
+}
+
+// Profile returns the current deterministic PluginProfile snapshot suitable for
+// atomic persistence to marlin-plugins.toml.
+func (l *LazyLoader) Profile() PluginProfile {
+	l.mu.Lock()
+	specs := make([]PluginSpec, 0, len(l.entries))
+	for _, ent := range l.entries {
+		specs = append(specs, ent.spec)
+	}
+	l.mu.Unlock()
+	slices.SortFunc(specs, func(a, b PluginSpec) int {
+		return strings.Compare(string(a.PluginID), string(b.PluginID))
+	})
+	return PluginProfile{SchemaVersion: 1, Plugins: specs}
+}
+
+// Stats returns live lazy-loader profiler metrics for Tier-0 UI rendering.
+func (l *LazyLoader) Stats() LazyLoaderStats {
+	l.mu.Lock()
+	st := LazyLoaderStats{
+		TotalDeclared:         len(l.entries),
+		MaxActiveLazy:         l.cfg.MaxActiveLazy,
+		TotalWakes:            l.totalWakes,
+		TotalReaped:           l.totalReaped,
+		TotalEvicted:          l.totalEvicted,
+		LastReconcileDuration: l.lastReconcileDur,
+	}
+	for _, ent := range l.entries {
+		switch ent.state {
+		case LazyStateActive:
+			st.ActiveCount++
+		case LazyStateDormant:
+			st.DormantCount++
+		case LazyStateDisabled:
+			st.DisabledCount++
+		}
+	}
+	l.mu.Unlock()
+	return st
+}
+
+// StartIdleReaper runs a low-overhead periodic O(1) idle reclamation loop until
+// ctx cancels, invoking onReaped whenever one or more idle plugins are put to sleep.
+func (l *LazyLoader) StartIdleReaper(ctx context.Context, interval time.Duration, onReaped func([]schema.PluginID)) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if reaped := l.ReapIdle(l.cfg.Now()); len(reaped) > 0 && onReaped != nil {
+					onReaped(reaped)
+				}
+			}
+		}
+	}()
 }
 
 func isEvictable(sp PluginSpec) bool {

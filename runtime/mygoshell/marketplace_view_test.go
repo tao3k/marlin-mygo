@@ -383,12 +383,27 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 		ActivationPolicy:  string(schema.ActivationOnSlot),
 		InstalledVersion:  "0.1.0",
 	}})
+	syncStats := func() {
+		st := loader.Stats()
+		mktUI.SetProfilerSummary(mygoshell.LazyProfilerSummary{
+			TotalDeclared:     st.TotalDeclared,
+			ActiveCount:       st.ActiveCount,
+			DormantCount:      st.DormantCount,
+			MaxActiveLazy:     st.MaxActiveLazy,
+			TotalWakes:        st.TotalWakes,
+			TotalReaped:       st.TotalReaped,
+			TotalEvicted:      st.TotalEvicted,
+			ReconcileDuration: st.LastReconcileDuration,
+		})
+	}
+	syncStats()
 	mktUI.OnWake = func(pluginID string) error {
 		panel, err := loader.Wake(ctx, schema.PluginID(pluginID))
 		if err != nil {
 			return err
 		}
 		mktUI.MarkInstalled(pluginID, panel.Manifest.Version, panel.Instance.Scope().ActivationGeneration, "HEALTHY")
+		syncStats()
 		return nil
 	}
 	mktUI.OnSleep = func(pluginID string) error {
@@ -396,6 +411,7 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 			return err
 		}
 		mktUI.MarkDormant(pluginID, "0.1.0", string(schema.ActivationOnSlot))
+		syncStats()
 		return nil
 	}
 
@@ -407,8 +423,8 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") || !tt.HasText("Wake tao3k.lazy-theme") {
-		t.Fatalf("expected dormant lazy badge and Wake button, got %q", strings.Join(tt.Texts(), " | "))
+	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") || !tt.HasText("Wake tao3k.lazy-theme") || !tt.HasText("Lazy Engine: 0 active / 1 dormant (0MB RAM)") {
+		t.Fatalf("expected dormant lazy badge, profiler strip, and Wake button, got %q", strings.Join(tt.Texts(), " | "))
 	}
 
 	// Click Wake -> mounts on-demand at gen:1 and exposes Sleep button.
@@ -416,8 +432,8 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("ACTIVE v0.1.0 · gen:1 · HEALTHY") || !tt.HasText("Sleep tao3k.lazy-theme") {
-		t.Fatalf("expected ACTIVE gen:1 and Sleep button after Wake, got %q", strings.Join(tt.Texts(), " | "))
+	if !tt.HasText("ACTIVE v0.1.0 · gen:1 · HEALTHY") || !tt.HasText("Sleep tao3k.lazy-theme") || !tt.HasText("Lazy Engine: 1 active / 0 dormant (0MB RAM)") {
+		t.Fatalf("expected ACTIVE gen:1, profiler 1 active, and Sleep button after Wake, got %q", strings.Join(tt.Texts(), " | "))
 	}
 
 	// Click Sleep -> unloads plugin back to 0MB RAM dormant state and restores host.inspector fallback.
@@ -425,8 +441,8 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") {
-		t.Fatalf("expected DORMANT badge after Sleep, got %q", strings.Join(tt.Texts(), " | "))
+	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") || !tt.HasText("Lazy Engine: 0 active / 1 dormant (0MB RAM)") {
+		t.Fatalf("expected DORMANT badge and 0 active profiler strip after Sleep, got %q", strings.Join(tt.Texts(), " | "))
 	}
 	if _, active := pHost.ActiveScope("tao3k.lazy-theme"); active {
 		t.Fatal("expected lazy plugin unloaded from host after Sleep")

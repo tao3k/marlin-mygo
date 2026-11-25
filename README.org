@@ -123,9 +123,9 @@ CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketpla
 just serve-catalog ./dist/marketplace 127.0.0.1:8787
 just dev-plugin ./examples/plugins/go-graph-inspector-reactor
 
-# Launch zero-cgo GPU workbench (standalone, signed Marketplace catalog, live dev-plugin, OR auto-healing Rust sidecar)
+# Launch zero-cgo GPU workbench (standalone, signed Marketplace + persistent Emacs lazy profile, live dev-plugin, OR auto-healing Rust sidecar)
 CGO_ENABLED=0 go run ./cmd/marlin-app
-CGO_ENABLED=0 go run ./cmd/marlin-app -catalog-url http://127.0.0.1:8787 -catalog-pub ./dist/marketplace/publisher.pub
+CGO_ENABLED=0 go run ./cmd/marlin-app -catalog-url http://127.0.0.1:8787 -catalog-pub ./dist/marketplace/publisher.pub -plugins-profile ./marlin-plugins.toml
 CGO_ENABLED=0 go run ./cmd/marlin-app -dev-plugin ./examples/plugins/go-graph-inspector-reactor
 CGO_ENABLED=0 go run ./cmd/marlin-app -sidecar /path/to/marlin-mygo-host -real-session -turso ./session.turso
 #+end_src

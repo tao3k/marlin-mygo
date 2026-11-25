@@ -75,6 +75,9 @@ func main() {
 	catalogDir := flag.String("catalog-dir", "", "optional local directory containing signed catalog.json and .marlinpkg archives")
 	catalogPub := flag.String("catalog-pub", "", "optional hex Ed25519 public key file verifying the Marketplace catalog")
 	catalogPublisher := flag.String("catalog-publisher", "tao3k.official", "trusted Marketplace publisher identifier")
+	pluginsProfile := flag.String("plugins-profile", "", "optional declarative marlin-plugins.toml lockfile persisted across restarts (Emacs-style lazy loading)")
+	maxActiveLazy := flag.Int("max-active-lazy", 8, "maximum simultaneously active lazy plugins in O(1) LRU working set (0 = unbounded)")
+	idleReapInterval := flag.Duration("idle-reap-interval", 15*time.Second, "background O(1) idle plugin reclamation check interval")
 	devPluginDir := flag.String("dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
 	flag.Parse()
 
@@ -282,7 +285,33 @@ func main() {
 		})
 		wvRuntime.AttachWindow(win)
 
-		wireMarketplaceUI(ctx, mktUI, host, win, *catalogURL, *catalogDir, *catalogPub, *catalogPublisher)
+		lazySess, syncMarketplace := wireMarketplaceUI(
+			ctx, mktUI, host, win,
+			*catalogURL, *catalogDir, *catalogPub, *catalogPublisher,
+			*pluginsProfile, *maxActiveLazy, *idleReapInterval,
+		)
+		fireHook := func(hookName string) {
+			if lazySess == nil {
+				return
+			}
+			go func() {
+				if woken, err := lazySess.TriggerHook(ctx, hookName); err == nil && len(woken) > 0 {
+					syncMarketplace()
+					win.Invalidate()
+				}
+			}()
+		}
+		app.OnCommandInvoke = func(commandName string) {
+			if lazySess == nil {
+				return
+			}
+			go func() {
+				if woken, err := lazySess.TriggerCommand(ctx, commandName); err == nil && len(woken) > 0 {
+					syncMarketplace()
+					win.Invalidate()
+				}
+			}()
+		}
 
 		if strings.TrimSpace(*devPluginDir) != "" {
 			reloader, err := marketplace.NewDevReloader(marketplace.DevReloaderConfig{
@@ -332,6 +361,7 @@ func main() {
 				DisplayName:  "Marlin Desktop",
 				OnWorkbench:  func(schema.UIWorkbenchSnapshot) { win.Invalidate() },
 				OnPendingGate: func(g *gatev1.PendingGate) {
+					fireHook("before-gate-open")
 					app.ShowPendingGate(mygoshell.PendingGateView{
 						GateID:      g.GetGateId(),
 						ToolName:    g.GetToolOrNodeName(),
@@ -392,6 +422,7 @@ func main() {
 						}
 						if upd.HasOutcome {
 							transcript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
+							fireHook("after-turn-complete")
 							win.Invalidate()
 						}
 					})
@@ -446,6 +477,7 @@ func main() {
 				transcript.ApplyCheckpoint(ord, fmt.Sprintf("demo-%d", ord),
 					fmt.Sprintf("[standalone demo] Received %q — launch with -sidecar <marlin-mygo-host> -real-session for live Rust streaming.", prompt))
 				transcript.CompleteTurn(ord, "DEMO_COMPLETED")
+				fireHook("after-turn-complete")
 				win.Invalidate()
 			}
 		}
@@ -489,18 +521,21 @@ func wireMarketplaceUI(
 	mktUI *mygoshell.MarketplaceController,
 	host *pluginhost.Host,
 	win *mygo.Window,
-	catalogURL, catalogDir, catalogPubFile, publisherID string,
-) {
+	catalogURL, catalogDir, catalogPubFile, publisherID, profilePath string,
+	maxActiveLazy int,
+	idleReapInterval time.Duration,
+) (*marketplace.LazySession, func()) {
+	noopSync := func() {}
 	if (strings.TrimSpace(catalogURL) != "" || strings.TrimSpace(catalogDir) != "") && strings.TrimSpace(catalogPubFile) != "" {
 		rawHex, err := os.ReadFile(catalogPubFile)
 		if err != nil {
 			mktUI.SetStatus(fmt.Sprintf("read -catalog-pub failed: %v", err), true)
-			return
+			return nil, noopSync
 		}
 		pubBytes, err := hex.DecodeString(strings.TrimSpace(string(rawHex)))
 		if err != nil || len(pubBytes) != ed25519.PublicKeySize {
 			mktUI.SetStatus("invalid Ed25519 public key in -catalog-pub", true)
-			return
+			return nil, noopSync
 		}
 		pub := ed25519.PublicKey(pubBytes)
 		trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{
@@ -514,22 +549,39 @@ func wireMarketplaceUI(
 		})
 		if err != nil {
 			mktUI.SetStatus(fmt.Sprintf("marketplace registry init failed: %v", err), true)
-			return
+			return nil, noopSync
 		}
-		mgr := marketplace.NewManager(trust)
-		var genSeq atomic.Uint64
-		var histMu sync.Mutex
-		prevBundles := make(map[string][]byte)
-		curBundles := make(map[string][]byte)
-		curVersions := make(map[string]string)
+		sess, err := marketplace.NewLazySession(ctx, marketplace.LazySessionConfig{
+			Registry:      regClient,
+			Trust:         trust,
+			Host:          host,
+			Target:        schema.TargetDesktopMacOS,
+			ProfilePath:   strings.TrimSpace(profilePath),
+			MaxActiveLazy: maxActiveLazy,
+		})
+		if err != nil {
+			mktUI.SetStatus(fmt.Sprintf("lazy plugin session init failed: %v", err), true)
+			return nil, noopSync
+		}
 
-		refresh := func() error {
-			idx, err := regClient.RefreshCatalog(ctx)
-			if err != nil {
-				return err
+		syncUI := func() {
+			st := sess.Stats()
+			mktUI.SetProfilerSummary(mygoshell.LazyProfilerSummary{
+				TotalDeclared:     st.TotalDeclared,
+				ActiveCount:       st.ActiveCount,
+				DormantCount:      st.DormantCount,
+				MaxActiveLazy:     st.MaxActiveLazy,
+				TotalWakes:        st.TotalWakes,
+				TotalReaped:       st.TotalReaped,
+				TotalEvicted:      st.TotalEvicted,
+				ReconcileDuration: st.LastReconcileDuration,
+			})
+			idx := sess.CachedCatalog()
+			if idx == nil {
+				return
 			}
+			statuses := sess.StatusMap()
 			items := make([]mygoshell.MarketplaceItem, 0, len(idx.Entries))
-			histMu.Lock()
 			for _, e := range idx.Entries {
 				rt := schema.RuntimeDeclarative
 				if len(e.Runtimes) > 0 {
@@ -545,44 +597,51 @@ func wireMarketplaceUI(
 					SignatureVerified: true,
 					PackageBytes:      e.PackageBytes,
 				}
-				if active, ok := host.ActiveScope(e.PluginID); ok {
+				if prevVer, hasRB := sess.HasRollback(e.PluginID); hasRB {
+					it.PreviousVersion = prevVer
+				}
+				if lstat, declared := statuses[e.PluginID]; declared && lstat.Spec.Enabled {
+					it.Installed = true
+					it.InstalledVersion = lstat.Spec.Version
+					it.ActivationPolicy = string(lstat.Spec.Activation)
+					it.Triggers = lstat.Spec.Triggers
+					it.LastWakeDuration = lstat.LastWakeDuration
+					if lstat.State == marketplace.LazyStateDormant {
+						it.Dormant = true
+						it.HealthState = "DORMANT"
+					} else if lstat.State == marketplace.LazyStateActive {
+						it.ActiveGeneration = lstat.ActiveGeneration
+						it.HealthState = "HEALTHY"
+						if active, ok := host.ActiveScope(e.PluginID); ok {
+							it.ReadScopes = active.ReadScopes
+							it.DeclaredActions = active.DeclaredActions
+						}
+					}
+				} else if active, ok := host.ActiveScope(e.PluginID); ok {
 					it.Installed = true
 					it.ActiveGeneration = active.ActivationGeneration
-					it.InstalledVersion = curVersions[string(e.PluginID)]
 					it.ReadScopes = active.ReadScopes
 					it.DeclaredActions = active.DeclaredActions
 					it.HealthState = "HEALTHY"
 				}
 				items = append(items, it)
 			}
-			histMu.Unlock()
 			mktUI.SetItems(items)
+		}
+
+		refresh := func() error {
+			if _, err := sess.RefreshCatalog(ctx); err != nil {
+				return err
+			}
+			syncUI()
 			win.Invalidate()
 			return nil
 		}
-
 		install := func(pluginID string) error {
-			entry, ok := regClient.LookupEntry(schema.PluginID(pluginID))
-			if !ok {
-				return marketplace.ErrPackageNotFound
-			}
-			raw, err := regClient.FetchPackage(ctx, entry)
-			if err != nil {
+			if _, err := sess.InstallOrUpgrade(ctx, schema.PluginID(pluginID)); err != nil {
 				return err
 			}
-			gen := genSeq.Add(1)
-			panel, err := mgr.InstallBundle(ctx, raw, host, schema.TargetDesktopMacOS, gen)
-			if err != nil {
-				return err
-			}
-			histMu.Lock()
-			if old, ok := curBundles[pluginID]; ok {
-				prevBundles[pluginID] = old
-			}
-			curBundles[pluginID] = raw
-			curVersions[pluginID] = panel.Manifest.Version
-			histMu.Unlock()
-			mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+			syncUI()
 			win.Invalidate()
 			return nil
 		}
@@ -591,37 +650,49 @@ func wireMarketplaceUI(
 		mktUI.OnInstall = install
 		mktUI.OnUpgrade = install
 		mktUI.OnRollback = func(pluginID string) error {
-			histMu.Lock()
-			prev, ok := prevBundles[pluginID]
-			histMu.Unlock()
-			if !ok || len(prev) == 0 {
-				return fmt.Errorf("no previous version cached for %s", pluginID)
-			}
-			gen := genSeq.Add(1)
-			panel, err := mgr.InstallBundle(ctx, prev, host, schema.TargetDesktopMacOS, gen)
-			if err != nil {
+			if _, err := sess.Rollback(ctx, schema.PluginID(pluginID)); err != nil {
 				return err
 			}
-			histMu.Lock()
-			curBundles[pluginID] = prev
-			curVersions[pluginID] = panel.Manifest.Version
-			histMu.Unlock()
-			mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+			syncUI()
+			win.Invalidate()
+			return nil
+		}
+		mktUI.OnWake = func(pluginID string) error {
+			if _, err := sess.Wake(ctx, schema.PluginID(pluginID)); err != nil {
+				return err
+			}
+			syncUI()
+			win.Invalidate()
+			return nil
+		}
+		mktUI.OnSleep = func(pluginID string) error {
+			if err := sess.Sleep(schema.PluginID(pluginID)); err != nil {
+				return err
+			}
+			syncUI()
 			win.Invalidate()
 			return nil
 		}
 		mktUI.OnDisable = func(pluginID string) error {
-			if err := host.Deactivate(schema.PluginID(pluginID)); err != nil {
+			if err := sess.Disable(ctx, schema.PluginID(pluginID)); err != nil {
 				return err
 			}
-			mktUI.MarkDisabled(pluginID)
+			syncUI()
 			win.Invalidate()
 			return nil
 		}
+
+		sess.StartIdleReaper(ctx, idleReapInterval, func(reaped []schema.PluginID) {
+			mktUI.SetStatus(fmt.Sprintf("Reclaimed %d idle plugin(s) to 0MB RAM: %v", len(reaped), reaped), false)
+			syncUI()
+			win.Invalidate()
+		})
+
 		if err := refresh(); err != nil {
+			syncUI()
 			mktUI.SetStatus(fmt.Sprintf("initial catalog refresh failed: %v", err), true)
 		}
-		return
+		return sess, syncUI
 	}
 
 	// Standalone showcase items for immediate desktop Marketplace exploration.
@@ -690,4 +761,5 @@ func wireMarketplaceUI(
 		win.Invalidate()
 		return nil
 	}
+	return nil, noopSync
 }
