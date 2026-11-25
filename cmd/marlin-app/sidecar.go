@@ -66,6 +66,7 @@ func connectTarget(
 	federation *transport.FederationSupervisor,
 	wb *shell.WorkbenchController,
 	defaultDispatcher pluginhost.ActionDispatcher,
+	notifyBridge *grpcwire.NotifyBridge,
 ) (targetConnection, error) {
 	// 1. Explicit remote or pre-started local Rust App Server (-host).
 	if strings.TrimSpace(cfg.hostAddr) != "" {
@@ -126,7 +127,7 @@ func connectTarget(
 			return targetConnection{}, fmt.Errorf("Rust App Server binary %q not found or not executable", explicitBin)
 		}
 		if found {
-			conn, err := launchSupervisedAppServer(ctx, cfg, resolvedBin, source, targets, federation)
+			conn, err := launchSupervisedAppServer(ctx, cfg, resolvedBin, source, targets, federation, notifyBridge)
 			if err == nil {
 				return conn, nil
 			}
@@ -187,6 +188,7 @@ func launchSupervisedAppServer(
 	source string,
 	targets *transport.TargetRegistry,
 	federation *transport.FederationSupervisor,
+	notifyBridge *grpcwire.NotifyBridge,
 ) (targetConnection, error) {
 	var pubHex string
 	if strings.TrimSpace(cfg.pubKeyFile) != "" {
@@ -214,10 +216,12 @@ func launchSupervisedAppServer(
 		},
 		OnCrash: func(attempt int, exitErr error) {
 			log.Printf("supervised Marlin App Server exited unexpectedly (attempt %d): %v", attempt, exitErr)
+			notifyBridge.OnSidecarCrash("Marlin App Server", attempt, exitErr)
 		},
 		OnRecovered: func(rc context.Context, newTarget *grpcwire.Target, restarts int) {
 			log.Printf("supervised Marlin App Server auto-recovered (restart #%d) at %s", restarts, newTarget.Meta().Address)
 			federation.ProbeAll(rc, 2*time.Second)
+			notifyBridge.OnSidecarRecovered("Marlin App Server", newTarget.Meta().Address, restarts)
 		},
 	})
 	if err != nil {
@@ -360,6 +364,9 @@ func wireLiveSession(
 		OnWorkbench:  func(schema.UIWorkbenchSnapshot) { markDirty() },
 		OnPendingGate: func(g *gatev1.PendingGate) {
 			fireHook("before-gate-open")
+			if app.Notifications != nil {
+				grpcwire.NewNotifyBridge(app.Notifications.Center).OnPendingGate(g)
+			}
 			app.ShowPendingGate(mygoshell.PendingGateView{
 				GateID:      g.GetGateId(),
 				ToolName:    g.GetToolOrNodeName(),

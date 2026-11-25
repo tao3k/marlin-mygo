@@ -66,6 +66,9 @@ type WorkbenchApp struct {
 	// Optional Tier-0 Host Notification Toast Stack & Activity Center modal.
 	Notifications *NotificationController
 
+	// Optional Tier-0 searchable Keymap Inspector controller (lazy-created on open).
+	KeymapInspector *KeymapInspectorController
+
 	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
 	Projection *ProjectionController
 
@@ -109,6 +112,7 @@ type WorkbenchApp struct {
 	marketplaceOpen   bool
 	authOpen          bool
 	activityOpen      bool
+	keymapOpen        bool
 	settingsOpen      bool
 	projectionOpen    bool
 	addRemoteOpen     bool
@@ -284,6 +288,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.OpenAuth()
 	case "studio.open-notifications":
 		a.OpenActivityCenter()
+	case "studio.open-keymap-inspector":
+		a.OpenKeymapInspector()
 	case shell.CmdStudioOpenProjection:
 		a.projectionOpen = true
 	case shell.CmdStudioOpenPalette:
@@ -429,6 +435,9 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	}
 	if a.OnCycleTheme != nil && c.Shortcut(ui.Cmd, ui.KeyT) {
 		a.OnCycleTheme()
+	}
+	if c.Shortcut(0, ui.KeyEscape) {
+		a.DismissTopOverlay()
 	}
 	if a.OnQuickPluginSelect != nil && len(a.QuickPlugins) > 0 {
 		if c.Shortcut(ui.Cmd, ui.Key1) {
@@ -642,6 +651,9 @@ func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedThe
 				a.mu.Lock()
 				a.whichKeyOpen = !a.whichKeyOpen
 				a.mu.Unlock()
+			}
+			if ApplePillButton(c, "status-keymap", "Keys", BtnGlass, dt, svgIconKey, true).Clicked() {
+				a.OpenKeymapInspector()
 			}
 		}
 	})
@@ -857,6 +869,75 @@ func (a *WorkbenchApp) OpenActivityCenter() {
 
 // IsActivityCenterOpen reports whether the Tier-0 Activity Center modal is open.
 func (a *WorkbenchApp) IsActivityCenterOpen() bool { return a.activityOpen }
+
+// OpenKeymapInspector opens the searchable Tier-0 Keymap Inspector modal.
+func (a *WorkbenchApp) OpenKeymapInspector() {
+	if a.KeyTrie == nil {
+		return
+	}
+	if a.KeymapInspector == nil {
+		a.KeymapInspector = NewKeymapInspectorController()
+	}
+	a.keymapOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.marketplaceOpen = false
+	a.authOpen = false
+	a.activityOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
+// IsKeymapInspectorOpen reports whether the Tier-0 Keymap Inspector modal is visible.
+func (a *WorkbenchApp) IsKeymapInspectorOpen() bool { return a.keymapOpen }
+
+// DismissTopOverlay handles global ESC keyboard accessibility: closes the
+// active non-gate Tier-0 modal or cancels an in-progress Hydra chord / Which-Key HUD.
+// Security invariant: Approval Gates (gateOpen) are intentionally NOT bypassed by ESC.
+func (a *WorkbenchApp) DismissTopOverlay() bool {
+	switch {
+	case a.paletteOpen:
+		a.paletteOpen = false
+		return true
+	case a.bufferPickerOpen:
+		a.bufferPickerOpen = false
+		return true
+	case a.keymapOpen:
+		a.keymapOpen = false
+		return true
+	case a.activityOpen:
+		a.activityOpen = false
+		return true
+	case a.authOpen:
+		if a.Auth != nil {
+			a.Auth.ClearSensitiveInputs()
+		}
+		a.authOpen = false
+		return true
+	case a.marketplaceOpen:
+		a.marketplaceOpen = false
+		return true
+	case a.settingsOpen:
+		a.settingsOpen = false
+		return true
+	case a.projectionOpen:
+		a.projectionOpen = false
+		return true
+	case a.addRemoteOpen:
+		a.addRemoteOpen = false
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.activeChord) > 0 || a.whichKeyOpen {
+		a.activeChord = a.activeChord[:0]
+		a.whichKeyOpen = false
+		return true
+	}
+	return false
+}
 
 // ToggleSidebar collapses or expands the persistent left navigation sidebar
 // (`Cmd+B` / `SPC w B`) to reclaim 228px of split workspace width on demand.
@@ -1192,6 +1273,16 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		ui.Modal(c, &a.activityOpen, func() {
 			a.Notifications.RenderActivityCenter(c, t, dt, func() {
 				a.activityOpen = false
+			})
+		})
+	}
+
+	if a.KeyTrie != nil && a.KeymapInspector != nil {
+		ui.Modal(c, &a.keymapOpen, func() {
+			a.KeymapInspector.Render(c, dt, a.KeyTrie, a.Commands, func(cmdName string) {
+				a.invokeCommand(cmdName)
+			}, func() {
+				a.keymapOpen = false
 			})
 		})
 	}

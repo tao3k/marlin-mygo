@@ -60,7 +60,10 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		dispatcher = showcaseDisp
 	}
 
-	conn, err := connectTarget(ctx, cfg, targets, federation, wb, dispatcher)
+	notifyCenter := notify.NewCenter(notify.CenterConfig{})
+	notifyBridge := grpcwire.NewNotifyBridge(notifyCenter)
+
+	conn, err := connectTarget(ctx, cfg, targets, federation, wb, dispatcher, notifyBridge)
 	if err != nil {
 		return err
 	}
@@ -84,7 +87,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 	host.RegisterRuntime(wazeroir.NewRuntime(slots, wasmEng))
 	host.RegisterRuntime(&pluginhost.DeclarativeRuntimeFactory{})
 
-	app, mktUI, transcript := buildWorkbenchApp(ctx, cfg, targets, federation, slots, wb, wvRuntime, conn.liveTarget)
+	app, mktUI, transcript := buildWorkbenchApp(ctx, cfg, targets, federation, slots, wb, wvRuntime, conn.liveTarget, notifyCenter, notifyBridge)
 
 	var stopLiveSession func()
 	var mounted atomic.Bool
@@ -250,6 +253,8 @@ func buildWorkbenchApp(
 	wb *shell.WorkbenchController,
 	wvRuntime *mygoshell.WebViewRuntime,
 	liveTarget *grpcwire.Target,
+	notifyCenter *notify.Center,
+	notifyBridge *grpcwire.NotifyBridge,
 ) (*mygoshell.WorkbenchApp, *mygoshell.MarketplaceController, *mygoshell.TranscriptController) {
 	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
 	app.Federation = federation
@@ -294,9 +299,9 @@ func buildWorkbenchApp(
 		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
 	}
 	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
-	notifyCenter := notify.NewCenter(notify.CenterConfig{})
 	notifyCtrl := mygoshell.NewNotificationController(notifyCenter)
 	app.Notifications = notifyCtrl
+	_ = notifyBridge.AttachAuthManager(authMgr)
 
 	if restored, rErr := authMgr.RestoreFromVault(ctx); rErr == nil && restored > 0 {
 		log.Printf("rehydrated %d signed-in account(s) from %s", restored, vaultInfo.BackendName)
@@ -378,6 +383,7 @@ func buildWorkbenchApp(
 		{Name: "workbench.open-marketplace", Description: "Open Tier-0 built-in Marketplace drawer"},
 		{Name: "studio.open-auth", Description: "Open Tier-0 Account & OAuth Sign-In Center"},
 		{Name: "studio.open-notifications", Description: "Open Tier-0 Notifications & Activity Center"},
+		{Name: "studio.open-keymap-inspector", Description: "Open Tier-0 Searchable Keymap Inspector (SPC + Emacs)"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}

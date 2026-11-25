@@ -172,6 +172,41 @@ func (kt *KeyTrie) Hints(activeMode KeyScope, prefix []string) []KeyHint {
 	return out
 }
 
+// AllBindings enumerates every compiled keybinding in deterministic scope and
+// sequence order for the Tier-0 Keymap Inspector UI and accessibility audits.
+func (kt *KeyTrie) AllBindings() []Binding {
+	if kt == nil {
+		return nil
+	}
+	var out []Binding
+	var walk func(n *trieNode)
+	walk = func(n *trieNode) {
+		if n == nil {
+			return
+		}
+		if n.terminal != nil {
+			cp := *n.terminal
+			cp.Sequence = append([]string(nil), n.terminal.Sequence...)
+			out = append(out, cp)
+		}
+		if len(n.children) == 0 {
+			return
+		}
+		keys := make([]string, 0, len(n.children))
+		for k := range n.children {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			walk(n.children[k])
+		}
+	}
+	for _, scope := range []KeyScope{ScopeNormal, ScopeInsert, ScopeGlobal} {
+		walk(kt.roots[scope])
+	}
+	return out
+}
+
 func (kt *KeyTrie) lookupScope(scope KeyScope, seq []string) (MatchKind, Binding) {
 	if int(scope) >= len(kt.roots) || kt.roots[scope] == nil || len(seq) == 0 {
 		return MatchNone, Binding{}
