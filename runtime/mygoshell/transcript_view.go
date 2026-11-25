@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
@@ -136,7 +137,7 @@ func (e *TranscriptEntry) refreshLabels() {
 const (
 	defaultTranscriptViewportH uint64 = 420
 	defaultTranscriptWrapCols  int    = 72
-	defaultMaxSeenEvents       int    = 4096
+	defaultMaxSeenEvents       int    = 8192
 	transcriptHeaderPx         uint32 = 34
 	transcriptLinePx           uint32 = 20
 	transcriptCollapsedPx      uint32 = 38
@@ -766,7 +767,8 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 
 // estimateWrappedVisualLines counts wrapped lines in O(len(text)) with zero heap
 // allocations using Unicode display column width (2 columns for CJK/East Asian
-// wide runes, 1 column for narrow runes) so long CJK responses do not clip.
+// wide runes, 0 columns for combining marks/format runes, 1 column otherwise)
+// so long CJK responses do not clip.
 func estimateWrappedVisualLines(text string, cols int) int {
 	if cols <= 0 {
 		cols = defaultTranscriptWrapCols
@@ -796,14 +798,21 @@ func estimateWrappedVisualLines(text string, cols int) int {
 	return lines
 }
 
-// displayRuneWidth estimates terminal/monospace display columns (2 for CJK,
-// Hangul, Kana, and Fullwidth forms; 1 otherwise) with zero allocations.
+// displayRuneWidth estimates terminal/monospace display columns (0 for combining
+// marks & format runes; 2 for CJK, Hangul, Kana, and Fullwidth forms/punctuation;
+// 1 otherwise) with zero allocations.
 func displayRuneWidth(r rune) int {
+	if r < 0x0300 {
+		return 1
+	}
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
+		return 0
+	}
 	if r < 0x1100 {
 		return 1
 	}
 	if (r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
-		(r >= 0x2E80 && r <= 0xA4CF && r != 0x303F) || // CJK Radicals, Hiragana, Katakana, Bopomofo, CJK Unified
+		(r >= 0x2E80 && r <= 0xA4CF) || // CJK Radicals, Punctuation (0x3000..0x303F), Kana, Bopomofo, Han
 		(r >= 0xAC00 && r <= 0xD7A3) || // Hangul Syllables
 		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility Ideographs
 		(r >= 0xFE10 && r <= 0xFE6F) || // CJK Compatibility Forms

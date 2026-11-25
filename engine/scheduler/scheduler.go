@@ -55,7 +55,7 @@ type Percentiles struct {
 }
 
 // taskRing is an O(1) power-of-two circular queue avoiding O(n) slice memmoves
-// on every dequeue under P1/P2 backpressure.
+// on every dequeue under P1/P2 backpressure while eagerly releasing closures.
 type taskRing struct {
 	buf   []Task
 	head  int
@@ -84,14 +84,19 @@ func (q *taskRing) push(t Task) {
 	q.count++
 }
 
+func (q *taskRing) len() int { return q.count }
+
 func (q *taskRing) pop() (Task, bool) {
 	if q.count == 0 {
 		return Task{}, false
 	}
 	t := q.buf[q.head]
-	q.buf[q.head] = Task{}
+	q.buf[q.head] = Task{} // release closure references eagerly
 	q.head = (q.head + 1) & (len(q.buf) - 1)
 	q.count--
+	if q.count == 0 {
+		q.head = 0
+	}
 	return t, true
 }
 
@@ -168,8 +173,8 @@ func (s *FrameScheduler) RunFrame(budget time.Duration) FrameReport {
 	rep.OverBudget = rep.Duration > budget
 
 	s.mu.Lock()
-	rep.DeferredP1 = s.queues[PriorityActive].count
-	rep.DeferredP2 = s.queues[PriorityBackground].count
+	rep.DeferredP1 = s.queues[PriorityActive].len()
+	rep.DeferredP2 = s.queues[PriorityBackground].len()
 	s.history[s.histPos] = rep.Duration
 	s.histPos = (s.histPos + 1) % len(s.history)
 	if s.histLen < len(s.history) {

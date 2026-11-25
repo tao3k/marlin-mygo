@@ -65,6 +65,24 @@ func TestFuzzyScoreUnicodeAndCJKZeroAlloc(t *testing.T) {
 		t.Fatalf("expected CJK subsequence match, got score=%d ok=%t", score, ok)
 	}
 
+	// Additional CJK + Cyrillic + RankCommands coverage from PR #2.
+	deployTarget := "\u90e8\u7f72\u5de5\u4f5c\u53f0"
+	deployQuery := "\u90e8\u7f72"
+	if _, ok := FuzzyScore(deployQuery, deployTarget); !ok {
+		t.Fatal("expected CJK prefix/subsequence match")
+	}
+	if _, ok := FuzzyScore("\u043c\u0430\u0440", "\u041c\u0430\u0440\u043b\u0438\u043d-marlin"); !ok {
+		t.Fatal("expected Cyrillic case-folded match")
+	}
+	if _, ok := FuzzyScore("\u53f0\u7f72", deployTarget); ok {
+		t.Fatal("expected out-of-order CJK subsequence to be rejected")
+	}
+	cmds := []CommandEntry{{Name: deployTarget}, {Name: "select-buffer"}}
+	ranked := RankCommands(deployQuery, cmds, nil)
+	if len(ranked) != 1 || cmds[ranked[0].Index].Name != deployTarget {
+		t.Fatalf("expected CJK command ranked, got %+v", ranked)
+	}
+
 	// Non-ASCII case folding (German umlaut).
 	uScore, uOK := FuzzyScore("\u00fcber", "\u00dcbersicht")
 	if !uOK || uScore <= 0 {

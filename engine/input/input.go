@@ -137,14 +137,14 @@ type RankedCommand struct {
 // FuzzyScore computes a deterministic, zero-allocation Unicode subsequence match
 // score rewarding exact matches, prefixes, word boundaries ('-', '_', '/', '.',
 // CamelCase, Unicode spaces/punctuation), and consecutive runs while lightly
-// penalizing gaps and excess length. Uses an inline ASCII fast path with full
-// UTF-8 Unicode folding fallback for CJK and international command titles.
+// penalizing gaps and excess length. Uses an inline ASCII byte fast path with
+// zero-allocation UTF-8 Unicode folding fallback for CJK and international titles.
 func FuzzyScore(query, target string) (int32, bool) {
-	qLen := len(query)
-	tLen := len(target)
-	if qLen == 0 {
+	if len(query) == 0 {
 		return 1, true
 	}
+	qLen := len(query)
+	tLen := len(target)
 
 	// Fast ASCII-only path (preserves sub-70us 1,000-command zero-alloc ranking).
 	var score int32

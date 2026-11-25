@@ -117,26 +117,36 @@ func TestKeyTriePropertyMatchesLinearOracle(t *testing.T) {
 	}
 }
 
-func isASCIISubsequence(query, target string) bool {
+func isCaseFoldedSubsequence(query, target string) bool {
+	qr := []rune(query)
 	qi := 0
-	for ti := 0; ti < len(target) && qi < len(query); ti++ {
-		if toLowerASCII(target[ti]) == toLowerASCII(query[qi]) {
+	for _, tr := range target {
+		if qi >= len(qr) {
+			break
+		}
+		if unicode.ToLower(tr) == unicode.ToLower(qr[qi]) {
 			qi++
 		}
 	}
-	return qi == len(query)
+	return qi == len(qr)
 }
 
-func hasASCIIPrefix(target, prefix string) bool {
-	if len(target) < len(prefix) {
+func hasCaseFoldedPrefix(target, prefix string) bool {
+	pr := []rune(prefix)
+	if len([]rune(target)) < len(pr) {
 		return false
 	}
-	for i := 0; i < len(prefix); i++ {
-		if toLowerASCII(target[i]) != toLowerASCII(prefix[i]) {
+	i := 0
+	for _, tr := range target {
+		if i >= len(pr) {
+			break
+		}
+		if unicode.ToLower(tr) != unicode.ToLower(pr[i]) {
 			return false
 		}
+		i++
 	}
-	return true
+	return i == len(pr)
 }
 
 func isUnicodeSubsequence(query, target string) bool {
@@ -176,6 +186,8 @@ func FuzzFuzzyScore(f *testing.F) {
 	f.Add("zzz", "abc")
 	f.Add("\u00fcber", "\u00dcbersicht")
 	f.Add("\u4efb\u770b", "Org \u4efb\u52a1\u770b\u677f")
+	f.Add("\u90e8\u7f72", "\u90e8\u7f72\u5de5\u4f5c\u53f0")
+	f.Add("\u5de5\u4f5c\u53f0", "\u90e8\u7f72\u5de5\u4f5c\u53f0")
 	f.Fuzz(func(t *testing.T, query, target string) {
 		score, ok := FuzzyScore(query, target)
 		want := isUnicodeSubsequence(query, target)
@@ -187,7 +199,7 @@ func FuzzFuzzyScore(f *testing.F) {
 			if !exactOK {
 				t.Fatalf("exact self-match failed for %q", query)
 			}
-			if len(target) > len(query) && hasASCIIPrefix(target, query) {
+			if len(target) > len(query) && hasCaseFoldedPrefix(target, query) {
 				// Same prefix + trailing chars must not outscore exact self-match.
 				if score > exactScore {
 					t.Fatalf("prefix+suffix %q (%d) outscored exact %q (%d)", target, score, query, exactScore)

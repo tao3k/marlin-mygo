@@ -254,4 +254,54 @@ func TestTranscriptBoundedSeenEventsRingAndCJKVisualWidthEstimation(t *testing.T
 	if lines := estimateWrappedVisualLines(cjk36+"\n"+cjk36, 72); lines != 2 {
 		t.Fatalf("expected two newline-separated 36-CJK-rune paragraphs to be 2 lines, got %d", lines)
 	}
+	// Combining marks (U+0301) occupy 0 display columns.
+	if lines := estimateWrappedVisualLines(strings.Repeat("e\u0301", 72), 72); lines != 1 {
+		t.Fatalf("expected 72 base chars + combining marks to fit 1 line, got %d", lines)
+	}
+}
+
+func TestTranscriptDefaultSeenEventsWindowStaysBounded(t *testing.T) {
+	tc := NewTranscriptController()
+	tc.BeginAssistantTurn(1)
+
+	const total = defaultMaxSeenEvents + 512
+	for i := 0; i < total; i++ {
+		tc.ApplyCheckpoint(1, fmt.Sprintf("evt-%d", i), "x")
+	}
+	if got := tc.SeenEventCount(); got != defaultMaxSeenEvents {
+		t.Fatalf("expected dedup map bounded at %d, got %d", defaultMaxSeenEvents, got)
+	}
+	row := tc.turnRow[1]
+	before := tc.entries[row].Text
+	tc.ApplyCheckpoint(1, fmt.Sprintf("evt-%d", total-1), "DUPLICATE")
+	if tc.entries[row].Text != before {
+		t.Fatal("event inside dedup window was re-applied")
+	}
+}
+
+func TestTranscriptCJKHeightEstimateUsesDisplayWidth(t *testing.T) {
+	tc := NewTranscriptController()
+
+	// 72 ASCII chars fill 1 wrap line at the default 72-column budget.
+	asciiRow := tc.AppendUser(strings.Repeat("a", 72))
+	// 36 CJK ideographs (\u5b57) render 72 columns wide.
+	cjkRow := tc.AppendUser(strings.Repeat("\u5b57", 36))
+	// 36 fullwidth exclamation marks (\uff01) render 72 columns wide.
+	mixedRow := tc.AppendUser(strings.Repeat("\uff01", 36))
+
+	ha, hb, hc := tc.RowHeight(asciiRow), tc.RowHeight(cjkRow), tc.RowHeight(mixedRow)
+	if ha != hb || ha != hc {
+		t.Fatalf("expected equal display-width rows to have equal heights: ascii=%d cjk=%d mixed=%d", ha, hb, hc)
+	}
+	want := transcriptHeaderPx + transcriptLinePx
+	if hb != want {
+		t.Fatalf("expected CJK row height %d (single wrapped line), got %d", want, hb)
+	}
+
+	// 80 CJK runes = 160 display cols -> 3 wrapped lines at 72 cols/line.
+	longCJK := tc.AppendUser(strings.Repeat("\u5b57", 80))
+	wantLong := transcriptHeaderPx + 3*transcriptLinePx
+	if got := tc.RowHeight(longCJK); got != wantLong {
+		t.Fatalf("expected 80-CJK row height %d (3 wrapped lines), got %d", wantLong, got)
+	}
 }

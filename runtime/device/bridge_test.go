@@ -90,3 +90,34 @@ func TestDeviceBridgeConsumedReceiptsRingIsBounded(t *testing.T) {
 		t.Fatalf("expected recent receipt rcpt-31 replay rejected, got %v", err)
 	}
 }
+
+func TestDeviceBridgeDefaultConsumedReceiptWindowStaysBounded(t *testing.T) {
+	br := NewBridge(schema.TargetDesktopMacOS)
+	prov := &fakeProvider{descs: []CapabilityDescriptor{{
+		CapabilityID: "ios.photos.export", ProtocolFamily: "platform.ios",
+		Permission: PermissionGranted, ReadOnly: false,
+	}}}
+	if err := br.RegisterProvider(context.Background(), prov); err != nil {
+		t.Fatal(err)
+	}
+
+	const total = defaultMaxConsumedReceipts + 256
+	for i := 0; i < total; i++ {
+		if _, err := br.Dispatch(context.Background(), InvocationRequest{
+			InvocationID:  fmt.Sprintf("inv-%d", i),
+			CapabilityID:  "ios.photos.export",
+			GateReceiptID: fmt.Sprintf("rcpt-%d", i),
+		}); err != nil {
+			t.Fatalf("dispatch %d failed: %v", i, err)
+		}
+	}
+	if got := br.ConsumedReceiptCount(); got != defaultMaxConsumedReceipts {
+		t.Fatalf("expected receipt window bounded at %d, got %d", defaultMaxConsumedReceipts, got)
+	}
+	if _, err := br.Dispatch(context.Background(), InvocationRequest{
+		InvocationID: "replay", CapabilityID: "ios.photos.export",
+		GateReceiptID: fmt.Sprintf("rcpt-%d", total-1),
+	}); !errors.Is(err, ErrGateReceiptReplayed) {
+		t.Fatalf("expected ErrGateReceiptReplayed inside window, got %v", err)
+	}
+}

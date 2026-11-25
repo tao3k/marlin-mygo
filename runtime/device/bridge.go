@@ -70,11 +70,11 @@ type CapabilityProvider interface {
 	Invoke(ctx context.Context, req InvocationRequest) (InvocationResult, error)
 }
 
-const defaultMaxConsumedReceipts = 16_384
+const defaultMaxConsumedReceipts = 4096
 
 // Bridge validates OS permissions and one-shot Rust gate receipts before
 // dispatching any host-originated device.* invocation to platform adapters.
-// Consumed receipt IDs are retained in a bounded FIFO ring (default 16,384)
+// Consumed receipt IDs are retained in a bounded FIFO ring (default 4,096)
 // so long-lived desktop processes never grow memory monotonically; Rust
 // authority gate receipts are short-lived and bound to session generation.
 type Bridge struct {
