@@ -15,6 +15,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -28,35 +31,97 @@ import (
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
-// ModuleEngine maintains a single wazero compilation cache, the authoritative
-// marlin_host_v1 module, and an unforgeable api.Module -> *ScopedProxy table
-// (the WASM equivalent of WebView CallerPage isolation).
+// EngineConfig configures ModuleEngine's AOT compilation cache.
+type EngineConfig struct {
+	// CompilationCacheDir stores SHA-256 keyed native AOT machine code on disk
+	// via wazero.NewCompilationCacheWithDir so desktop restarts and lazy wakes
+	// skip full Go WASI AOT recompilation (~350ms -> ~8ms).
+	// When empty and DisableDiskCache is false, DefaultCompilationCacheDir() is used.
+	CompilationCacheDir string
+	// DisableDiskCache forces an ephemeral in-memory compilation cache only.
+	DisableDiskCache bool
+}
+
+// DefaultCompilationCacheDir resolves the persistent disk directory used for
+// wazero AOT compilation caching (honors MARLIN_WAZERO_CACHE_DIR when set).
+func DefaultCompilationCacheDir() string {
+	if env := strings.TrimSpace(os.Getenv("MARLIN_WAZERO_CACHE_DIR")); env != "" {
+		return env
+	}
+	if base, err := os.UserCacheDir(); err == nil && base != "" {
+		return filepath.Join(base, "marlin-mygo", "wazero-aot-v1")
+	}
+	return filepath.Join(os.TempDir(), "marlin-mygo-wazero-aot-v1")
+}
+
+// ModuleEngine maintains a single wazero compilation cache (backed by a
+// persistent disk AOT cache when available), the authoritative marlin_host_v1
+// module, and an unforgeable api.Module -> *ScopedProxy table (the WASM
+// equivalent of WebView CallerPage isolation).
 type ModuleEngine struct {
-	rt      wazero.Runtime
-	mu      sync.RWMutex
-	cache   map[[32]byte]wazero.CompiledModule
-	proxies map[api.Module]*pluginhost.ScopedProxy
+	rt        wazero.Runtime
+	compCache wazero.CompilationCache
+	cacheDir  string
+	mu        sync.RWMutex
+	cache     map[[32]byte]wazero.CompiledModule
+	proxies   map[api.Module]*pluginhost.ScopedProxy
 }
 
 func NewModuleEngine(ctx context.Context) (*ModuleEngine, error) {
+	return NewModuleEngineWithConfig(ctx, EngineConfig{})
+}
+
+// NewModuleEngineWithConfig initializes a zero-cgo wazero runtime with hard
+// linear-memory ceilings and optional disk-persistent AOT compilation caching.
+func NewModuleEngineWithConfig(ctx context.Context, ecfg EngineConfig) (*ModuleEngine, error) {
 	cfg := wazero.NewRuntimeConfig().
 		WithMemoryLimitPages(pluginhost.WasmDefaultMemoryPages).
 		WithCloseOnContextDone(true)
+
+	var (
+		compCache wazero.CompilationCache
+		usedDir   string
+	)
+	if !ecfg.DisableDiskCache {
+		dir := strings.TrimSpace(ecfg.CompilationCacheDir)
+		if dir == "" {
+			dir = DefaultCompilationCacheDir()
+		}
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			if cc, ccErr := wazero.NewCompilationCacheWithDir(dir); ccErr == nil {
+				compCache = cc
+				usedDir = dir
+				cfg = cfg.WithCompilationCache(cc)
+			}
+		}
+	}
+
 	rt := wazero.NewRuntimeWithConfig(ctx, cfg)
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
 		_ = rt.Close(ctx)
+		if compCache != nil {
+			_ = compCache.Close(ctx)
+		}
 		return nil, fmt.Errorf("wazeroir: init wasi: %w", err)
 	}
 	eng := &ModuleEngine{
-		rt:      rt,
-		cache:   make(map[[32]byte]wazero.CompiledModule),
-		proxies: make(map[api.Module]*pluginhost.ScopedProxy),
+		rt:        rt,
+		compCache: compCache,
+		cacheDir:  usedDir,
+		cache:     make(map[[32]byte]wazero.CompiledModule),
+		proxies:   make(map[api.Module]*pluginhost.ScopedProxy),
 	}
 	if err := eng.registerHostModule(ctx); err != nil {
-		_ = rt.Close(ctx)
+		_ = eng.Close(ctx)
 		return nil, err
 	}
 	return eng, nil
+}
+
+// CompilationCacheDir returns the active persistent disk AOT cache directory,
+// or empty string when running with an ephemeral in-memory cache only.
+func (e *ModuleEngine) CompilationCacheDir() string {
+	return e.cacheDir
 }
 
 func (e *ModuleEngine) registerHostModule(ctx context.Context) error {
@@ -198,7 +263,15 @@ func (e *ModuleEngine) ExecuteCached(ctx context.Context, wasmBytes []byte) (sch
 }
 
 func (e *ModuleEngine) Close(ctx context.Context) error {
-	return e.rt.Close(ctx)
+	rtErr := e.rt.Close(ctx)
+	var ccErr error
+	if e.compCache != nil {
+		ccErr = e.compCache.Close(ctx)
+	}
+	if rtErr != nil {
+		return rtErr
+	}
+	return ccErr
 }
 
 // Runtime implements pluginhost.RuntimeFactory for schema.RuntimeWasmUIIR.

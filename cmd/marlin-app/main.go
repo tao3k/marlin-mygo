@@ -79,6 +79,7 @@ func main() {
 	pluginsProfile := flag.String("plugins-profile", "", "optional declarative marlin-plugins.toml lockfile persisted across restarts (Emacs-style lazy loading)")
 	maxActiveLazy := flag.Int("max-active-lazy", 8, "maximum simultaneously active lazy plugins in O(1) LRU working set (0 = unbounded)")
 	idleReapInterval := flag.Duration("idle-reap-interval", 15*time.Second, "background O(1) idle plugin reclamation check interval")
+	wasmCacheDir := flag.String("wasm-cache-dir", "", "optional persistent disk directory for wazero AOT compiled WASM cache (defaults to user cache dir)")
 	devPluginDir := flag.String("dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
 	showcase := flag.Bool("showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 AI workflow + Go WASI GPU Focus Clock with live cross-runtime sync")
 	showcasePlugin := flag.String("showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow")
@@ -260,7 +261,9 @@ func main() {
 	if err := wvRuntime.RegisterProtocol(); err != nil {
 		log.Fatal(err)
 	}
-	wasmEng, err := wazeroir.NewModuleEngine(ctx)
+	wasmEng, err := wazeroir.NewModuleEngineWithConfig(ctx, wazeroir.EngineConfig{
+		CompilationCacheDir: strings.TrimSpace(*wasmCacheDir),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
