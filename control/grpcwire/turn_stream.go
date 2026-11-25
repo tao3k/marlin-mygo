@@ -187,6 +187,36 @@ func (c *TurnStreamController) GetSessionTurnStatus(ctx context.Context, turn *a
 	return c.Target.App().GetSessionTurnStatus(ctx, &appv1.GetSessionTurnStatusRequest{Turn: turn})
 }
 
+// GetSessionTurnCancellation fetches durable cancellation / RuntimeShutdownReceipt
+// evidence recorded in Rust's ConversationJournal for one turn.
+func (c *TurnStreamController) GetSessionTurnCancellation(ctx context.Context, turn *appv1.SessionTurnRef) (*appv1.GetSessionTurnCancellationResponse, error) {
+	if c == nil || c.Target == nil {
+		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	}
+	return c.Target.App().GetSessionTurnCancellation(ctx, &appv1.GetSessionTurnCancellationRequest{Turn: turn})
+}
+
+// ReplayTurnHistory queries GetSessionSummary and replays committed journal
+// events for turns 1..=latestOrdinal in order (e.g. after a Rust sidecar restart).
+func (c *TurnStreamController) ReplayTurnHistory(
+	ctx context.Context,
+	sessionID string,
+	onUpdate func(TurnStreamUpdate),
+) (uint64, *appv1.GetSessionSummaryResponse, error) {
+	summary, err := c.GetSessionSummary(ctx, sessionID)
+	if err != nil {
+		return 0, nil, err
+	}
+	latest := summary.GetLatestTurn().GetOrdinal()
+	for ord := uint64(1); ord <= latest; ord++ {
+		ref := &appv1.SessionTurnRef{SessionId: sessionID, Ordinal: ord}
+		if _, _, err := c.WatchTurn(ctx, ref, "", onUpdate); err != nil {
+			return ord - 1, summary, err
+		}
+	}
+	return latest, summary, nil
+}
+
 // StreamStatelessTurn streams a stateless text turn via AppServer.StreamTurn.
 func (c *TurnStreamController) StreamStatelessTurn(
 	ctx context.Context,

@@ -59,6 +59,7 @@ func (demoDispatcher) SubmitScopedPanelAction(_ context.Context, req pluginhost.
 func main() {
 	sidecarBin := flag.String("sidecar", "", "optional local Rust marlin-mygo-host binary to spawn with ephemeral token")
 	realSession := flag.Bool("real-session", false, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised sidecar")
+	tursoPath := flag.String("turso", "", "optional Turso SQLite file path for crash-resilient session persistence (MARLIN_BRIDGE_TURSO_PATH)")
 	pubKeyFile := flag.String("pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
 	hostAddr := flag.String("host", "", "optional live Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
 	token := flag.String("token", "marlin-dev-token", "Bearer token for live Rust host")
@@ -119,6 +120,9 @@ func main() {
 		var extraEnv []string
 		if *realSession {
 			extraEnv = append(extraEnv, "MARLIN_BRIDGE_REAL_SESSION=1")
+		}
+		if strings.TrimSpace(*tursoPath) != "" {
+			extraEnv = append(extraEnv, "MARLIN_BRIDGE_TURSO_PATH="+strings.TrimSpace(*tursoPath))
 		}
 		managed, err := grpcwire.LaunchSidecarTarget(ctx, "local-rust-sidecar", "Rust Authority Sidecar", transport.SidecarConfig{
 			BinaryPath:      *sidecarBin,
@@ -353,8 +357,22 @@ func main() {
 					return
 				}
 				go func() {
-					if _, err := turnCtrl.CancelTurn(ctx, ref); err != nil {
+					resp, err := turnCtrl.CancelTurn(ctx, ref)
+					if err != nil {
 						log.Printf("CancelSessionTurn failed: %v", err)
+						return
+					}
+					if rt := resp.GetRuntime(); rt != nil {
+						transcript.ApplyCancellationReceipt(mygoshell.CancellationReceiptView{
+							TurnOrdinal:           ref.GetOrdinal(),
+							Completed:             rt.GetCompleted(),
+							CancellationRequested: rt.GetCancellationRequested(),
+							TrackerClosed:         rt.GetTrackerClosed(),
+							TrackedTasks:          rt.GetTrackedTasksAtShutdown(),
+							RemainingTasks:        rt.GetRemainingTasks(),
+							Status:                rt.GetStatus().String(),
+							Outcome:               resp.GetOutcome().String(),
+						})
 					}
 					win.Invalidate()
 				}()

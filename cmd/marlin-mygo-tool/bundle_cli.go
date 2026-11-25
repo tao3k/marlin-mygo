@@ -285,8 +285,8 @@ func runE2ERust(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("[1/2] Building Rust marlin-mygo-host in %s...\n", absCore)
-		build := exec.Command("cargo", "build", "--locked", "-p", "marlin-agent-app-server", "--features", "ui-grpc", "--bin", "marlin-mygo-host")
+		fmt.Printf("[1/2] Building Rust marlin-mygo-host (with turso-host) in %s...\n", absCore)
+		build := exec.Command("cargo", "build", "--locked", "-p", "marlin-agent-app-server", "--features", "turso-host", "--bin", "marlin-mygo-host")
 		build.Dir = absCore
 		build.Stdout = os.Stdout
 		build.Stderr = os.Stderr
@@ -296,7 +296,7 @@ func runE2ERust(args []string) error {
 		hostBin = filepath.Join(absCore, "target", "debug", "marlin-mygo-host")
 	}
 	fmt.Printf("[2/2] Running real cross-process Rust <-> Go E2E suite against %s...\n", hostBin)
-	testCmd := exec.Command("go", "test", "-v", "-race", "-run", "Test(ManagedSidecarLaunchesRealRustBridge|GrandUnifiedFullStackRealIntegration|RealDurableSessionStreamingToMyGoTranscript)", "./control/grpcwire")
+	testCmd := exec.Command("go", "test", "-v", "-race", "-run", "Test(ManagedSidecarLaunchesRealRustBridge|GrandUnifiedFullStackRealIntegration|RealDurableSessionStreamingToMyGoTranscript|RealTursoCrashRestartRecoveryAndCancellationReceipt)", "./control/grpcwire")
 	testCmd.Env = append(os.Environ(), "CGO_ENABLED=0", "MARLIN_RUST_SIDECAR_BIN="+hostBin)
 	testCmd.Stdout = os.Stdout
 	testCmd.Stderr = os.Stderr

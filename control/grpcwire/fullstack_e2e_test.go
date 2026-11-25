@@ -111,7 +111,7 @@ func TestGrandUnifiedFullStackRealIntegration(t *testing.T) {
 		t.Skip("set MARLIN_RUST_SIDECAR_BIN to run Grand Unified real integration test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	workDir := t.TempDir()

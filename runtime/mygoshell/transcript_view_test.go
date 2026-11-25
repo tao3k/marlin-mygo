@@ -138,3 +138,89 @@ func TestTranscriptViewInteractiveComposerAndStreaming(t *testing.T) {
 		t.Fatalf("expected submitted user message and [CANCELLED] outcome in frame, got %q", tt.Texts())
 	}
 }
+
+func TestTranscriptToolCallHumanGateAndCancellationReceiptCards(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(&testTarget{meta: transport.TargetMeta{
+		ID: "local-mac", DisplayName: "Local Sidecar", Mode: transport.ModeLocalSidecar,
+		TargetKind: schema.TargetDesktopMacOS, Phase: transport.PhaseReady,
+	}})
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+
+	tc := NewTranscriptController()
+	toolRow := tc.UpsertToolCall(ToolCallCardView{
+		CallID:   "call-42",
+		ToolName: "workspace.diff",
+		Phase:    "RUNNING",
+		Kind:     "DIFF",
+		Title:    "Update session.rs",
+		Summary:  "+18 -2 lines",
+		Detail:   "@@ -10,2 +10,18 @@",
+	}, false)
+	gateRow := tc.UpsertHumanGate(HumanGateCardView{
+		GateID:   "gate-99",
+		CallID:   "call-42",
+		Prompt:   "Approve device notification?",
+		Resolved: false,
+	})
+	tc.BeginAssistantTurn(3)
+	tc.ApplyCheckpoint(3, "ev-3-1", "Partial output before cancellation")
+
+	app := NewWorkbenchApp(targets, slots, wb)
+	app.Transcript = tc
+
+	tt := ui.NewTester(app.View, 1180, 760)
+	if !tt.HasText("Update session.rs") || !tt.HasText("[RUNNING]") || !tt.HasText("[PENDING GATE]") {
+		t.Fatalf("expected running tool card and pending gate card, got %q", tt.Texts())
+	}
+
+	// Update tool card in-place with authoritative receipt and resolve gate card.
+	if gotRow := tc.UpsertToolCall(ToolCallCardView{
+		CallID:    "call-42",
+		ToolName:  "workspace.diff",
+		Phase:     "SUCCEEDED",
+		Kind:      "DIFF",
+		Title:     "Update session.rs",
+		Summary:   "+18 -2 lines",
+		Detail:    "@@ -10,2 +10,18 @@",
+		ReceiptID: "rcpt-diff-42",
+	}, false); gotRow != toolRow {
+		t.Fatalf("expected in-place tool card update at row %d, got %d", toolRow, gotRow)
+	}
+	if gotGateRow := tc.UpsertHumanGate(HumanGateCardView{
+		GateID:    "gate-99",
+		CallID:    "call-42",
+		Prompt:    "Approve device notification?",
+		Resolved:  true,
+		ReceiptID: "rcpt-gate-99",
+	}); gotGateRow != gateRow {
+		t.Fatalf("expected in-place gate card update at row %d, got %d", gateRow, gotGateRow)
+	}
+	hBeforeCancel := tc.TotalHeight()
+	tc.ApplyCancellationReceipt(CancellationReceiptView{
+		TurnOrdinal:           3,
+		Completed:             true,
+		CancellationRequested: true,
+		TrackerClosed:         true,
+		TrackedTasks:          1,
+		RemainingTasks:        0,
+		Status:                "RUNTIME_RETIREMENT_STATUS_COMPLETED",
+		Outcome:               "SESSION_TURN_OUTCOME_REMOTE_UNCERTAIN",
+	})
+	if tc.TotalHeight() <= hBeforeCancel {
+		t.Fatalf("expected Fenwick TotalHeight to grow for cancellation receipt badge: before=%d after=%d",
+			hBeforeCancel, tc.TotalHeight())
+	}
+	if tc.InFlight() {
+		t.Fatalf("expected InFlight=false after ApplyCancellationReceipt")
+	}
+
+	tt.Frame()
+	if !tt.HasText("RECEIPT: rcpt-diff-42") || !tt.HasText("[RESOLVED · rcpt-gate-99]") {
+		t.Fatalf("expected resolved tool/gate receipts in GPU frame, got %q", tt.Texts())
+	}
+	if !tt.HasText("CANCELLATION RECEIPT · status=RUNTIME_RETIREMENT_STATUS_COMPLETED completed=true tracker_closed=true tasks=1->0") {
+		t.Fatalf("expected authoritative cancellation receipt badge in GPU frame, got %q", tt.Texts())
+	}
+}

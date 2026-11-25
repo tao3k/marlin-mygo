@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -266,5 +267,220 @@ func TestRealDurableSessionStreamingToMyGoTranscript(t *testing.T) {
 	}
 	if exitErr := managed.Sidecar.ExitErr(); exitErr != nil {
 		t.Fatalf("expected clean exit code 0 from Rust marlin-mygo-host, got %v\nstderr:\n%s", exitErr, stderr.String())
+	}
+}
+
+// TestRealTursoCrashRestartRecoveryAndCancellationReceipt launches two sequential
+// real Rust `marlin-mygo-host` processes backed by the SAME Turso SQLite database:
+//   - Process #1 opens a durable session, completes Turn #1, starts a held Turn #2,
+//     observes Chunk 1 durably, issues authoritative CancelSessionTurn, and verifies
+//     the live RuntimeShutdownReceipt + MyGo GPU transcript card.
+//   - Process #1 terminates completely; Process #2 (fresh OS PID, zero RAM state)
+//     starts against the same Turso file, rehydrates the session via OpenSession(Existing),
+//     proves duplicate Create still rejects across restarts, recovers the exact persisted
+//     RuntimeShutdownReceipt via GetSessionTurnCancellation, and replays Turn #1 + Turn #2
+//     history into a fresh MyGo WorkbenchApp rendered via ui.NewTester.
+func TestRealTursoCrashRestartRecoveryAndCancellationReceipt(t *testing.T) {
+	binPath := os.Getenv("MARLIN_RUST_SIDECAR_BIN")
+	if binPath == "" {
+		t.Skip("MARLIN_RUST_SIDECAR_BIN not set; run via `marlin-mygo-tool e2e-rust`")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tursoPath := filepath.Join(t.TempDir(), "marlin-durable.turso")
+	const sessionID = "turso-durable-session"
+
+	// --- PROCESS #1: Complete Turn #1 + Cancel Turn #2 mid-flight + persist to Turso ---
+	var stderr1 bytes.Buffer
+	proc1, err := grpcwire.LaunchSidecarTarget(ctx, "rust-turso-p1", "Rust Turso Host #1", transport.SidecarConfig{
+		BinaryPath: binPath,
+		ExtraEnv: []string{
+			"MARLIN_BRIDGE_REAL_SESSION=1",
+			"MARLIN_BRIDGE_TURSO_PATH=" + tursoPath,
+			"MARLIN_BRIDGE_CHUNK_DELAY_MS=2",
+		},
+		StartTimeout: 8 * time.Second,
+		Stderr:       &stderr1,
+	})
+	if err != nil {
+		t.Fatalf("Process #1 launch failed: %v\nstderr:\n%s", err, stderr1.String())
+	}
+	pid1 := proc1.Sidecar.PID()
+
+	ctrl1 := grpcwire.NewTurnStreamController(proc1.Target)
+	if id, err := ctrl1.OpenSession(ctx, sessionID, true); err != nil || id != sessionID {
+		_ = proc1.Close()
+		t.Fatalf("Process #1 OpenSession(Create) failed: id=%q err=%v", id, err)
+	}
+
+	prompt1 := "Persist Turn One in Turso"
+	turn1, _, outcome1, err := ctrl1.StartAndWatchTurn(ctx, sessionID, prompt1, 0, "turso-sub-1", nil)
+	if err != nil || turn1.GetOrdinal() != 1 || outcome1 != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {
+		_ = proc1.Close()
+		t.Fatalf("Turn #1 failed: turn=%+v outcome=%v err=%v", turn1, outcome1, err)
+	}
+
+	// Start Turn #2 with deterministic hold-after-chunk-1 so we cancel strictly after Chunk 1 commits.
+	prompt2 := "[hold-after-chunk-1] analyze turso recovery"
+	turn2, err := ctrl1.StartTurn(ctx, sessionID, prompt2, 1, "turso-sub-2")
+	if err != nil || turn2.GetOrdinal() != 2 {
+		_ = proc1.Close()
+		t.Fatalf("Turn #2 StartTurn failed: turn=%+v err=%v", turn2, err)
+	}
+
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	chunk1Seen := make(chan string, 1)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		_, _, _ = ctrl1.WatchTurn(watchCtx, turn2, "", func(upd grpcwire.TurnStreamUpdate) {
+			if upd.TextDelta != "" {
+				select {
+				case chunk1Seen <- upd.TextDelta:
+				default:
+				}
+			}
+		})
+	}()
+
+	select {
+	case delta := <-chunk1Seen:
+		if delta != "[marlin-core] " {
+			cancelWatch()
+			_ = proc1.Close()
+			t.Fatalf("unexpected Turn #2 chunk 1 delta: %q", delta)
+		}
+	case <-ctx.Done():
+		cancelWatch()
+		_ = proc1.Close()
+		t.Fatalf("timed out waiting for Turn #2 chunk 1 before cancel")
+	}
+
+	cancelResp, err := ctrl1.CancelTurn(ctx, turn2)
+	cancelWatch()
+	<-watchDone
+	if err != nil {
+		_ = proc1.Close()
+		t.Fatalf("CancelTurn failed: %v", err)
+	}
+	rt1 := cancelResp.GetRuntime()
+	if rt1 == nil || !rt1.GetCompleted() || !rt1.GetCancellationRequested() || !rt1.GetTrackerClosed() ||
+		rt1.GetStatus() != appv1.RuntimeRetirementStatus_RUNTIME_RETIREMENT_STATUS_COMPLETED ||
+		cancelResp.GetOutcome() != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_REMOTE_UNCERTAIN {
+		_ = proc1.Close()
+		t.Fatalf("unexpected live CancelSessionTurnResponse: %+v", cancelResp)
+	}
+
+	// Fully terminate Process #1 so zero in-memory Rust state survives.
+	if err := proc1.Close(); err != nil {
+		t.Fatalf("Process #1 Close failed: %v", err)
+	}
+	if exitErr := proc1.Sidecar.ExitErr(); exitErr != nil {
+		t.Fatalf("Process #1 expected clean exit 0, got %v\nstderr:\n%s", exitErr, stderr1.String())
+	}
+
+	// --- PROCESS #2: Fresh OS Process recovering 100% from Turso SQLite ---
+	var stderr2 bytes.Buffer
+	proc2, err := grpcwire.LaunchSidecarTarget(ctx, "rust-turso-p2", "Rust Turso Host #2", transport.SidecarConfig{
+		BinaryPath: binPath,
+		ExtraEnv: []string{
+			"MARLIN_BRIDGE_REAL_SESSION=1",
+			"MARLIN_BRIDGE_TURSO_PATH=" + tursoPath,
+		},
+		StartTimeout: 8 * time.Second,
+		Stderr:       &stderr2,
+	})
+	if err != nil {
+		t.Fatalf("Process #2 launch failed: %v\nstderr:\n%s", err, stderr2.String())
+	}
+	defer func() {
+		if closeErr := proc2.Close(); closeErr != nil {
+			t.Errorf("Process #2 Close failed: %v", closeErr)
+		}
+	}()
+	if proc2.Sidecar.PID() == pid1 {
+		t.Fatalf("expected fresh Rust host PID across restart, still got %d", pid1)
+	}
+
+	ctrl2 := grpcwire.NewTurnStreamController(proc2.Target)
+
+	// Duplicate Create must still fail across restarts (durable admission record in Turso).
+	if _, err := ctrl2.OpenSession(ctx, sessionID, true); err == nil {
+		t.Fatalf("expected OpenSession(Create) to reject duplicate session across Turso restart")
+	}
+	// Existing must rehydrate the session binding directly from Turso!
+	if id, err := ctrl2.OpenSession(ctx, sessionID, false); err != nil || id != sessionID {
+		t.Fatalf("Process #2 OpenSession(Existing) failed to rehydrate from Turso: id=%q err=%v", id, err)
+	}
+
+	// Verify durable statuses and exact RuntimeShutdownReceipt survived the process restart.
+	status1, err := ctrl2.GetSessionTurnStatus(ctx, turn1)
+	if err != nil || status1.GetRecoveryState() != appv1.SessionRecoveryState_SESSION_RECOVERY_STATE_FINISHED ||
+		status1.GetOutcome() != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {
+		t.Fatalf("recovered Turn #1 status mismatch: resp=%+v err=%v", status1, err)
+	}
+	status2, err := ctrl2.GetSessionTurnStatus(ctx, turn2)
+	if err != nil || status2.GetRecoveryState() != appv1.SessionRecoveryState_SESSION_RECOVERY_STATE_UNRESOLVED ||
+		status2.GetOutcome() != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_REMOTE_UNCERTAIN {
+		t.Fatalf("recovered Turn #2 status mismatch: resp=%+v err=%v", status2, err)
+	}
+
+	cancelRecovered, err := ctrl2.GetSessionTurnCancellation(ctx, turn2)
+	if err != nil {
+		t.Fatalf("Process #2 GetSessionTurnCancellation failed: %v", err)
+	}
+	rt2 := cancelRecovered.GetRecorded()
+	if rt2 == nil || !rt2.GetCompleted() || !rt2.GetCancellationRequested() || !rt2.GetTrackerClosed() ||
+		rt2.GetStatus() != appv1.RuntimeRetirementStatus_RUNTIME_RETIREMENT_STATUS_COMPLETED ||
+		rt2.GetTrackedTasksAtShutdown() != rt1.GetTrackedTasksAtShutdown() ||
+		rt2.GetRemainingTasks() != rt1.GetRemainingTasks() ||
+		cancelRecovered.GetOutcome() != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_REMOTE_UNCERTAIN {
+		t.Fatalf("recovered Turso cancellation receipt mismatch:\n  before=%+v\n  after =%+v", rt1, cancelRecovered)
+	}
+
+	// Replay full Turn #1 + Turn #2 history from Process #2 into a brand-new Fenwick TranscriptController!
+	recoveredTranscript := mygoshell.NewTranscriptController()
+	latestOrd, summary2, err := ctrl2.ReplayTurnHistory(ctx, sessionID, func(upd grpcwire.TurnStreamUpdate) {
+		if upd.Started {
+			recoveredTranscript.BeginAssistantTurn(upd.TurnOrdinal)
+		}
+		if upd.TextDelta != "" {
+			recoveredTranscript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+		}
+		if upd.HasOutcome {
+			recoveredTranscript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
+		}
+	})
+	if err != nil || latestOrd != 2 || summary2.GetLatestTurn().GetOrdinal() != 2 {
+		t.Fatalf("ReplayTurnHistory from Process #2 failed: latest=%d summary=%+v err=%v", latestOrd, summary2, err)
+	}
+	recoveredTranscript.ApplyCancellationReceipt(mygoshell.CancellationReceiptView{
+		TurnOrdinal:           turn2.GetOrdinal(),
+		Completed:             rt2.GetCompleted(),
+		CancellationRequested: rt2.GetCancellationRequested(),
+		TrackerClosed:         rt2.GetTrackerClosed(),
+		TrackedTasks:          rt2.GetTrackedTasksAtShutdown(),
+		RemainingTasks:        rt2.GetRemainingTasks(),
+		Status:                rt2.GetStatus().String(),
+		Outcome:               cancelRecovered.GetOutcome().String(),
+	})
+
+	// Render the recovered transcript on a fresh MyGo WorkbenchApp and assert GPU frame parity!
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(proc2)
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Transcript = recoveredTranscript
+
+	tt := ui.NewTester(app.View, 1180, 760)
+	wantTurn1 := `[marlin-core] processed "Persist Turn One in Turso" via durable ConversationJournal.`
+	if !tt.HasText(wantTurn1) {
+		t.Fatalf("expected Turso-recovered Turn #1 reply %q in fresh GPU frame, got %q", wantTurn1, strings.Join(tt.Texts(), " | "))
+	}
+	if !tt.HasText("CANCELLATION RECEIPT · status=RUNTIME_RETIREMENT_STATUS_COMPLETED") {
+		t.Fatalf("expected Turso-recovered cancellation receipt in fresh GPU frame, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }

@@ -22,8 +22,47 @@ const (
 	RoleAssistant TranscriptRole = "ASSISTANT"
 	RoleThinking  TranscriptRole = "THINKING"
 	RoleTool      TranscriptRole = "TOOL"
+	RoleGate      TranscriptRole = "GATE"
 	RoleSystem    TranscriptRole = "SYSTEM"
 )
+
+// ToolCallCardView projects a durable marlin.app.v1.ToolCallEvent into a
+// transport-free structured card rendered inside the Fenwick transcript.
+type ToolCallCardView struct {
+	CallID        string
+	ToolName      string
+	Phase         string
+	Kind          string
+	Title         string
+	Summary       string
+	Detail        string
+	GateID        string
+	ReceiptID     string
+	DenialMessage string
+}
+
+// HumanGateCardView projects a durable marlin.app.v1.HumanGateEvent into an
+// inline transcript card synced with the authoritative Approval Gate modal.
+type HumanGateCardView struct {
+	GateID    string
+	CallID    string
+	Prompt    string
+	Resolved  bool
+	ReceiptID string
+}
+
+// CancellationReceiptView projects Rust's durable RuntimeShutdownReceipt into
+// structured transcript evidence when a turn is cancelled mid-flight.
+type CancellationReceiptView struct {
+	TurnOrdinal           uint64
+	Completed             bool
+	CancellationRequested bool
+	TrackerClosed         bool
+	TrackedTasks          uint64
+	RemainingTasks        uint64
+	Status                string
+	Outcome               string
+}
 
 // TranscriptEntry stores one row in the Fenwick-virtualized live transcript.
 type TranscriptEntry struct {
@@ -36,6 +75,9 @@ type TranscriptEntry struct {
 	Folded       bool
 	Streaming    bool
 	OutcomeLabel string
+	ToolCard     *ToolCallCardView
+	HumanGate    *HumanGateCardView
+	Cancellation *CancellationReceiptView
 }
 
 const (
@@ -44,15 +86,19 @@ const (
 	transcriptHeaderPx         uint32 = 34
 	transcriptLinePx           uint32 = 20
 	transcriptCollapsedPx      uint32 = 38
+	transcriptEvidenceBadgePx  uint32 = 26
 )
 
 // TranscriptController maintains an O(log N) Fenwick-tree virtualized transcript
 // suitable for 100k+ row streaming conversations, collapsible thinking/tool blocks,
-// idempotent durable event replay, and an interactive MyGo GPU chat composer.
+// inline approval gate cards, durable cancellation receipts, idempotent event
+// replay, and an interactive MyGo GPU chat composer.
 type TranscriptController struct {
 	mu           sync.RWMutex
 	entries      []TranscriptEntry
 	turnRow      map[uint64]int
+	toolRows     map[string]int
+	gateRows     map[string]int
 	seenEvents   map[string]struct{}
 	heights      *viewport.VirtualHeightIndex
 	scrollY      uint64
@@ -67,6 +113,8 @@ type TranscriptController struct {
 func NewTranscriptController() *TranscriptController {
 	return &TranscriptController{
 		turnRow:    make(map[uint64]int),
+		toolRows:   make(map[string]int),
+		gateRows:   make(map[string]int),
 		seenEvents: make(map[string]struct{}),
 		heights:    viewport.NewVirtualHeightIndex(64),
 		viewportH:  defaultTranscriptViewportH,
@@ -105,19 +153,126 @@ func (tc *TranscriptController) AppendThinking(title, text string, folded bool) 
 	return tc.appendLocked(entry)
 }
 
-// AppendTool appends a collapsible tool invocation card row in O(log N).
+// AppendTool appends a simple collapsible tool summary row in O(log N).
 func (tc *TranscriptController) AppendTool(toolName, summary string, folded bool) int {
+	return tc.UpsertToolCall(ToolCallCardView{
+		CallID:   fmt.Sprintf("tool-%d", tc.Len()+1),
+		ToolName: toolName,
+		Title:    toolName,
+		Summary:  summary,
+	}, folded)
+}
+
+// UpsertToolCall creates or updates a structured tool-call card in-place keyed
+// by card.CallID and updates its Fenwick height in O(log N).
+func (tc *TranscriptController) UpsertToolCall(card ToolCallCardView, folded bool) int {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	entry := TranscriptEntry{
-		ID:          fmt.Sprintf("tool-%d", len(tc.entries)+1),
-		Role:        RoleTool,
-		Title:       toolName,
-		Text:        summary,
-		Collapsible: true,
-		Folded:      folded,
+	cp := card
+	if cp.CallID == "" {
+		cp.CallID = fmt.Sprintf("tool-%d", len(tc.entries)+1)
 	}
-	return tc.appendLocked(entry)
+	title := cp.Title
+	if title == "" {
+		title = cp.ToolName
+	}
+	body := formatToolCardBody(cp)
+	if row, ok := tc.toolRows[cp.CallID]; ok {
+		tc.entries[row].Title = title
+		tc.entries[row].Text = body
+		tc.entries[row].OutcomeLabel = cp.Phase
+		tc.entries[row].ToolCard = &cp
+		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
+		if tc.autoFollow {
+			tc.scrollToBottomLocked()
+		}
+		return row
+	}
+	entry := TranscriptEntry{
+		ID:           "tool-" + cp.CallID,
+		Role:         RoleTool,
+		Title:        title,
+		Text:         body,
+		Collapsible:  true,
+		Folded:       folded,
+		OutcomeLabel: cp.Phase,
+		ToolCard:     &cp,
+	}
+	row := tc.appendLocked(entry)
+	tc.toolRows[cp.CallID] = row
+	return row
+}
+
+// UpsertHumanGate creates or updates an inline Approval Gate card keyed by
+// gate.GateID and updates its Fenwick height in O(log N).
+func (tc *TranscriptController) UpsertHumanGate(gate HumanGateCardView) int {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	cp := gate
+	if cp.GateID == "" {
+		cp.GateID = fmt.Sprintf("gate-%d", len(tc.entries)+1)
+	}
+	badge := "PENDING GATE"
+	if cp.Resolved {
+		badge = "RESOLVED"
+		if cp.ReceiptID != "" {
+			badge = "RESOLVED · " + cp.ReceiptID
+		}
+	}
+	if row, ok := tc.gateRows[cp.GateID]; ok {
+		tc.entries[row].Text = cp.Prompt
+		tc.entries[row].OutcomeLabel = badge
+		tc.entries[row].HumanGate = &cp
+		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
+		if tc.autoFollow {
+			tc.scrollToBottomLocked()
+		}
+		return row
+	}
+	entry := TranscriptEntry{
+		ID:           "gate-" + cp.GateID,
+		Role:         RoleGate,
+		Title:        cp.GateID,
+		Text:         cp.Prompt,
+		OutcomeLabel: badge,
+		HumanGate:    &cp,
+	}
+	row := tc.appendLocked(entry)
+	tc.gateRows[cp.GateID] = row
+	return row
+}
+
+// ApplyCancellationReceipt attaches Rust's authoritative RuntimeShutdownReceipt
+// evidence to the assistant turn row and updates its Fenwick height in O(log N).
+func (tc *TranscriptController) ApplyCancellationReceipt(receipt CancellationReceiptView) int {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	cp := receipt
+	row, ok := tc.turnRow[cp.TurnOrdinal]
+	if !ok {
+		row = tc.appendLocked(TranscriptEntry{
+			ID:          fmt.Sprintf("turn-%d", cp.TurnOrdinal),
+			Role:        RoleAssistant,
+			Title:       fmt.Sprintf("Turn #%d", cp.TurnOrdinal),
+			TurnOrdinal: cp.TurnOrdinal,
+		})
+		tc.turnRow[cp.TurnOrdinal] = row
+	}
+	tc.entries[row].Streaming = false
+	if cp.Outcome != "" {
+		tc.entries[row].OutcomeLabel = cp.Outcome
+	} else {
+		tc.entries[row].OutcomeLabel = "CANCELLED"
+	}
+	tc.entries[row].Cancellation = &cp
+	if tc.activeTurn == cp.TurnOrdinal {
+		tc.inFlight = false
+	}
+	tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
+	if tc.autoFollow {
+		tc.scrollToBottomLocked()
+	}
+	return row
 }
 
 // BeginAssistantTurn creates or locates the streaming assistant row for turnOrdinal.
@@ -345,6 +500,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 						border = t.Accent
 					case RoleThinking, RoleTool:
 						roleColor = t.Warning
+					case RoleGate:
+						border = t.Warning
+						roleColor = t.Warning
 					}
 					ui.Column(c).MinWidth(0).Padding(8).Gap(4).Radius(6).
 						Border(1, border).Children(func() {
@@ -375,6 +533,20 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 								FontSize(11).TextColor(t.TextMuted)
 						} else if entry.Text != "" {
 							ui.Text(c, entry.Text).FontSize(13)
+						}
+						if entry.ToolCard != nil && !entry.Folded {
+							if entry.ToolCard.ReceiptID != "" {
+								ui.Textf(c, "RECEIPT: %s", entry.ToolCard.ReceiptID).FontSize(11).TextColor(t.Accent)
+							}
+							if entry.ToolCard.DenialMessage != "" {
+								ui.Textf(c, "DENIED: %s", entry.ToolCard.DenialMessage).FontSize(11).TextColor(t.Warning)
+							}
+						}
+						if entry.Cancellation != nil {
+							rc := entry.Cancellation
+							ui.Textf(c, "CANCELLATION RECEIPT · status=%s completed=%v tracker_closed=%v tasks=%d->%d",
+								rc.Status, rc.Completed, rc.TrackerClosed, rc.TrackedTasks, rc.RemainingTasks).
+								FontSize(11).Bold().TextColor(t.Warning)
 						}
 					})
 				}
@@ -414,6 +586,22 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 }
 
+func formatToolCardBody(card ToolCallCardView) string {
+	var parts []string
+	if card.Kind != "" {
+		parts = append(parts, fmt.Sprintf("[%s] %s", card.Kind, card.ToolName))
+	} else if card.ToolName != "" {
+		parts = append(parts, card.ToolName)
+	}
+	if card.Summary != "" {
+		parts = append(parts, card.Summary)
+	}
+	if card.Detail != "" {
+		parts = append(parts, card.Detail)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (tc *TranscriptController) appendLocked(entry TranscriptEntry) int {
 	h := tc.estimateHeightLocked(entry)
 	row := tc.heights.Append(h)
@@ -437,8 +625,15 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 	if entry.Collapsible && entry.Folded {
 		return transcriptCollapsedPx
 	}
+	extra := uint32(0)
+	if entry.Cancellation != nil {
+		extra += transcriptEvidenceBadgePx
+	}
+	if entry.ToolCard != nil && (entry.ToolCard.ReceiptID != "" || entry.ToolCard.DenialMessage != "") {
+		extra += transcriptEvidenceBadgePx
+	}
 	if entry.Text == "" {
-		return transcriptHeaderPx + transcriptLinePx
+		return transcriptHeaderPx + transcriptLinePx + extra
 	}
 	cols := tc.wrapCols
 	if cols <= 0 {
@@ -456,5 +651,5 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 	if lines < 1 {
 		lines = 1
 	}
-	return transcriptHeaderPx + uint32(lines)*transcriptLinePx
+	return transcriptHeaderPx + uint32(lines)*transcriptLinePx + extra
 }
