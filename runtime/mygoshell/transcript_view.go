@@ -15,6 +15,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/richtext"
 	"github.com/tao3k/marlin-mygo/engine/viewport"
 )
 
@@ -104,6 +105,7 @@ type TranscriptEntry struct {
 	denialBadge   string
 	cancelBadge   string
 	segments      []TranscriptSegment
+	blocks        []richtext.Block
 }
 
 func (e *TranscriptEntry) refreshLabels() {
@@ -260,10 +262,14 @@ type TranscriptController struct {
 	OnPickAttachment  func()
 	OnPasteAttachment func()
 	OnSearchSession   func(query string) []SessionSearchHit
+	// Optional external parser hook backed by org-rz1 WASM or the Rust backend
+	// for rendering rich Org-mode / Markdown previews without Go-side parsing.
+	OnParseRichDoc func(format richtext.Format, docID, source string) ([]richtext.Block, error)
 
 	// Thin Cmd+F Find-in-Session state & Attachment Preview Lightbox state.
-	previewAtt *composer.AttachmentRef
-	thumbs     *AttachmentThumbCache
+	previewAtt    *composer.AttachmentRef
+	previewBlocks []richtext.Block
+	thumbs        *AttachmentThumbCache
 
 	// Thin Cmd+F Session Search UI state (hits supplied exclusively by OnSearchSession).
 	searchOpen      bool
@@ -384,10 +390,30 @@ func (tc *TranscriptController) OpenSearch() {
 }
 
 // OpenAttachmentPreview opens the Tier-0 read-only Attachment Preview Lightbox.
+// When OnParseRichDoc (backed by org-rz1 WASM or Rust) is wired and the file is
+// `.org` or `.md`, its pre-parsed Rich Document IR is admitted once on open.
 func (tc *TranscriptController) OpenAttachmentPreview(att composer.AttachmentRef) {
 	cp := att
+	tc.mu.RLock()
+	parseFn := tc.OnParseRichDoc
+	tc.mu.RUnlock()
+
+	var blocks []richtext.Block
+	if parseFn != nil && cp.PreviewText != "" && isRichMarkupFilename(cp.Name) {
+		fmtKind := richtext.FormatMarkdown
+		if strings.HasSuffix(strings.ToLower(cp.Name), ".org") {
+			fmtKind = richtext.FormatOrg
+		}
+		if parsed, err := parseFn(fmtKind, "att-"+cp.ID, cp.PreviewText); err == nil {
+			if admitted, aErr := richtext.AdmitBlocks("att-"+cp.ID, parsed); aErr == nil {
+				blocks = admitted
+			}
+		}
+	}
+
 	tc.mu.Lock()
 	tc.previewAtt = &cp
+	tc.previewBlocks = blocks
 	tc.mu.Unlock()
 }
 
@@ -395,7 +421,56 @@ func (tc *TranscriptController) OpenAttachmentPreview(att composer.AttachmentRef
 func (tc *TranscriptController) CloseAttachmentPreview() {
 	tc.mu.Lock()
 	tc.previewAtt = nil
+	tc.previewBlocks = nil
 	tc.mu.Unlock()
+}
+
+// AppendAssistantRichBlocks admits pre-parsed Org-mode or Markdown Document IR
+// (emitted by org-rz1 WASM or the Rust backend) directly into the virtualized
+// transcript with zero Go-side parsing and O(log N) Fenwick height tracking.
+func (tc *TranscriptController) AppendAssistantRichBlocks(
+	turnOrdinal uint64,
+	title string,
+	blocks []richtext.Block,
+	outcomeLabel string,
+) (int, error) {
+	id := fmt.Sprintf("turn-%d", turnOrdinal)
+	admitted, err := richtext.AdmitBlocks(id, blocks)
+	if err != nil {
+		return -1, err
+	}
+	if title == "" {
+		title = fmt.Sprintf("Turn #%d", turnOrdinal)
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	row := tc.appendLocked(TranscriptEntry{
+		ID:           id,
+		Role:         RoleAssistant,
+		Title:        title,
+		TurnOrdinal:  turnOrdinal,
+		OutcomeLabel: outcomeLabel,
+		blocks:       admitted,
+	})
+	tc.turnRow[turnOrdinal] = row
+	return row, nil
+}
+
+// ApplyRichBlocks attaches pre-parsed Document IR (from org-rz1 WASM or Rust)
+// to an existing transcript row and updates its Fenwick height in O(log N).
+func (tc *TranscriptController) ApplyRichBlocks(row int, blocks []richtext.Block) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if row < 0 || row >= len(tc.entries) {
+		return fmt.Errorf("transcript: row %d out of range", row)
+	}
+	admitted, err := richtext.AdmitBlocks(tc.entries[row].ID, blocks)
+	if err != nil {
+		return err
+	}
+	tc.entries[row].blocks = admitted
+	tc.updateRowHeightLocked(row)
+	return nil
 }
 
 // IsAttachmentPreviewOpen reports whether the Attachment Preview Lightbox is visible.
@@ -964,9 +1039,11 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	slashFn := tc.OnSlashCommand
 	compState := tc.Composer
 	var activePreview *composer.AttachmentRef
+	var activePreviewBlocks []richtext.Block
 	if tc.previewAtt != nil {
 		cp := *tc.previewAtt
 		activePreview = &cp
+		activePreviewBlocks = tc.previewBlocks
 	}
 	tc.renderEntries = tc.renderEntries[:0]
 	tc.renderIndices = tc.renderIndices[:0]
@@ -1157,6 +1234,11 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 							})
 							if entry.Collapsible && entry.Folded {
 								ui.Text(c, entry.foldedSummary).FontSize(11.5).TextColor(toColor(dt.InkMuted))
+							} else if len(entry.blocks) > 0 {
+								RenderRichBlocks(c, dt, entry.blocks, lastCopied, func(key, code string) {
+									copiedKey = key
+									copiedCode = code
+								})
 							} else if len(entry.segments) > 0 {
 								for sIdx := range entry.segments {
 									seg := entry.segments[sIdx]
@@ -1164,7 +1246,6 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 										ui.Text(c, seg.Content).FontSize(13).LineHeight(1.45).TextColor(toColor(dt.Ink))
 										continue
 									}
-									// T3 Chat / DeepSeek GPU code-fence card with language badge + 1-click Copy.
 									ui.Column(c).MinWidth(0).Padding(8, 10).Gap(5).Radius(10).
 										Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
 										ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -1329,7 +1410,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	})
 
 	if activePreview != nil {
-		RenderAttachmentPreviewModal(c, dt, *activePreview, tc.CachedThumbnail(activePreview.SHA256Hex), func(snippet string) {
+		RenderAttachmentPreviewModal(c, dt, *activePreview, tc.CachedThumbnail(activePreview.SHA256Hex), activePreviewBlocks, func(snippet string) {
 			copiedKey = "preview-" + activePreview.ID
 			copiedCode = snippet
 		}, func() {
@@ -1339,11 +1420,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 
 	tc.mu.Lock()
 	tc.composerText = draft
-	if openPreviewAtt != nil {
-		tc.previewAtt = openPreviewAtt
-	}
 	if closePreviewNow {
 		tc.previewAtt = nil
+		tc.previewBlocks = nil
 	}
 	if openSearchNow {
 		tc.searchOpen = true
@@ -1386,6 +1465,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		} else if slashFn != nil {
 			slashFn(*pickedSlash)
 		}
+	}
+	if openPreviewAtt != nil {
+		tc.OpenAttachmentPreview(*openPreviewAtt)
 	}
 	if droppedPayload != nil {
 		_, _ = tc.HandleDroppedTransfer(*droppedPayload)
@@ -1494,6 +1576,9 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 	}
 	if entry.ToolCard != nil && (entry.ToolCard.ReceiptID != "" || entry.ToolCard.DenialMessage != "") {
 		extra += transcriptEvidenceBadgePx
+	}
+	if len(entry.blocks) > 0 {
+		extra += estimateRichBlockExtraPx(entry.blocks)
 	}
 	if entry.Text == "" {
 		return transcriptHeaderPx + transcriptLinePx + extra

@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/richtext"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
 
@@ -191,6 +192,7 @@ func RenderAttachmentPreviewModal(
 	dt DerivedTheme,
 	att composer.AttachmentRef,
 	thumb ui.ImageSource,
+	richBlocks []richtext.Block,
 	onCopy func(string),
 	onClose func(),
 ) {
@@ -223,7 +225,7 @@ func RenderAttachmentPreviewModal(
 				}
 			})
 
-			renderAttachmentPreviewBody(c, dt, att, thumb, 360, 210, 16, onCopy)
+			renderAttachmentPreviewBody(c, dt, att, thumb, richBlocks, 360, 210, 16, onCopy)
 
 			// Footer status
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
@@ -275,7 +277,7 @@ func RenderMobileAttachmentSheet(
 				}
 			})
 			AppleBadgePill(c, "MAGIC VERIFIED · FAIL-CLOSED", dt.Success, dt)
-			renderAttachmentPreviewBody(c, dt, att, thumb, 300, 170, 8, onCopy)
+			renderAttachmentPreviewBody(c, dt, att, thumb, nil, 300, 170, 8, onCopy)
 		})
 	})
 }
@@ -285,6 +287,7 @@ func renderAttachmentPreviewBody(
 	dt DerivedTheme,
 	att composer.AttachmentRef,
 	thumb ui.ImageSource,
+	richBlocks []richtext.Block,
 	imgW, imgH float32,
 	maxLines int,
 	onCopy func(string),
@@ -306,8 +309,11 @@ func renderAttachmentPreviewBody(
 		ui.Column(c).Padding(10, 12).Gap(6).Radius(12).
 			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-				ui.Textf(c, "SOURCE PREVIEW · %d lines", att.LineCount).
-					FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+				headerTxt := fmt.Sprintf("SOURCE PREVIEW · %d lines", att.LineCount)
+				if len(richBlocks) > 0 && isRichMarkupFilename(att.Name) {
+					headerTxt = formatRichPreviewHeader(att.Name, att.LineCount)
+				}
+				ui.Text(c, headerTxt).FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
 				ui.Spacer(c)
 				if onCopy != nil && att.PreviewText != "" {
 					if ApplePillButton(c, "att-preview-copy", "Copy Snippet", BtnTinted, dt, svgIconClipboard, true).Clicked() {
@@ -315,10 +321,18 @@ func renderAttachmentPreviewBody(
 					}
 				}
 			})
-			lines := strings.Split(att.PreviewText, "\n")
-			limit := min(len(lines), maxLines)
-			for i := 0; i < limit; i++ {
-				ui.Textf(c, "%2d | %s", i+1, lines[i]).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.Ink))
+			if len(richBlocks) > 0 {
+				RenderRichBlocks(c, dt, richBlocks, "", func(_, code string) {
+					if onCopy != nil {
+						onCopy(code)
+					}
+				})
+			} else {
+				lines := strings.Split(att.PreviewText, "\n")
+				limit := min(len(lines), maxLines)
+				for i := 0; i < limit; i++ {
+					ui.Textf(c, "%2d | %s", i+1, lines[i]).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.Ink))
+				}
 			}
 		})
 	case composer.AttachmentPDF:
