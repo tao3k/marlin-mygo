@@ -68,6 +68,7 @@ type WorkbenchApp struct {
 	Windows             *shell.WindowTree
 	WindowBuffers       []shell.PaneBuffer
 	OnSelectPerspective func(name string)
+	OnLayoutChanged     func(snap shell.WindowTreeSnapshot)
 
 	// Optional callback invoked when the user adds a Remote TLS gRPC target via "+ Remote".
 	OnAddRemoteTarget func(targetID, displayName, endpoint, bearerToken string) error
@@ -133,29 +134,88 @@ func NewWorkbenchApp(
 	return app
 }
 
+// EnableEmacsWindowKeymap compiles the canonical Emacs (`C-x ...`) and
+// Meow (`SPC w ...`) composable window chord keymap onto WorkbenchApp and
+// registers the corresponding window commands in the Cmd+K Command Palette.
+func (a *WorkbenchApp) EnableEmacsWindowKeymap() error {
+	kt, err := input.CompileKeyTrie(shell.DefaultEmacsWindowBindings())
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.KeyTrie = kt
+	existing := make(map[string]struct{}, len(a.Commands))
+	for _, c := range a.Commands {
+		existing[c.Name] = struct{}{}
+	}
+	for _, c := range shell.DefaultEmacsWindowCommands() {
+		if _, ok := existing[c.Name]; !ok {
+			a.Commands = append(a.Commands, c)
+		}
+	}
+	a.paletteRankValid = false
+	a.mu.Unlock()
+	return nil
+}
+
+// ApplyLayoutSpec projects a declarative Scheme layout rule onto WorkbenchApp's
+// Emacs WindowTree and notifies OnLayoutChanged listeners (e.g. WebView panels).
+func (a *WorkbenchApp) ApplyLayoutSpec(spec shell.LayoutSpec) error {
+	if a.Windows == nil {
+		return shell.ErrInvalidLayoutSpec
+	}
+	catalog := make(map[string]shell.PaneBuffer, len(a.WindowBuffers))
+	for _, b := range a.WindowBuffers {
+		catalog[b.BufferID] = b
+	}
+	if err := shell.ApplyLayoutSpec(a.Windows, spec, catalog); err != nil {
+		return err
+	}
+	if a.OnLayoutChanged != nil {
+		a.OnLayoutChanged(a.Windows.Snapshot())
+	}
+	return nil
+}
+
+func (a *WorkbenchApp) invokeCommand(commandName string) {
+	if a.Windows != nil {
+		if handled, err := shell.ExecuteWindowCommand(a.Windows, commandName, a.WindowBuffers); handled && err == nil {
+			if a.OnLayoutChanged != nil {
+				a.OnLayoutChanged(a.Windows.Snapshot())
+			}
+		}
+	}
+	if a.OnCommandInvoke != nil && commandName != "" {
+		a.OnCommandInvoke(commandName)
+	}
+}
+
 // HandleKeyToken feeds one normalized key token (e.g. "SPC", "w", "v") through
 // the compiled Scheme KeyTrie in O(chord_len). On MatchPrefix it retains the
-// chord for Hydra hint rendering; on MatchExact it invokes OnCommandInvoke.
+// chord for Hydra hint rendering; on MatchExact it executes any bound Emacs
+// WindowTree command and invokes OnCommandInvoke.
 func (a *WorkbenchApp) HandleKeyToken(mode input.KeyScope, token string) (input.MatchKind, string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.KeyTrie == nil || token == "" {
 		a.activeChord = a.activeChord[:0]
+		a.mu.Unlock()
 		return input.MatchNone, ""
 	}
 	a.activeChord = append(a.activeChord, token)
 	kind, binding := a.KeyTrie.Lookup(mode, a.activeChord)
 	switch kind {
 	case input.MatchPrefix:
-		return input.MatchPrefix, strings.Join(a.activeChord, " ")
+		prefix := strings.Join(a.activeChord, " ")
+		a.mu.Unlock()
+		return input.MatchPrefix, prefix
 	case input.MatchExact:
 		a.activeChord = a.activeChord[:0]
-		if a.OnCommandInvoke != nil && binding.CommandName != "" {
-			a.OnCommandInvoke(binding.CommandName)
-		}
+		a.mu.Unlock()
+		a.invokeCommand(binding.CommandName)
 		return input.MatchExact, binding.CommandName
 	default:
 		a.activeChord = a.activeChord[:0]
+		a.mu.Unlock()
 		return input.MatchNone, ""
 	}
 }
@@ -603,9 +663,16 @@ func (a *WorkbenchApp) renderComposableWorkspace(
 }
 
 func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
+	dt := a.cachedDerivedTheme
+
 	ui.Modal(c, &a.paletteOpen, func() {
-		ui.Text(c, "Command Palette (marlin.ui.v1)").FontSize(16).Bold()
-		ui.TextInput(c, &a.paletteQuery).Placeholder("Type a Scheme command...").AutoFocus()
+		ui.Text(c, "Command Palette (marlin.ui.v1)").FontSize(16).FontWeight(700).TextColor(toColor(dt.Ink))
+		ui.Row(c).Padding(8, 12).Radius(14).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			ui.TextInputBase(c.Key("palette-input"), &a.paletteQuery).
+				Placeholder("Type a Scheme or Emacs window command...").
+				FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).AutoFocus()
+		})
 		if len(a.Commands) > 0 {
 			if !a.paletteRankValid || a.paletteLastQuery != a.paletteQuery || a.paletteLastCmdLen != len(a.Commands) {
 				a.rankedBuf = input.RankCommands(a.paletteQuery, a.Commands, a.rankedBuf[:0])
@@ -614,20 +681,18 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 				a.paletteRankValid = true
 			}
 			limit := min(len(a.rankedBuf), 8)
-			ui.Column(c).Gap(4).Children(func() {
+			ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 				for i := 0; i < limit; i++ {
 					cmd := a.Commands[a.rankedBuf[i].Index]
-					if ui.Button(c.Key("cmd-"+cmd.Name), cmd.Name).Clicked() {
+					if ApplePillButton(c, "cmd-"+cmd.Name, cmd.Name, BtnGlass, dt, nil, true).Clicked() {
 						a.paletteOpen = false
-						if a.OnCommandInvoke != nil {
-							a.OnCommandInvoke(cmd.Name)
-						}
+						a.invokeCommand(cmd.Name)
 					}
 				}
 			})
 		}
 		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-			if ui.Button(c.Key("close-palette"), "Close").Clicked() {
+			if ApplePillButton(c, "close-palette", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
 				a.paletteOpen = false
 			}
 		})
@@ -650,7 +715,7 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 				a.settingsOpen = false
 			})
 			ui.Row(c).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("close-settings"), "Close").Clicked() {
+				if ApplePillButton(c, "close-settings", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
 					a.settingsOpen = false
 				}
 			})
@@ -680,10 +745,10 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 				a.addRemoteOpen = false
 			})
 			if a.addRemoteStatus != "" {
-				ui.Text(c, a.addRemoteStatus).FontSize(12).TextColor(t.Danger)
+				ui.Text(c, a.addRemoteStatus).FontSize(12).TextColor(toColor(dt.Danger))
 			}
 			ui.Row(c).Justify(ui.End).Children(func() {
-				if ui.Button(c.Key("close-add-remote"), "Close").Clicked() {
+				if ApplePillButton(c, "close-add-remote", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
 					a.addRemoteOpen = false
 				}
 			})
@@ -698,20 +763,23 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 			a.gateOpen = false
 			return
 		}
-		ui.Text(c, "Approval Gate (marlin.gate.v1)").FontSize(16).Bold()
-		ui.Textf(c, "Tool: %s", gate.ToolName).Bold().TextColor(t.Warning)
-		ui.Text(c, gate.Prompt)
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			AppleBadgePill(c, "TIER-0 GATE", dt.Warning, dt)
+			ui.Text(c, "Approval Gate (marlin.gate.v1)").FontSize(16).FontWeight(700).TextColor(toColor(dt.Ink))
+		})
+		ui.Textf(c, "Tool: %s", gate.ToolName).FontWeight(600).TextColor(toColor(dt.Warning))
+		ui.Text(c, gate.Prompt).FontSize(15).FontWeight(600).TextColor(toColor(dt.Ink))
 		if gate.Description != "" {
-			ui.Text(c, gate.Description).TextColor(t.TextMuted)
+			ui.Text(c, gate.Description).FontSize(13).TextColor(toColor(dt.InkSecondary))
 		}
-		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-			if ui.Button(c.Key("gate-reject"), "Reject").Clicked() {
+		ui.Row(c).Justify(ui.End).Gap(10).Children(func() {
+			if ApplePillButton(c, "gate-reject", "Reject", BtnDestructive, dt, svgIconXMark, false).Clicked() {
 				a.gateOpen = false
 				if a.OnGateDecision != nil {
 					a.OnGateDecision(gate.GateID, false)
 				}
 			}
-			if ui.PrimaryButton(c.Key("gate-approve"), "Approve Once").Clicked() {
+			if ApplePillButton(c, "gate-approve", "Approve Once", BtnPrimary, dt, svgIconCheck, false).Clicked() {
 				a.gateOpen = false
 				if a.OnGateDecision != nil {
 					a.OnGateDecision(gate.GateID, true)

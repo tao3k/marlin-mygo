@@ -111,35 +111,37 @@ func renderWindowLeaf(
 	}
 
 	ui.Column(c.Key("win-"+string(leaf.ID))).Grow(1).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).
-		Radius(10).Background(toColor(dt.Surface)).Border(1, borderColor).Children(func() {
-		// Emacs-style compact Window Modeline / Header bar.
-		ui.Row(c.Key("wbar-"+string(leaf.ID))).Padding(5, 10).Gap(6).AlignItems(ui.Center).
-			Background(headerBg).BorderWidth(0, 0, 1, 0).BorderColor(toColor(dt.BorderSubtle)).Children(func() {
+		Radius(14).Background(toColor(dt.Surface)).Border(1, borderColor).Clip().Children(func() {
+		// Emacs-style compact Apple-refined Window Modeline / Header bar.
+		ui.Row(c.Key("wbar-"+string(leaf.ID))).Padding(6, 10).Gap(6).AlignItems(ui.Center).
+			Background(headerBg).BorderWidth(0, 0, 1, 0).BorderColor(glassBorderColor(dt)).Children(func() {
 			prefix := "○"
+			focusVariant := BtnGlass
 			if isFocused {
 				prefix = "●"
+				focusVariant = BtnTinted
 			}
 			title := leaf.Buffer.Title
 			if title == "" {
 				title = leaf.Buffer.BufferID
 			}
 			btnLabel := fmt.Sprintf("%s %s", prefix, title)
-			if ui.Button(c.Key("wfocus-"+string(leaf.ID)), btnLabel).Clicked() {
+			if ApplePillButton(c, "wfocus-"+string(leaf.ID), btnLabel, focusVariant, dt, nil, true).Clicked() {
 				tree.FocusWindow(leaf.ID)
 			}
 			if leaf.Buffer.Kind != "" {
-				ui.Text(c, leaf.Buffer.Kind).FontSize(10).TextColor(titleColor)
+				ui.Text(c, leaf.Buffer.Kind).FontSize(10.5).FontWeight(600).TextColor(titleColor)
 			}
 			ui.Spacer(c)
 
 			if cb.NextBufferFor != nil {
-				if ui.Button(c.Key("wbuf-"+string(leaf.ID)), "Buf").Clicked() {
+				if ApplePillButton(c, "wbuf-"+string(leaf.ID), "Buf", BtnGlass, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					tree.SetWindowBuffer(leaf.ID, cb.NextBufferFor(leaf.Buffer))
 				}
 			}
 			if snap.LeafCount < shell.MaxOpenWindows {
-				if ui.Button(c.Key("wsplitv-"+string(leaf.ID)), "|").Clicked() {
+				if ApplePillButton(c, "wsplitv-"+string(leaf.ID), "|", BtnGlass, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					nextBuf := leaf.Buffer
 					if cb.DefaultSplitTo != nil {
@@ -147,7 +149,7 @@ func renderWindowLeaf(
 					}
 					_, _ = tree.SplitRight(nextBuf)
 				}
-				if ui.Button(c.Key("wsplith-"+string(leaf.ID)), "-").Clicked() {
+				if ApplePillButton(c, "wsplith-"+string(leaf.ID), "-", BtnGlass, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					nextBuf := leaf.Buffer
 					if cb.DefaultSplitTo != nil {
@@ -158,14 +160,16 @@ func renderWindowLeaf(
 			}
 			if snap.LeafCount > 1 {
 				zoomLbl := "Zoom"
+				zoomVar := BtnGlass
 				if snap.Zoomed && isFocused {
 					zoomLbl = "Unzoom"
+					zoomVar = BtnTinted
 				}
-				if ui.Button(c.Key("wzoom-"+string(leaf.ID)), zoomLbl).Clicked() {
+				if ApplePillButton(c, "wzoom-"+string(leaf.ID), zoomLbl, zoomVar, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					tree.ToggleZoom()
 				}
-				if ui.Button(c.Key("wclose-"+string(leaf.ID)), "x").Clicked() {
+				if ApplePillButton(c, "wclose-"+string(leaf.ID), "x", BtnDestructive, dt, nil, true).Clicked() {
 					_ = tree.DeleteWindow(leaf.ID)
 				}
 			}

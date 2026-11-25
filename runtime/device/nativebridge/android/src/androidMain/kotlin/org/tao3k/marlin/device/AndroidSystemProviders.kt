@@ -19,6 +19,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.ContactsContract
 import android.provider.MediaStore
+import android.speech.SpeechRecognizer
+import java.util.Locale
 
 class SystemAndroidPhotoLibrary(
     private val context: Context,
@@ -166,4 +168,27 @@ class SystemAndroidContactsProvider(
         }
         return out
     }
+}
+
+class SystemAndroidVoiceProvider(
+    private val context: Context,
+) : AndroidVoiceProvider {
+    @Volatile
+    private var latest: VoiceTranscriptWire = VoiceTranscriptWire(
+        transcriptId = "",
+        locale = Locale.getDefault().toLanguageTag(),
+        text = "",
+        durationMs = 0L,
+    )
+
+    fun isRecognitionAvailable(): Boolean {
+        val granted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        return granted && SpeechRecognizer.isRecognitionAvailable(context)
+    }
+
+    fun recordTranscript(transcript: VoiceTranscriptWire) {
+        latest = transcript
+    }
+
+    override fun latestTranscript(): VoiceTranscriptWire = latest
 }

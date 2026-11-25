@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
@@ -99,5 +100,40 @@ func TestWorkbenchAppEmacsWindowSplitsPerspectivesAndThemeCycling(t *testing.T) 
 	tt.Frame()
 	if curPreset.ID != "doom-one" {
 		t.Fatalf("expected theme cycle paper -> doom-one, got %q", curPreset.ID)
+	}
+
+	// Verify Emacs chord keymap (SPC w v / C-x 1) + Scheme ApplyLayoutSpec + OnLayoutChanged callback.
+	if err := app.EnableEmacsWindowKeymap(); err != nil {
+		t.Fatalf("EnableEmacsWindowKeymap: %v", err)
+	}
+	var lastSnap shell.WindowTreeSnapshot
+	app.OnLayoutChanged = func(s shell.WindowTreeSnapshot) { lastSnap = s }
+
+	if err := app.ApplyLayoutSpec(shell.LayoutSpec{
+		Perspective: "scheme-duo",
+		Root: &shell.LayoutNodeSpec{
+			Axis:   shell.SplitRow,
+			Ratio:  0.60,
+			First:  &shell.LayoutNodeSpec{BufferID: "slot:workbench.main"},
+			Second: &shell.LayoutNodeSpec{BufferID: "builtin:transcript"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyLayoutSpec: %v", err)
+	}
+	if lastSnap.Perspective != "scheme-duo" || lastSnap.LeafCount != 2 {
+		t.Fatalf("expected OnLayoutChanged with scheme-duo (2 panes), got %+v", lastSnap)
+	}
+
+	if k, _ := app.HandleKeyToken(input.ScopeNormal, "SPC"); k != input.MatchPrefix {
+		t.Fatalf("expected MatchPrefix for SPC, got %v", k)
+	}
+	if k, _ := app.HandleKeyToken(input.ScopeNormal, "w"); k != input.MatchPrefix {
+		t.Fatalf("expected MatchPrefix for SPC w, got %v", k)
+	}
+	if k, cmd := app.HandleKeyToken(input.ScopeNormal, "v"); k != input.MatchExact || cmd != shell.CmdWindowSplitRight {
+		t.Fatalf("expected MatchExact %s, got k=%v cmd=%q", shell.CmdWindowSplitRight, k, cmd)
+	}
+	if lastSnap.LeafCount != 3 {
+		t.Fatalf("expected 3 panes after SPC w v chord, got %d", lastSnap.LeafCount)
 	}
 }

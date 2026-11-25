@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/device"
 )
 
 // MobilePlatform selects authentic iOS (HIG) or Android (Material 3) phone chrome,
@@ -128,11 +129,13 @@ type MobileCompanionApp struct {
 	OnSendPrompt    func(prompt string)
 	OnCancelTurn    func()
 	OnGateDecision  func(gateID string, approve bool)
-	OnQuickCapture  func(channel, text string)
-	OnActivatePack  func(pluginID string) error
-	LastStatusLine  string
-	mu              sync.Mutex
-	themePresetID   string
+	OnQuickCapture    func(channel, text string)
+	OnActivatePack    func(pluginID string) error
+	DeviceBridge      *device.Bridge
+	LastStatusLine    string
+	mu                sync.Mutex
+	bridgeDescriptors []device.CapabilityDescriptor
+	themePresetID     string
 	activeTab       MobileTab
 	messages        []MobileMessage
 	chatDraft       string
@@ -351,6 +354,8 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	channel := m.captureChannel
 	denial := m.policyDenialMsg
 	status := m.LastStatusLine
+	bridgeDescs := append([]device.CapabilityDescriptor(nil), m.bridgeDescriptors...)
+	hasBridge := m.DeviceBridge != nil
 	m.mu.Unlock()
 
 	t := ApplyMarlinTheme(c, theme)
@@ -363,6 +368,8 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		decideApprove    bool
 		submitPrompt     string
 		submitCapture    string
+		drainQueueNow    bool
+		pullVoiceNow     bool
 		activatePackID   string
 		selectThemeID    string
 		cycleThemeNow    bool
@@ -387,10 +394,10 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 				m.renderGatesTab(c, t, dt, dev, gates, &decideGateID, &decideApprove)
 
 			case MobileTabCapture:
-				m.renderCaptureTab(c, t, dt, dev, plat, channel, &nextChannel, &draft, &submitCapture)
+				m.renderCaptureTab(c, t, dt, dev, plat, channel, hasBridge, &nextChannel, &draft, &submitCapture, &drainQueueNow, &pullVoiceNow)
 
 			case MobileTabPacks:
-				m.renderPacksTab(c, t, dt, dev, plat, preset.ID, packs, denial, &selectThemeID, &activatePackID)
+				m.renderPacksTab(c, t, dt, dev, plat, preset.ID, packs, bridgeDescs, denial, &selectThemeID, &activatePackID)
 			}
 			if status != "" {
 				ui.Text(c, status).FontSize(11).TextColor(toColor(dt.InkMuted))
@@ -407,11 +414,14 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	m.chatDraft = chatDraft
 	m.captureDraft = draft
 	m.captureChannel = nextChannel
+	var decidedGate PendingGateView
 	if decideGateID != "" {
 		filtered := m.pendingGates[:0]
 		for _, g := range m.pendingGates {
 			if g.GateID != decideGateID {
 				filtered = append(filtered, g)
+			} else {
+				decidedGate = g
 			}
 		}
 		m.pendingGates = filtered
@@ -443,8 +453,19 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 			m.AppendMobileMessage(false, "Marlin", "Queued on remote desktop host: "+submitPrompt, "synced")
 		}
 	}
-	if decideGateID != "" && m.OnGateDecision != nil {
-		m.OnGateDecision(decideGateID, decideApprove)
+	if decideGateID != "" {
+		if decideApprove {
+			m.dispatchApprovedGateToBridge(decidedGate)
+		}
+		if m.OnGateDecision != nil {
+			m.OnGateDecision(decideGateID, decideApprove)
+		}
+	}
+	if drainQueueNow {
+		m.drainNativeCaptureQueue()
+	}
+	if pullVoiceNow {
+		m.pullLatestNativeVoice()
 	}
 	if submitCapture != "" && m.OnQuickCapture != nil {
 		m.OnQuickCapture(nextChannel, submitCapture)
@@ -603,14 +624,8 @@ func (m *MobileCompanionApp) renderChatTab(
 		})
 
 		// Floating Apple Liquid Glass capsule composer with borderless input + circular ↑ send button.
-		compBg := toColor(dt.SurfaceElevated)
-		if dt.Appearance == AppearanceLight {
-			compBg = ui.RGB(255, 255, 255)
-		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8, 6, 16).Radius(26).
-			Background(compBg).
-			Border(1, glassBorderColor(dt)).
-			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
+			Material(AppleLiquidGlassSurface(dt, false, false)).
 			Shadow(0, 8, 22, -6, ambientShadowColor(dt)).Children(func() {
 			ui.TextInputBase(c.Key("mob-chat-input"), chatDraft).
 				Placeholder("Message Marlin...").
@@ -681,9 +696,12 @@ func (m *MobileCompanionApp) renderCaptureTab(
 	_ MobileDeviceSpec,
 	plat MobilePlatform,
 	channel string,
+	hasBridge bool,
 	nextChannel *string,
 	draft *string,
 	submitCapture *string,
+	drainQueueNow *bool,
+	pullVoiceNow *bool,
 ) {
 	ui.Text(c, "NATIVE CAPTURE CHANNEL").FontSize(11).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
 	ui.Row(c).Gap(6).Children(func() {
@@ -715,6 +733,16 @@ func (m *MobileCompanionApp) renderCaptureTab(
 				*draft = ""
 			}
 		}
+		if hasBridge {
+			ui.Row(c).Gap(8).Children(func() {
+				if ApplePillButton(c, "mob-cap-drain", "Drain Native Queue", BtnTinted, dt, nil, true).Grow(1).Clicked() {
+					*drainQueueNow = true
+				}
+				if ApplePillButton(c, "mob-cap-voice", "Pull Voice", BtnGlass, dt, nil, true).Grow(1).Clicked() {
+					*pullVoiceNow = true
+				}
+			})
+		}
 	})
 }
 
@@ -726,23 +754,42 @@ func (m *MobileCompanionApp) renderPacksTab(
 	plat MobilePlatform,
 	activeThemeID string,
 	packs []MobileDeclarativePack,
+	bridgeDescs []device.CapabilityDescriptor,
 	denial string,
 	selectThemeID *string,
 	activatePackID *string,
 ) {
 	// Native OS Bridge status card (Apple Settings grouped inset card).
 	bridgeTitle := "iOS Swift Native Bridge"
-	bridgeDetail := "PhotoKit · Vision OCR · Contacts · UserNotifications · AppGroup"
+	bridgeDetail := "PhotoKit · Vision OCR · Speech · Contacts · UserNotifications · AppGroup"
 	if plat == MobilePlatformAndroid {
 		bridgeTitle = "Android Kotlin Native Bridge"
-		bridgeDetail = "MediaStore · Vision OCR · ContactsContract · NotificationManager · Share Intent"
+		bridgeDetail = "MediaStore · Vision OCR · Speech · ContactsContract · NotificationManager"
 	}
-	AppleGlassCard(c, "mbridge-card", dt, 20, 14, 5, func() {
+	AppleGlassCard(c, "mbridge-card", dt, 20, 14, 6, func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Box(c).Size(7, 7).Radius(3.5).Background(toColor(dt.Success))
 			ui.Text(c, bridgeTitle).FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+			ui.Spacer(c)
+			if len(bridgeDescs) > 0 {
+				AppleBadgePill(c, fmt.Sprintf("%d LIVE", len(bridgeDescs)), dt.Success, dt)
+			}
 		})
 		ui.Text(c, bridgeDetail).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.InkMuted))
+		if len(bridgeDescs) > 0 {
+			limit := min(len(bridgeDescs), 6)
+			ui.Column(c).Gap(3).Padding(4, 0, 0, 0).Children(func() {
+				for i := 0; i < limit; i++ {
+					d := bridgeDescs[i]
+					mode := "ro"
+					if !d.ReadOnly {
+						mode = "gated"
+					}
+					ui.Textf(c, "• %s [%s · %s]", d.CapabilityID, d.Permission, mode).
+						FontSize(10.5).TextColor(toColor(dt.InkSecondary))
+				}
+			})
+		}
 	})
 
 	// Curated 5-theme swatch pills (two tidy rows so zero horizontal clipping on 393px phone).
@@ -826,16 +873,10 @@ func (m *MobileCompanionApp) renderBottomBar(
 	}
 
 	if plat == MobilePlatformIOS {
-		// Authentic iOS 18/26 Floating Liquid Glass Capsule Tab Dock + Home Indicator.
-		dockBg := toColor(dt.SurfaceElevated)
-		if dt.Appearance == AppearanceLight {
-			dockBg = ui.RGBA(255, 255, 255, 0.94)
-		}
+		// Authentic iOS 18/26 Floating Liquid Glass Capsule Tab Dock (macOS 26 NSGlassEffectView / GPU shader).
 		ui.Column(c).AlignItems(ui.Stretch).Background(toColor(dt.Canvas)).Padding(4, 14, 0, 14).Children(func() {
 			ui.Row(c).Padding(5, 6).Gap(4).Radius(28).AlignItems(ui.Center).
-				Background(dockBg).
-				Border(1, glassBorderColor(dt)).
-				InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
+				Material(AppleLiquidGlassSurface(dt, true, false)).
 				Shadow(0, 10, 26, -6, ambientShadowColor(dt)).Children(func() {
 				for _, tb := range tabs {
 					active := tab == tb.id

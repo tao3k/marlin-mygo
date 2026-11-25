@@ -16,6 +16,7 @@
 import Contacts
 import Foundation
 import Photos
+import Speech
 import UserNotifications
 import Vision
 
@@ -361,6 +362,72 @@ public struct SystemNotificationDeliverer: NotificationDelivering {
     }
 }
 
+/// Real Apple Speech framework adapter backed by SFSpeechRecognizer.
+/// Maintains a thread-safe latest on-device transcript snapshot for Go `voice.latestTranscript`.
+public final class SystemVoiceCaptureProvider: VoiceCaptureProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: VoiceTranscriptWire
+
+    public init(localeIdentifier: String = Locale.current.identifier) {
+        self.latest = VoiceTranscriptWire(
+            transcriptId: "",
+            locale: localeIdentifier,
+            text: "",
+            durationMs: 0
+        )
+    }
+
+    public static func authorizationStatus() -> SFSpeechRecognizerAuthorizationStatus {
+        SFSpeechRecognizer.authorizationStatus()
+    }
+
+    public func recordTranscript(_ transcript: VoiceTranscriptWire) {
+        lock.lock()
+        latest = transcript
+        lock.unlock()
+    }
+
+    public func latestTranscript() throws -> VoiceTranscriptWire {
+        lock.lock()
+        defer { lock.unlock() }
+        return latest
+    }
+
+    /// Runs on-device Apple Speech recognition against a local audio file URL.
+    public func recognizeAudioFile(
+        url: URL,
+        localeIdentifier: String = "en-US",
+        completion: @escaping @Sendable (Result<VoiceTranscriptWire, Error>) -> Void
+    ) {
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier)),
+              recognizer.isAvailable
+        else {
+            completion(.failure(MarlinBridgeError.invalidArgument("SFSpeechRecognizer unavailable for \(localeIdentifier)")))
+            return
+        }
+        let request = SFSpeechURLRecognitionRequest(url: url)
+        request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+        request.shouldReportPartialResults = false
+        let started = Date()
+        recognizer.recognitionTask(with: request) { [weak self] result, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+            guard let result, result.isFinal else { return }
+            let elapsedMs = max(1, Int64(Date().timeIntervalSince(started) * 1000.0))
+            let wire = VoiceTranscriptWire(
+                transcriptId: "ios-speech-\(UUID().uuidString)",
+                locale: localeIdentifier,
+                text: result.bestTranscription.formattedString,
+                durationMs: elapsedMs
+            )
+            self?.recordTranscript(wire)
+            completion(.success(wire))
+        }
+    }
+}
+
 /// Real Apple Contacts framework adapter returning PII-bounded ContactSummaryWire records.
 public struct SystemContactsProvider: ContactsProviding {
     public init() {}
@@ -527,7 +594,7 @@ public final class MarlinDeviceBridge: Sendable {
     public init(
         appGroupID: String = defaultAppGroupID,
         photos: PhotoLibraryProviding = SystemPhotoLibraryProvider(),
-        voice: VoiceCaptureProviding = EmptyVoiceCaptureProvider(),
+        voice: VoiceCaptureProviding = SystemVoiceCaptureProvider(),
         contacts: ContactsProviding = SystemContactsProvider(),
         notifications: NotificationDelivering = SystemNotificationDeliverer(),
         captureStore: CaptureQueueStoring? = nil

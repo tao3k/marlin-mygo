@@ -81,6 +81,37 @@ func (r *WebViewRuntime) BroadcastDerivedTheme(dt DerivedTheme) {
 	}
 }
 
+// BroadcastLayoutSnapshot notifies all active untrusted WebView plugins of the
+// current Emacs WindowTree perspective, focus, zoom state, and leaf count so
+// embedded panels can adapt density smoothly without polling.
+func (r *WebViewRuntime) BroadcastLayoutSnapshot(snap shell.WindowTreeSnapshot) {
+	payload, err := json.Marshal(map[string]any{
+		"perspective": snap.Perspective,
+		"focusedId":   snap.FocusedID,
+		"zoomed":      snap.Zoomed,
+		"leafCount":   snap.LeafCount,
+	})
+	if err != nil {
+		return
+	}
+	r.mu.RLock()
+	pages := make(map[*mygo.Page]schema.PluginID, len(r.pageOwners))
+	for p, id := range r.pageOwners {
+		pages[p] = id
+	}
+	r.mu.RUnlock()
+	evID := fmt.Sprintf("layout-%d", r.themeSeq.Add(1))
+	for page, pid := range pages {
+		_ = PanelEvent.EmitPage(page, pluginhost.ScopedEvent{
+			EventID:              evID,
+			PluginID:             pid,
+			ActivationGeneration: 1,
+			Topic:                "layout.live",
+			Payload:              payload,
+		})
+	}
+}
+
 // NewWebViewRuntime wires a WebViewProtocolHandler and ArtifactProtocolHandler
 // using mygo.CallerPage(ctx) for "marlin-plugin://" and "marlin-artifact://".
 // Call RegisterProtocol() before creating the host window.

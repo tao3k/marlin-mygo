@@ -422,8 +422,10 @@ func main() {
 	winTree.ApplyBuiltinPerspective("focus", bufMain, bufDock, bufChat, bufProj)
 	app.Windows = winTree
 	app.WindowBuffers = []shell.PaneBuffer{bufMain, bufChat, bufProj, bufDock}
+	app.OnLayoutChanged = wvRuntime.BroadcastLayoutSnapshot
 	app.OnSelectPerspective = func(name string) {
 		winTree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
+		wvRuntime.BroadcastLayoutSnapshot(winTree.Snapshot())
 	}
 	mktUI := mygoshell.NewMarketplaceController()
 	app.Marketplace = mktUI
@@ -433,6 +435,7 @@ func main() {
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}
+	_ = app.EnableEmacsWindowKeymap()
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 

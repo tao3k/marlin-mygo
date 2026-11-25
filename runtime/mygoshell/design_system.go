@@ -5,6 +5,7 @@
 package mygoshell
 
 import (
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -140,7 +141,7 @@ func ApplePillButton(
 		btn.Background(rgbaFromRGB(dt.Success, alpha)).
 			Border(1, rgbaFromRGB(dt.Success, 0.24))
 
-	default: // BtnGlass
+	default: // BtnGlass — 120Hz specular frosted capsule (zero per-frame CPU blur/animation stall)
 		textColor = toColor(dt.Ink)
 		fill := toColor(dt.SurfaceElevated)
 		if dt.Appearance == AppearanceLight {
@@ -278,7 +279,7 @@ func AppleSegmentedControl(
 	return clickedID
 }
 
-// AppleGlassCard renders a modern Apple frosted elevated surface with smooth
+// AppleGlassCard renders a modern 120Hz Apple elevated frosted surface with smooth
 // corner radius, specular top highlight, hairline rim, and ambient depth shadow.
 func AppleGlassCard(c *ui.Context, key string, dt DerivedTheme, radius float32, padding float32, gap float32, body func()) {
 	bg := toColor(dt.SurfaceElevated)
@@ -295,6 +296,22 @@ func AppleGlassCard(c *ui.Context, key string, dt DerivedTheme, radius float32, 
 		InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
 		Shadow(0, 6, 20, -6, ambientShadowColor(dt)).
 		Children(body)
+}
+
+// AppleLiquidGlassSurface returns a configured MyGo Liquid Glass material
+// (using macOS 26 NSGlassEffectView when native=true and supported, or GPU shader everywhere).
+func AppleLiquidGlassSurface(dt DerivedTheme, native bool, interactive bool) glass.Glass {
+	tint := rgbaFromRGB(dt.SurfaceElevated, 0.64)
+	if dt.Appearance == AppearanceLight {
+		tint = ui.RGBA(255, 255, 255, 0.76)
+	}
+	return glass.Glass{
+		Style:       glass.Regular,
+		Tint:        tint,
+		Interactive: interactive,
+		Native:      native,
+		Clarity:     0.2,
+	}
 }
 
 // AppleBadgePill renders a sleek semantic status pill (e.g. "1 GATE", "mTLS live").
