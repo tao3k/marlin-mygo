@@ -105,6 +105,8 @@ func main() {
 		err = runDevPlugin(os.Args[2:])
 	case "doctor":
 		err = runDoctor(os.Args[2:])
+	case "bench-plugin":
+		err = runBenchPlugin(os.Args[2:])
 	case "publish":
 		err = runPublish(os.Args[2:])
 	default:
@@ -118,7 +120,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin|doctor|publish> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin|doctor|bench-plugin|publish> [flags]")
 }
 
 func runDescriptor(args []string) error {
@@ -338,10 +340,13 @@ Runtime: %s | Slot: %s
 - Go WASI plugins use uiir.RenderResult(tree) or uiir.DrawListResult(cmds) (zero unsafe boilerplate).
 - Declarative packs MUST contain zero executable/script files (.wasm, .js, .ts, .sh).
 
-## Commands
-- Audit   : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir . -json
-- Hot-Dev : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir .
-- Publish : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir . -publisher <pub-id> -key <priv.key> -pub <pub.key> -out ./dist/marketplace
+## Self-Healing Security & Performance Loop (For Humans & AI Agents)
+After any edit, run both gates in JSON mode. If any security check or performance
+budget fails, inspect the measured value, budget, and remediation hint and fix it:
+- Security + Perf : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir . -perf -json
+- Perf Gate Only  : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir . -json
+- Hot-Dev         : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir .
+- Publish         : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir . -publisher <pub-id> -key <priv.key> -pub <pub.key> -out ./dist/marketplace
 `, pluginID, runtimeFlag, slotID)
 
 	switch runtimeFlag {
@@ -428,12 +433,43 @@ document.getElementById("refresh")?.addEventListener("click", () => {
 });
 `, pluginID, topicName, actionName)
 
+		perfTS := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { definePluginPerfSuite, runPluginPerfCLI } from "@tao3k/marlin-panel-sdk";
+
+// Add your plugin's state transformation, filtering, or layout hot paths here.
+// Run directly via: marlin-mygo-tool bench-plugin -dir . -json
+export const perfSuite = definePluginPerfSuite({
+  pluginId: %q,
+  cases: [
+    {
+      name: "state.projection.smoke",
+      budgetUs: 250,
+      remediation: "Avoid O(N^2) loops and repeated object cloning inside your state projection handler.",
+      run: () => {
+        const items = [1, 2, 3, 4, 5, 6, 7, 8];
+        let sum = 0;
+        for (let i = 0; i < items.length; i++) sum += items[i];
+        if (sum < 0) throw new Error("unreachable");
+      },
+    },
+  ],
+});
+
+if (import.meta.main) {
+  runPluginPerfCLI(perfSuite);
+}
+`, pluginID)
+
 		readme := fmt.Sprintf("# %s (TypeScript Untrusted WebView Plugin)\n\nSlot: `%s`\nRuntime: `webview-untrusted`\n", pluginID, slotID)
 		return map[string]string{
 			"marlin-plugin.toml": manifest,
 			"package.json":       pkgJSON,
 			"index.html":         indexHTML,
 			"src/main.ts":        mainTS,
+			"src/perf.ts":        perfTS,
 			"README.md":          readme,
 			"AGENT.md":           agentCard,
 		}, nil
@@ -499,10 +535,43 @@ func marlinUIRender() uint64 {
 func main() {}
 `, pluginID)
 
+		perfTestGo := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+//go:build !wasip1
+
+package main
+
+import (
+	"testing"
+	"time"
+
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+	uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
+)
+
+func TestPluginPerfBudget(t *testing.T) {
+	uiir.AssertPerfCase(t, uiir.PerfCase{
+		Name:        "build_ui_tree",
+		MaxP50:      200 * time.Microsecond,
+		MaxAllocs:   20,
+		Remediation: "Avoid heavy formatting or O(N^2) work inside your UIElement builder.",
+		Run: func() {
+			tree := uiir.Panel(%q, schema.ToneAccent,
+				uiir.Rows(uiir.Text(uiir.Span("ok", schema.ToneInfo))),
+			)
+			_, _ = uiir.Encode(tree)
+		},
+	})
+}
+`, pluginID)
+
 		readme := fmt.Sprintf("# %s (Go Resident WASM-IR Plugin)\n\nSlot: `%s`\nBuild:\n```shell\nGOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -buildmode=c-shared -o plugin.wasm .\n```\n", pluginID, slotID)
 		return map[string]string{
 			"marlin-plugin.toml": manifest,
 			"main.go":            mainGo,
+			"perf_test.go":       perfTestGo,
 			"README.md":          readme,
 			"AGENT.md":           agentCard,
 		}, nil

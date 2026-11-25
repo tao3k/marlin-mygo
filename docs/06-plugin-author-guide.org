@@ -139,3 +139,26 @@ Build, certify, and sign all canonical examples into one local Marketplace catal
 #+begin_src shell
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
 #+end_src
+
+* 8. Per-Plugin Performance Gate & LLM Self-Healing Loop
+
+Even with a zero-allocation upstream engine, downstream user or AI-generated
+plugins can accidentally introduce O(N^2) filters, bloated JS bundles, or
+allocation-heavy WASI frames. Marlin ships first-class performance test macros
+and a single-command diagnostic gate (=bench-plugin= / =doctor -perf -json=)
+that emits measured latencies, budgets, and concrete =remediation= hints so
+coding agents automatically diagnose and optimize regressions:
+
+- *TypeScript (=src/perf.ts=)*: use =definePluginPerfSuite= + =runPluginPerfCLI=
+  (or one-line =assertPerfBudget=) from =@tao3k/marlin-panel-sdk=.
+- *Go WASI (=*_test.go=)*: use =gouir.AssertPerfCase= + =gouir.AssertUITreeBudget=
+  from =github.com/tao3k/marlin-mygo/sdk/go-ui-ir= (guarded by =//go:build !wasip1=
+  so zero =testing= bytes ever link into =panel.wasm=).
+- *Unified Gate CLI*:
+  #+begin_src shell
+  # Human-readable table
+  just bench-plugin ./examples/plugins/ts-org-agenda-planner
+
+  # Machine-readable JSON with remediation hints for coding LLMs & CI
+  CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/go-focus-clock-reactor -perf -json
+  #+end_src

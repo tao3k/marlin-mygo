@@ -47,12 +47,21 @@ func TestInitPluginKeygenPackAndVerifyEndToEnd(t *testing.T) {
 		}
 	}
 
-	// End-to-end doctor + keygen -> publish -> verify on scaffolded TS and Declarative plugins.
-	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "ts"), "-json"}); err != nil {
-		t.Fatalf("doctor failed on scaffolded ts plugin: %v", err)
+	// End-to-end doctor (-perf) + bench-plugin + keygen -> publish -> verify on scaffolded plugins.
+	if _, err := os.Stat(filepath.Join(tmp, "ts", "src", "perf.ts")); err != nil {
+		t.Fatalf("expected scaffolded ts plugin to include src/perf.ts: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "go-wasm", "perf_test.go")); err != nil {
+		t.Fatalf("expected scaffolded go-wasm plugin to include perf_test.go: %v", err)
+	}
+	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "ts"), "-perf", "-scale", "2.0", "-iterations", "30", "-json"}); err != nil {
+		t.Fatalf("doctor -perf failed on scaffolded ts plugin: %v", err)
 	}
 	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "declarative")}); err != nil {
 		t.Fatalf("doctor failed on scaffolded declarative plugin: %v", err)
+	}
+	if err := runBenchPlugin([]string{"-dir", filepath.Join(tmp, "declarative"), "-iterations", "30"}); err != nil {
+		t.Fatalf("bench-plugin failed on scaffolded declarative plugin: %v", err)
 	}
 
 	keyPrefix := filepath.Join(tmp, "keys", "acme")

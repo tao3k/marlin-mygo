@@ -77,6 +77,10 @@ dev-plugin dir="./examples/plugins/go-graph-inspector-reactor":
 doctor dir="./examples/plugins/ts-org-kanban":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir "{{dir}}"
 
+# Run automated per-plugin performance budgets & remediation diagnostics (ideal for humans & LLMs).
+bench-plugin dir="./examples/plugins/ts-org-agenda-planner" scale="1.0":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir "{{dir}}" -scale={{scale}}
+
 # Certify, sign, verify, and merge a plugin into a Marketplace catalog in one step.
 publish dir publisher key pub out="./dist/marketplace":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir "{{dir}}" -publisher "{{publisher}}" -key "{{key}}" -pub "{{pub}}" -out "{{out}}"

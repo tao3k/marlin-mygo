@@ -24,6 +24,9 @@ export const PANEL_EVENT_CHANNEL = "marlin:panel-event";
 // authors get zero-drift strongly typed contracts directly from proto/.
 export * from "./generated/wire_types";
 
+// Re-export declarative plugin performance-budget test macros for human & LLM authors.
+export * from "./perf";
+
 export interface ScopedPanelEvent<T = unknown> {
   eventId: EventCursor;
   pluginId: string;

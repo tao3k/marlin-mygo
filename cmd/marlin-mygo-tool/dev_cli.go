@@ -143,16 +143,42 @@ func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "plugin directory containing marlin-plugin.toml")
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON audit report (ideal for CI and coding agents)")
+	withPerf := fs.Bool("perf", false, "also run the plugin performance budget gate (bench-plugin)")
+	scale := fs.Float64("scale", 1.0, "latency budget scale multiplier when -perf is set")
+	iters := fs.Int("iterations", 150, "microbenchmark iterations when -perf is set")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	rep, err := marketplace.AuditPluginDir(context.Background(), *dir)
+	ctx := context.Background()
+	rep, auditErr := marketplace.AuditPluginDir(ctx, *dir)
+
+	var perfRep *marketplace.PluginPerfReport
+	var perfErr error
+	if *withPerf {
+		perfRep, perfErr = marketplace.BenchPluginDir(ctx, *dir, marketplace.PluginPerfConfig{
+			Iterations:   *iters,
+			LatencyScale: *scale,
+		})
+	}
+
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(rep)
-		return err
+		if *withPerf {
+			_ = enc.Encode(map[string]any{
+				"audit":  rep,
+				"perf":   perfRep,
+				"passed": auditErr == nil && perfErr == nil,
+			})
+		} else {
+			_ = enc.Encode(rep)
+		}
+		if auditErr != nil {
+			return auditErr
+		}
+		return perfErr
 	}
+
 	fmt.Printf("Marlin Plugin Doctor (%s v%s, runtime=%s, slot=%s)\n", rep.PluginID, rep.Version, rep.Runtime, rep.SlotID)
 	for _, chk := range rep.Checks {
 		mark := "PASS"
@@ -160,6 +186,38 @@ func runDoctor(args []string) error {
 			mark = "FAIL"
 		}
 		fmt.Printf("  [%s] %-24s %s\n", mark, chk.Name, chk.Details)
+	}
+	if perfRep != nil {
+		fmt.Println()
+		fmt.Print(marketplace.FormatPluginPerfReport(perfRep))
+	}
+	if auditErr != nil {
+		return auditErr
+	}
+	return perfErr
+}
+
+func runBenchPlugin(args []string) error {
+	fs := flag.NewFlagSet("bench-plugin", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "plugin directory containing marlin-plugin.toml")
+	asJSON := fs.Bool("json", false, "emit machine-readable JSON performance report with remediation hints")
+	iters := fs.Int("iterations", 150, "warm microbenchmark iterations")
+	scale := fs.Float64("scale", 1.0, "latency budget scale multiplier (e.g. 2.0 on shared CI VMs)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rep, err := marketplace.BenchPluginDir(context.Background(), *dir, marketplace.PluginPerfConfig{
+		Iterations:   *iters,
+		LatencyScale: *scale,
+	})
+	if *asJSON && rep != nil {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rep)
+		return err
+	}
+	if rep != nil {
+		fmt.Print(marketplace.FormatPluginPerfReport(rep))
 	}
 	return err
 }

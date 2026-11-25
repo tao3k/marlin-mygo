@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "paths": {
+      "@tao3k/marlin-panel-sdk": ["./packages/panel-sdk/src/index.ts"]
+    }
+  }
+}

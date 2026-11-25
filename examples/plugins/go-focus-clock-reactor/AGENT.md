@@ -19,7 +19,8 @@ SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 - `main.go`: `//go:build wasip1` reactor ABI exports delegating exclusively to `sdk/go-ui-ir` (`AllocBuffer`, `DispatchEvent`, `RenderResult`, `DrawListResult`, `EmitAction`).
 - `state_test.go`: Native desktop unit tests runnable via `CGO_ENABLED=0 go test ./examples/plugins/go-focus-clock-reactor`.
 
-## Verification Commands
+## Verification Commands (Security + Performance Self-Healing Loop)
 
 - `CGO_ENABLED=0 go test -v -race ./examples/plugins/go-focus-clock-reactor`
-- `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/go-focus-clock-reactor`
+- `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/go-focus-clock-reactor -perf -json`
+- `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/go-focus-clock-reactor -json`

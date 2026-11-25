@@ -11,6 +11,7 @@ import {
   tickFocusAlarm,
 } from "./model";
 import type { OrgizeAgendaViewCardDto, OrgizeClockRollupResponseDto } from "./orgize_dto";
+import { perfSuite } from "./perf";
 
 const SRC = {
   start: { offset: 0, line: 1, column: 1 },
@@ -130,5 +131,10 @@ describe("ts-org-agenda-planner (orgize DTO model)", () => {
     expect(next.status).toBe("ringing");
     expect(next.remainingSec).toBe(0);
     expect(next.completedBlocks).toBe(2);
+  });
+
+  test("plugin perf macro suite meets all 500-card latency budgets", () => {
+    const report = perfSuite.run({ scale: 2.0, iterationsOverride: 40 });
+    expect(report.passed).toBe(true);
   });
 });

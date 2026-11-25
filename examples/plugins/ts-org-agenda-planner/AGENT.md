@@ -24,6 +24,7 @@ SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
 1. Add custom filter tabs (e.g., weekly milestones, energy tags, category grouping) in `src/model.ts`.
 2. Customize time-blocking visualization or Pomodoro alarm presets in `src/main.ts` and `index.html`.
-3. Verify edits with:
+3. Verify edits (security + performance self-healing loop) with:
    - `bun test ./examples/plugins/ts-org-agenda-planner/src/model.test.ts`
-   - `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/ts-org-agenda-planner`
+   - `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/ts-org-agenda-planner -perf -json`
+   - `CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/ts-org-agenda-planner -json`

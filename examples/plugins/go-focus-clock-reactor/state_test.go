@@ -2,11 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
+//go:build !wasip1
+
 package main
 
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	gouir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
@@ -111,4 +114,35 @@ func TestFocusClockStateAppliesOrgizeDTOsAndCompletesAlarm(t *testing.T) {
 	if err != nil || len(decoded) != len(cmds) {
 		t.Fatalf("DecodeDrawList failed: len=%d err=%v", len(decoded), err)
 	}
+}
+
+func TestFocusClockPerfBudgets(t *testing.T) {
+	st := NewFocusClockState()
+	var buf [64]schema.DrawCmd
+
+	// Enforce strict zero-allocation GPU DrawList generation so 120Hz frames stay silky smooth.
+	gouir.AssertPerfCase(t, gouir.PerfCase{
+		Name:        "BuildDrawList_zero_alloc",
+		MaxP50:      25 * time.Microsecond,
+		MaxAllocs:   0,
+		Iterations:  200,
+		Remediation: "Populate the caller-provided *[64]schema.DrawCmd array directly with zero heap allocations.",
+		Run: func() {
+			_ = st.BuildDrawList(&buf)
+		},
+	})
+
+	// Enforce bounded UIElement tree construction latency + compactness.
+	gouir.AssertPerfCase(t, gouir.PerfCase{
+		Name:        "BuildUITree_and_encode",
+		MaxP50:      250 * time.Microsecond,
+		MaxAllocs:   -1,
+		Iterations:  100,
+		Remediation: "Pre-format static labels and avoid O(N^2) loops inside BuildUITree.",
+		Run: func() {
+			tree := st.BuildUITree()
+			_, _ = gouir.Encode(tree)
+		},
+	})
+	gouir.AssertUITreeBudget(t, st.BuildUITree(), 32, 6)
 }

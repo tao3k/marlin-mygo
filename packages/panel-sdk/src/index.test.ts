@@ -6,8 +6,10 @@ import { describe, expect, test } from "bun:test";
 import {
   ACTION_ENDPOINT,
   PANEL_EVENT_CHANNEL,
+  assertPerfBudget,
   createPanelClient,
   defineMarlinPanel,
+  definePluginPerfSuite,
   parseThemeTokens,
   type MyGoEventBridge,
   type PluginV1PanelRuntimeKind,
@@ -138,5 +140,44 @@ describe("@tao3k/marlin-panel-sdk", () => {
     expect(count).toBe(1);
     panel.dispose();
     expect(listener).toBeUndefined();
+  });
+
+  test("definePluginPerfSuite passes fast paths and flags slow regressions with remediation", () => {
+    const suite = definePluginPerfSuite({
+      pluginId: "acme.perf-demo",
+      cases: [
+        {
+          name: "fast arithmetic",
+          budgetUs: 500,
+          iterations: 50,
+          remediation: "keep loop O(1)",
+          run: () => {
+            let acc = 0;
+            for (let i = 0; i < 16; i++) acc += i;
+            if (acc < 0) throw new Error("unreachable");
+          },
+        },
+        {
+          name: "intentional slow burn",
+          budgetUs: 0.001, // impossible 1ns ceiling -> deterministic negative control
+          p95BudgetUs: 0.002,
+          iterations: 15,
+          remediation: "Replace O(N^2) inner scan with Map index",
+          run: () => {
+            let s = 0;
+            for (let i = 0; i < 5000; i++) s += (i * 17) % 13;
+            if (s < 0) throw new Error("unreachable");
+          },
+        },
+      ],
+    });
+    const rep = suite.run();
+    expect(rep.passed).toBe(false);
+    expect(rep.cases[0].passed).toBe(true);
+    expect(rep.cases[1].passed).toBe(false);
+    expect(rep.cases[1].remediation).toContain("Map index");
+
+    const ok = assertPerfBudget("inline fast check", 500, () => {}, "keep fast", { iterations: 20 });
+    expect(ok.passed).toBe(true);
   });
 });
