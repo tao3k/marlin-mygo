@@ -57,9 +57,10 @@ type AuthManager struct {
 	activeAccountID AccountID
 	phase           AuthPhase
 	lastError       string
-	oauthAttempts   map[string]*oauthAttempt
-	pendingOAuth    *PendingOAuthFlow
-	pendingEmail    *PendingEmailChallenge
+	oauthAttempts     map[string]*oauthAttempt
+	pendingOAuth      *PendingOAuthFlow
+	pendingDeviceCode string
+	pendingEmail      *PendingEmailChallenge
 	flights         map[AccountID]*refreshFlight
 	flowEpoch       uint64
 	accountEpoch    map[AccountID]uint64
@@ -286,6 +287,10 @@ func (m *AuthManager) BeginDeviceAuth(ctx context.Context, providerID ProviderID
 		m.setError(err)
 		return PendingOAuthFlow{}, "", err
 	}
+	if err := ValidateSecureURL(resp.VerificationURI, cfg.AllowLoopback); err != nil {
+		m.setError(err)
+		return PendingOAuthFlow{}, "", err
+	}
 	ttl := resp.ExpiresIn
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
@@ -300,7 +305,9 @@ func (m *AuthManager) BeginDeviceAuth(ctx context.Context, providerID ProviderID
 		ExpiresAt:       m.now().Add(ttl),
 	}
 	m.mu.Lock()
+	m.flowEpoch++
 	m.pendingOAuth = &flow
+	m.pendingDeviceCode = resp.DeviceCode
 	m.phase = PhaseAuthorizing
 	m.lastError = ""
 	m.mu.Unlock()
@@ -308,17 +315,38 @@ func (m *AuthManager) BeginDeviceAuth(ctx context.Context, providerID ProviderID
 	return flow, resp.DeviceCode, nil
 }
 
-// CompleteDeviceAuth polls once (or finishes) a pending RFC 8628 device flow.
+// CompleteDeviceAuth polls once (or finishes) a pending RFC 8628 device flow,
+// enforcing active flow binding, expiry, and cancellation epoch currency.
 func (m *AuthManager) CompleteDeviceAuth(ctx context.Context, providerID ProviderID, deviceCode string) (AccountProfile, bool, error) {
 	if m.deviceFlow == nil {
 		return AccountProfile{}, false, ErrNotSupported
 	}
-	m.mu.RLock()
+	m.mu.Lock()
 	cfg, ok := m.providers[providerID]
-	m.mu.RUnlock()
 	if !ok {
+		m.mu.Unlock()
 		return AccountProfile{}, false, fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
 	}
+	if m.pendingOAuth == nil || m.pendingOAuth.Method != MethodDeviceCode || m.pendingOAuth.ProviderID != providerID {
+		m.mu.Unlock()
+		return AccountProfile{}, false, ErrFlowCancelled
+	}
+	if !ConstantTimeTokenEqual(m.pendingDeviceCode, deviceCode) {
+		m.mu.Unlock()
+		return AccountProfile{}, false, ErrInvalidState
+	}
+	if m.now().After(m.pendingOAuth.ExpiresAt) {
+		m.pendingOAuth = nil
+		m.pendingDeviceCode = ""
+		m.phase = PhaseError
+		m.lastError = ErrAttemptExpired.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, false, ErrAttemptExpired
+	}
+	startFlowEpoch := m.flowEpoch
+	m.mu.Unlock()
+
 	tokens, profile, ready, err := m.deviceFlow.PollDeviceToken(ctx, cfg, deviceCode)
 	if err != nil {
 		m.setError(err)
@@ -327,10 +355,15 @@ func (m *AuthManager) CompleteDeviceAuth(ctx context.Context, providerID Provide
 	if !ready {
 		return AccountProfile{}, false, nil
 	}
-	acc, err := m.admitSignedInAccount(ctx, cfg, tokens, profile)
+	acc, err := m.admitSignedInAccountIfCurrent(ctx, cfg, tokens, profile, startFlowEpoch)
 	if err != nil {
 		return AccountProfile{}, false, err
 	}
+	m.mu.Lock()
+	if m.flowEpoch == startFlowEpoch {
+		m.pendingDeviceCode = ""
+	}
+	m.mu.Unlock()
 	return acc, true, nil
 }
 
@@ -444,13 +477,15 @@ func (m *AuthManager) VerifyEmailLogin(ctx context.Context, codeOrToken string) 
 	tokens, profile, err := m.email.VerifyChallenge(ctx, challengeCopy.ChallengeID, challengeCopy.Email, code, challengeCopy.Method)
 	if err != nil {
 		m.mu.Lock()
-		if m.pendingEmail != nil && m.pendingEmail.Attempts >= m.pendingEmail.MaxAttempts {
-			m.pendingEmail = nil
-			m.phase = PhaseError
-		} else {
-			m.phase = PhaseAwaitingCode
+		if m.flowEpoch == startFlowEpoch {
+			if m.pendingEmail != nil && m.pendingEmail.Attempts >= m.pendingEmail.MaxAttempts {
+				m.pendingEmail = nil
+				m.phase = PhaseError
+			} else {
+				m.phase = PhaseAwaitingCode
+			}
+			m.lastError = err.Error()
 		}
-		m.lastError = err.Error()
 		m.mu.Unlock()
 		m.emit()
 		return AccountProfile{}, err
@@ -471,6 +506,7 @@ func (m *AuthManager) CancelPending() {
 		delete(m.oauthAttempts, id)
 	}
 	m.pendingOAuth = nil
+	m.pendingDeviceCode = ""
 	m.pendingEmail = nil
 	m.lastError = ""
 	if m.activeAccountID != "" {
@@ -714,9 +750,7 @@ func (m *AuthManager) SignOut(ctx context.Context, accountID AccountID) error {
 			_ = m.exchanger.RevokeToken(ctx, cfg, revokeTarget)
 		}
 	}
-	if err := m.vault.Delete(ctx, accountID); err != nil {
-		return err
-	}
+	vaultErr := m.vault.Delete(ctx, accountID)
 
 	m.mu.Lock()
 	delete(m.accounts, accountID)
@@ -739,7 +773,7 @@ func (m *AuthManager) SignOut(ctx context.Context, accountID AccountID) error {
 	m.lastError = ""
 	m.mu.Unlock()
 	m.emit()
-	return nil
+	return vaultErr
 }
 
 // SignOutAll revokes and scrubs every signed-in account.
@@ -918,6 +952,7 @@ func (m *AuthManager) admitSignedInAccount(
 	m.accounts[profile.ID] = profile
 	m.activeAccountID = profile.ID
 	m.pendingOAuth = nil
+	m.pendingDeviceCode = ""
 	m.pendingEmail = nil
 	m.phase = PhaseSignedIn
 	m.lastError = ""
@@ -948,6 +983,13 @@ func (m *AuthManager) isAccountEpochCurrent(accountID AccountID, epoch uint64) b
 	defer m.mu.RUnlock()
 	_, ok := m.accounts[accountID]
 	return ok && m.accountEpoch[accountID] == epoch
+}
+
+func (m *AuthManager) isVaultLocked() bool {
+	if lv, ok := m.vault.(LockableVault); ok {
+		return lv.IsLocked()
+	}
+	return false
 }
 
 func (m *AuthManager) setError(err error) {
@@ -990,12 +1032,10 @@ type HTTPOAuthExchanger struct {
 }
 
 func NewHTTPOAuthExchanger(client *http.Client) *HTTPOAuthExchanger {
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
+	safeClient := noRedirectHTTPClient(client, 15*time.Second)
 	return &HTTPOAuthExchanger{
-		Client: client,
-		JWKS:   NewHTTPJWKSCache(client, 15*time.Minute),
+		Client: safeClient,
+		JWKS:   NewHTTPJWKSCache(safeClient, 15*time.Minute),
 	}
 }
 
@@ -1059,7 +1099,14 @@ func (e *HTTPOAuthExchanger) ExchangeCode(
 		}
 	}
 	if cfg.UserInfoURL != "" {
+		if err := ValidateSecureURL(cfg.UserInfoURL, cfg.AllowLoopback); err != nil {
+			return TokenSet{}, AccountProfile{}, err
+		}
 		if uiProf, uErr := e.fetchUserInfo(ctx, cfg.UserInfoURL, tok.AccessToken); uErr == nil {
+			// OIDC Core 1.0 Section 5.3.4: UserInfo sub MUST match verified ID token sub.
+			if profile.Subject != "" && uiProf.Subject != "" && uiProf.Subject != profile.Subject {
+				return TokenSet{}, AccountProfile{}, fmt.Errorf("%w: id_token=%q userinfo=%q", ErrSubjectMismatch, profile.Subject, uiProf.Subject)
+			}
 			if profile.Subject == "" {
 				profile.Subject = uiProf.Subject
 			}

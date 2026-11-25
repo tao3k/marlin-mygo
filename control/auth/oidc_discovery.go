@@ -47,9 +47,7 @@ func DiscoverOIDCProvider(
 	if cid == "" {
 		return ProviderConfig{}, fmt.Errorf("auth: Enterprise OIDC Client ID is required")
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
+	client = noRedirectHTTPClient(client, 10*time.Second)
 
 	wellKnownURL := canonicalIssuer + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnownURL, nil)

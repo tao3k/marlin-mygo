@@ -153,9 +153,27 @@ func (v *MemoryVault) DeleteProfile(_ context.Context, accountID AccountID) erro
 // encryption with strict 0600 file permissions and atomic temp-file replacement.
 // Plaintext tokens are never written to disk.
 type EncryptedFileVault struct {
-	path string
-	key  [32]byte
-	mu   sync.Mutex
+	path        string
+	key         [32]byte
+	mu          sync.Mutex
+	minRevision uint64
+}
+
+// Revision returns the highest monotonic vault revision observed or written.
+func (v *EncryptedFileVault) Revision() uint64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.minRevision
+}
+
+// SetMinRevision pins the minimum acceptable monotonic vault revision so
+// replaying an older encrypted vault snapshot fails closed with ErrVaultRollback.
+func (v *EncryptedFileVault) SetMinRevision(rev uint64) {
+	v.mu.Lock()
+	if rev > v.minRevision {
+		v.minRevision = rev
+	}
+	v.mu.Unlock()
 }
 
 // NewEncryptedFileVault creates an AES-256-GCM vault at filePath keyed by masterKey
@@ -181,6 +199,7 @@ func NewEncryptedFileVault(filePath string, masterKey []byte) (*EncryptedFileVau
 
 type encryptedVaultDoc struct {
 	Version         int                          `json:"v"`
+	Revision        uint64                       `json:"rev,omitempty"`
 	Tokens          map[AccountID]TokenSet       `json:"tokens"`
 	Profiles        map[AccountID]AccountProfile `json:"profiles,omitempty"`
 	ActiveAccountID AccountID                    `json:"active_account_id,omitempty"`
@@ -350,6 +369,12 @@ func (v *EncryptedFileVault) readDocLocked() (*encryptedVaultDoc, error) {
 
 	var doc encryptedVaultDoc
 	if err := json.Unmarshal(plaintext, &doc); err == nil && doc.Version >= 2 {
+		if v.minRevision > 0 && doc.Revision < v.minRevision {
+			return nil, fmt.Errorf("%w: got %d want >= %d", ErrVaultRollback, doc.Revision, v.minRevision)
+		}
+		if doc.Revision > v.minRevision {
+			v.minRevision = doc.Revision
+		}
 		if doc.Tokens == nil {
 			doc.Tokens = make(map[AccountID]TokenSet)
 		}
@@ -374,6 +399,11 @@ func (v *EncryptedFileVault) writeDocLocked(doc *encryptedVaultDoc) error {
 		return err
 	}
 	doc.Version = 2
+	if doc.Revision < v.minRevision {
+		doc.Revision = v.minRevision
+	}
+	doc.Revision++
+	v.minRevision = doc.Revision
 	plaintext, err := json.Marshal(doc)
 	if err != nil {
 		return err

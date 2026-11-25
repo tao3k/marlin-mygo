@@ -52,6 +52,9 @@ func (darwinKeychainStore) SetSecret(ctx context.Context, service, account strin
 	if strings.ContainsAny(service+account, " \t\r\n\"'") {
 		return fmt.Errorf("auth: invalid keychain service/account characters")
 	}
+	if strings.ContainsAny(string(secret), " \t\r\n\"'") {
+		return fmt.Errorf("auth: invalid keychain secret characters for security -i stdin")
+	}
 	line := fmt.Sprintf("add-generic-password -U -s %s -a %s -w %s\n", service, account, string(secret))
 	cmd := exec.CommandContext(ctx, "/usr/bin/security", "-i")
 	cmd.Stdin = strings.NewReader(line)

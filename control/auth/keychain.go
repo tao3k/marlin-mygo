@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -181,10 +182,27 @@ func (v *OSProtectedVault) Unlock(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if revBytes, rErr := v.store.GetSecret(ctx, v.service, v.revisionAccount()); rErr == nil {
+		if savedRev, pErr := strconv.ParseUint(strings.TrimSpace(string(revBytes)), 10, 64); pErr == nil && savedRev > 0 {
+			enc.SetMinRevision(savedRev)
+		}
+		zeroBytes(revBytes)
+	}
 	v.inner = enc
 	v.locked = false
 	v.info.Locked = false
 	return nil
+}
+
+func (v *OSProtectedVault) revisionAccount() string {
+	return v.account + ":rev"
+}
+
+func (v *OSProtectedVault) persistRevision(ctx context.Context, rev uint64) {
+	if rev == 0 || v.store == nil {
+		return
+	}
+	_ = v.store.SetSecret(ctx, v.service, v.revisionAccount(), []byte(strconv.FormatUint(rev, 10)))
 }
 
 // Lock scrubs the in-memory AES-256-GCM master key immediately. Subsequent
@@ -198,6 +216,19 @@ func (v *OSProtectedVault) Lock() {
 	v.locked = true
 	v.info.Locked = true
 	v.mu.Unlock()
+}
+
+// LockableVault is implemented by vaults that support explicit in-RAM key
+// scrubbing (`Lock`) so Tier-0 PEP/PDP authorization fails closed while locked.
+type LockableVault interface {
+	IsLocked() bool
+}
+
+// IsLocked reports whether the OSProtectedVault master key is currently scrubbed.
+func (v *OSProtectedVault) IsLocked() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.locked || v.inner == nil
 }
 
 // SecurityInfo returns a secret-free status snapshot for Tier-0 UI rendering.
@@ -215,7 +246,11 @@ func (v *OSProtectedVault) Store(ctx context.Context, accountID AccountID, token
 	if locked || inner == nil {
 		return ErrVaultLocked
 	}
-	return inner.Store(ctx, accountID, tokens)
+	if err := inner.Store(ctx, accountID, tokens); err != nil {
+		return err
+	}
+	v.persistRevision(ctx, inner.Revision())
+	return nil
 }
 
 func (v *OSProtectedVault) Load(ctx context.Context, accountID AccountID) (TokenSet, bool, error) {
@@ -237,7 +272,11 @@ func (v *OSProtectedVault) Delete(ctx context.Context, accountID AccountID) erro
 	if locked || inner == nil {
 		return ErrVaultLocked
 	}
-	return inner.Delete(ctx, accountID)
+	if err := inner.Delete(ctx, accountID); err != nil {
+		return err
+	}
+	v.persistRevision(ctx, inner.Revision())
+	return nil
 }
 
 func (v *OSProtectedVault) ListAccountIDs(ctx context.Context) ([]AccountID, error) {
@@ -259,7 +298,11 @@ func (v *OSProtectedVault) StoreProfile(ctx context.Context, profile AccountProf
 	if locked || inner == nil {
 		return ErrVaultLocked
 	}
-	return inner.StoreProfile(ctx, profile)
+	if err := inner.StoreProfile(ctx, profile); err != nil {
+		return err
+	}
+	v.persistRevision(ctx, inner.Revision())
+	return nil
 }
 
 func (v *OSProtectedVault) LoadProfiles(ctx context.Context) ([]AccountProfile, AccountID, error) {
@@ -281,7 +324,11 @@ func (v *OSProtectedVault) SetActiveAccount(ctx context.Context, accountID Accou
 	if locked || inner == nil {
 		return ErrVaultLocked
 	}
-	return inner.SetActiveAccount(ctx, accountID)
+	if err := inner.SetActiveAccount(ctx, accountID); err != nil {
+		return err
+	}
+	v.persistRevision(ctx, inner.Revision())
+	return nil
 }
 
 func (v *OSProtectedVault) DeleteProfile(ctx context.Context, accountID AccountID) error {
@@ -292,7 +339,11 @@ func (v *OSProtectedVault) DeleteProfile(ctx context.Context, accountID AccountI
 	if locked || inner == nil {
 		return ErrVaultLocked
 	}
-	return inner.DeleteProfile(ctx, accountID)
+	if err := inner.DeleteProfile(ctx, accountID); err != nil {
+		return err
+	}
+	v.persistRevision(ctx, inner.Revision())
+	return nil
 }
 
 func decodeKeyMaterial(raw []byte) ([]byte, error) {

@@ -37,17 +37,18 @@ var (
 // IDTokenClaims represents the verified standard OIDC claims extracted from a
 // cryptographically authenticated JWT id_token.
 type IDTokenClaims struct {
-	Issuer        string
-	Subject       string
-	Audience      []string
-	ExpiresAt     time.Time
-	IssuedAt      time.Time
-	NotBefore     time.Time
-	Nonce         string
-	Email         string
-	EmailVerified bool
-	Name          string
-	Picture       string
+	Issuer          string
+	Subject         string
+	Audience        []string
+	AuthorizedParty string
+	ExpiresAt       time.Time
+	IssuedAt        time.Time
+	NotBefore       time.Time
+	Nonce           string
+	Email           string
+	EmailVerified   bool
+	Name            string
+	Picture         string
 }
 
 // IDTokenVerifyConfig specifies mandatory claim invariants for OIDC verification.
@@ -233,6 +234,7 @@ func VerifyIDToken(rawJWT string, keySet *JWKSKeySet, cfg IDTokenVerifyConfig) (
 		Iss           string          `json:"iss"`
 		Sub           string          `json:"sub"`
 		Aud           json.RawMessage `json:"aud"`
+		Azp           string          `json:"azp"`
 		Exp           int64           `json:"exp"`
 		Iat           int64           `json:"iat"`
 		Nbf           int64           `json:"nbf"`
@@ -278,6 +280,10 @@ func VerifyIDToken(rawJWT string, keySet *JWKSKeySet, cfg IDTokenVerifyConfig) (
 		if !audOK {
 			return IDTokenClaims{}, fmt.Errorf("%w: expected %q", ErrAudienceMismatch, cfg.ExpectedAudience)
 		}
+		// OIDC Core 1.0 Section 3.1.3.7: multi-audience tokens MUST bind azp to client_id.
+		if len(auds) > 1 && rawClaims.Azp != cfg.ExpectedAudience {
+			return IDTokenClaims{}, fmt.Errorf("%w: got %q want %q", ErrAZPMismatch, rawClaims.Azp, cfg.ExpectedAudience)
+		}
 	}
 	if rawClaims.Exp == 0 {
 		return IDTokenClaims{}, fmt.Errorf("%w: missing exp claim", ErrInvalidIDToken)
@@ -298,16 +304,17 @@ func VerifyIDToken(rawJWT string, keySet *JWKSKeySet, cfg IDTokenVerifyConfig) (
 	}
 
 	claims := IDTokenClaims{
-		Issuer:        rawClaims.Iss,
-		Subject:       rawClaims.Sub,
-		Audience:      auds,
-		ExpiresAt:     expTime,
-		NotBefore:     nbfTime,
-		Nonce:         rawClaims.Nonce,
-		Email:         rawClaims.Email,
-		EmailVerified: rawClaims.EmailVerified,
-		Name:          rawClaims.Name,
-		Picture:       rawClaims.Picture,
+		Issuer:          rawClaims.Iss,
+		Subject:         rawClaims.Sub,
+		Audience:        auds,
+		AuthorizedParty: rawClaims.Azp,
+		ExpiresAt:       expTime,
+		NotBefore:       nbfTime,
+		Nonce:           rawClaims.Nonce,
+		Email:           rawClaims.Email,
+		EmailVerified:   rawClaims.EmailVerified,
+		Name:            rawClaims.Name,
+		Picture:         rawClaims.Picture,
 	}
 	if rawClaims.Iat > 0 {
 		claims.IssuedAt = time.Unix(rawClaims.Iat, 0).UTC()
@@ -362,11 +369,13 @@ func parseJWTAudience(raw json.RawMessage) ([]string, error) {
 // HTTPJWKSCache caches fetched JWKS documents with bounded TTL and supports
 // force-refresh on signing key rotation (`ErrKeyNotFound`).
 type HTTPJWKSCache struct {
-	Client *http.Client
-	TTL    time.Duration
+	Client          *http.Client
+	TTL             time.Duration
+	RefreshCooldown time.Duration
 
-	mu      sync.RWMutex
-	entries map[string]jwksCacheEntry
+	mu               sync.RWMutex
+	entries          map[string]jwksCacheEntry
+	lastForceRefresh map[string]time.Time
 }
 
 type jwksCacheEntry struct {
@@ -374,17 +383,39 @@ type jwksCacheEntry struct {
 	fetchedAt time.Time
 }
 
-func NewHTTPJWKSCache(client *http.Client, ttl time.Duration) *HTTPJWKSCache {
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+// noRedirectHTTPClient returns a shallow clone of base with a fail-closed
+// CheckRedirect policy so OAuth/OIDC endpoints never leak Bearer tokens,
+// refresh tokens, or PKCE verifiers across HTTP 301/302/307 redirects.
+func noRedirectHTTPClient(base *http.Client, defaultTimeout time.Duration) *http.Client {
+	if base == nil {
+		return &http.Client{
+			Timeout: defaultTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return ErrRedirectBlocked
+			},
+		}
 	}
+	cp := *base
+	if cp.Timeout <= 0 {
+		cp.Timeout = defaultTimeout
+	}
+	cp.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return ErrRedirectBlocked
+	}
+	return &cp
+}
+
+func NewHTTPJWKSCache(client *http.Client, ttl time.Duration) *HTTPJWKSCache {
+	client = noRedirectHTTPClient(client, 10*time.Second)
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
 	return &HTTPJWKSCache{
-		Client:  client,
-		TTL:     ttl,
-		entries: make(map[string]jwksCacheEntry),
+		Client:           client,
+		TTL:              ttl,
+		RefreshCooldown:  30 * time.Second,
+		entries:          make(map[string]jwksCacheEntry),
+		lastForceRefresh: make(map[string]time.Time),
 	}
 }
 
@@ -400,6 +431,21 @@ func (c *HTTPJWKSCache) Get(ctx context.Context, jwksURL string, allowLoopback, 
 		if ok && time.Since(ent.fetchedAt) < c.TTL {
 			return ent.set, nil
 		}
+	} else {
+		cooldown := c.RefreshCooldown
+		if cooldown <= 0 {
+			cooldown = 30 * time.Second
+		}
+		c.mu.Lock()
+		if c.lastForceRefresh == nil {
+			c.lastForceRefresh = make(map[string]time.Time)
+		}
+		if last, ok := c.lastForceRefresh[jwksURL]; ok && time.Since(last) < cooldown {
+			c.mu.Unlock()
+			return nil, ErrJWKSRefreshCooldown
+		}
+		c.lastForceRefresh[jwksURL] = time.Now()
+		c.mu.Unlock()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
 	if err != nil {

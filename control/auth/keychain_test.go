@@ -43,7 +43,9 @@ func (f *fakeNativeSecretStore) SetSecret(_ context.Context, service, account st
 	if f.secrets == nil {
 		f.secrets = make(map[string][]byte)
 	}
-	f.setCalls++
+	if account == auth.DefaultKeychainAccount {
+		f.setCalls++
+	}
 	f.secrets[service+"/"+account] = append([]byte(nil), secret...)
 	return nil
 }

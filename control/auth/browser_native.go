@@ -19,8 +19,8 @@ import (
 // Fail-closed: strictly rejects any non-HTTPS URL or leading-dash flag injection.
 func OpenSystemBrowser(ctx context.Context, rawURL string) error {
 	trimmed := strings.TrimSpace(rawURL)
-	if strings.HasPrefix(trimmed, "-") {
-		return fmt.Errorf("%w: URL cannot start with '-'", ErrInsecureEndpoint)
+	if strings.HasPrefix(trimmed, "-") || strings.ContainsAny(trimmed, " \t\r\n\"'|&;<>`") {
+		return fmt.Errorf("%w: URL contains forbidden characters or leading '-'", ErrInsecureEndpoint)
 	}
 	if err := ValidateSecureURL(trimmed, false); err != nil {
 		return err

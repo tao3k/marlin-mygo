@@ -72,8 +72,15 @@ var (
 	ErrNotSupported       = errors.New("auth: flow not supported on this platform or provider")
 	ErrScopeEscalation    = errors.New("auth: token refresh attempted scope escalation")
 	ErrNonceMismatch      = errors.New("auth: OIDC ID token nonce mismatch")
-	ErrFlowCancelled      = errors.New("auth: authorization flow was cancelled or superseded")
-	ErrSessionRevoked     = errors.New("auth: account session was signed out or revoked during refresh")
+	ErrFlowCancelled       = errors.New("auth: authorization flow was cancelled or superseded")
+	ErrSessionRevoked      = errors.New("auth: account session was signed out or revoked during refresh")
+	ErrPolicyDenied        = errors.New("auth: action denied by Cedar policy")
+	ErrStalePolicyDecision = errors.New("auth: authorization ticket is stale after policy update")
+	ErrAZPMismatch         = errors.New("auth: OIDC ID token azp mismatch on multi-audience token")
+	ErrSubjectMismatch     = errors.New("auth: OIDC UserInfo sub does not match verified ID token sub")
+	ErrJWKSRefreshCooldown = errors.New("auth: JWKS force-refresh cooldown active")
+	ErrVaultRollback       = errors.New("auth: encrypted vault rollback detected (stale revision)")
+	ErrRedirectBlocked     = errors.New("auth: HTTP redirects are forbidden on OAuth/OIDC security endpoints")
 )
 
 // ProviderConfig defines one registered authentication provider.

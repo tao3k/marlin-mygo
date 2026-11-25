@@ -12,6 +12,7 @@
 .env
 .mygo/
 .build/
+.tmp/
 .swiftpm/
 build/
 dist/
