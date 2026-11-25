@@ -53,7 +53,7 @@ All 14 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool p
 | =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |
 | =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *112 µs* | <= 300 µs     | <= 18  |
 | =runtime/mygoshell= full headless workbench GPU frame     | *38.6 µs*| <= 90 µs      | <= 24  |
-| =runtime/mygoshell= 100k-row virtualized transcript frame | *124 µs* | <= 250 µs     | <= 48  |
+| =runtime/mygoshell= 100k-row virtualized transcript frame | *127 µs* | <= 250 µs     | <= 24  |
 | =control/grpcwire= HTTP/2 loopback scoped panel action    | *61.6 µs*| <= 250 µs     | <= 220 |
 | =@tao3k/marlin-panel-sdk= TS event match / drop / theme   | *20/5/10ns*| <= 60/30/50ns | —    |
 

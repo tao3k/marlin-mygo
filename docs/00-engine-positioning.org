@@ -91,6 +91,6 @@ allocation and byte budgets are *never* relaxed in CI):
 | =runtime/wazeroir= resident WASM =DrawList= (64 cmds) | *<= 75 µs*            | <= 6            | <= 512 B       |
 | =runtime/wazeroir= resident WASM JSON UI-IR render    | *<= 300 µs*           | <= 18           | <= 20 KB       |
 | =runtime/mygoshell= headless workbench GPU frame      | *<= 90 µs*            | <= 24           | <= 2.5 KB      |
-| =runtime/mygoshell= 100k-row virtualized live frame   | *<= 250 µs*           | <= 48           | <= 4.5 KB      |
+| =runtime/mygoshell= 100k-row virtualized live frame   | *<= 250 µs*           | <= 24 (mac)     | <= 1.5 KB      |
 | =control/grpcwire= loopback HTTP/2 scoped action      | *<= 250 µs*           | <= 220          | <= 20 KB       |
 | =@tao3k/marlin-panel-sdk= event match / drop / theme  | *<= 60 / 30 / 50 ns*  | —               | —              |

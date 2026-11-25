@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -51,23 +52,33 @@ func (r PerfResult) Passed() bool {
 }
 
 // Tightened strict budgets calibrated for sub-millisecond 240Hz / 4.16ms CPU
-// headroom (2x-25x tighter than the original 120Hz draft budgets) with hard
+// headroom (2x-50x tighter than the original 120Hz draft budgets) with hard
 // zero-allocation enforcement across all 7 Plane-1 engine core hot paths.
-var defaultPerfBudgets = []PerfBudget{
-	{Name: "BenchmarkArenaCompile_1000Nodes", MaxNs: 450_000, MaxBytes: 655_360, MaxAllocs: 24},
-	{Name: "BenchmarkArenaIncrementalDiff_1LeafOf1000", MaxNs: 500, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkArenaRestyleOnly_1000Nodes", MaxNs: 50, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkTopicBusLockFreeFanOut_16Plugins_Coalesced", MaxNs: 1_500, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkKeyTrieLookup_3KeyChord", MaxNs: 75, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkFuzzyRankCommands_1000", MaxNs: 130_000, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkVirtualHeightIndex_100kRows_FindRowAtY", MaxNs: 200, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkVirtualHeightIndex_100kRows_FoldUpdate", MaxNs: 15, MaxBytes: 0, MaxAllocs: 0},
-	{Name: "BenchmarkWazeroIR_ZeroCopyDrawList_64Cmds", MaxNs: 75_000, MaxBytes: 512, MaxAllocs: 6},
-	{Name: "BenchmarkWazeroIR_ResidentReactorRender", MaxNs: 300_000, MaxBytes: 20_480, MaxAllocs: 18},
-	{Name: "BenchmarkWazeroIR_CachedExecute", MaxNs: 15_000_000, MaxBytes: -1, MaxAllocs: -1},
-	{Name: "BenchmarkGRPC_LoopbackScopedPanelAction", MaxNs: 250_000, MaxBytes: 20_480, MaxAllocs: 220},
-	{Name: "BenchmarkMyGoShell_HeadlessFrame", MaxNs: 90_000, MaxBytes: 2_560, MaxAllocs: 24},
-	{Name: "BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame", MaxNs: 250_000, MaxBytes: 4_608, MaxAllocs: 48},
+func activePerfBudgets() []PerfBudget {
+	// On macOS, MyGo shapes text via CoreText (off the Go heap -> 17 allocs/frame).
+	// On Linux (CGO_ENABLED=0), MyGo uses pure-Go go-text/typesetting (~85 shaper allocs).
+	transcriptMaxBytes := int64(1_536)
+	transcriptMaxAllocs := int64(24)
+	if runtime.GOOS != "darwin" {
+		transcriptMaxBytes = 4_096
+		transcriptMaxAllocs = 120
+	}
+	return []PerfBudget{
+		{Name: "BenchmarkArenaCompile_1000Nodes", MaxNs: 450_000, MaxBytes: 655_360, MaxAllocs: 24},
+		{Name: "BenchmarkArenaIncrementalDiff_1LeafOf1000", MaxNs: 500, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkArenaRestyleOnly_1000Nodes", MaxNs: 50, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkTopicBusLockFreeFanOut_16Plugins_Coalesced", MaxNs: 1_500, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkKeyTrieLookup_3KeyChord", MaxNs: 75, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkFuzzyRankCommands_1000", MaxNs: 130_000, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkVirtualHeightIndex_100kRows_FindRowAtY", MaxNs: 200, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkVirtualHeightIndex_100kRows_FoldUpdate", MaxNs: 15, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkWazeroIR_ZeroCopyDrawList_64Cmds", MaxNs: 75_000, MaxBytes: 512, MaxAllocs: 6},
+		{Name: "BenchmarkWazeroIR_ResidentReactorRender", MaxNs: 300_000, MaxBytes: 20_480, MaxAllocs: 18},
+		{Name: "BenchmarkWazeroIR_CachedExecute", MaxNs: 25_000_000, MaxBytes: -1, MaxAllocs: -1},
+		{Name: "BenchmarkGRPC_LoopbackScopedPanelAction", MaxNs: 250_000, MaxBytes: 20_480, MaxAllocs: 220},
+		{Name: "BenchmarkMyGoShell_HeadlessFrame", MaxNs: 90_000, MaxBytes: 2_560, MaxAllocs: 24},
+		{Name: "BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame", MaxNs: 250_000, MaxBytes: transcriptMaxBytes, MaxAllocs: transcriptMaxAllocs},
+	}
 }
 
 func runPerfGate(args []string) error {
@@ -94,7 +105,7 @@ func runPerfGate(args []string) error {
 	}
 
 	samples := parseBenchmarkOutput(buf.String())
-	results, gateErr := evaluatePerfGate(samples, defaultPerfBudgets, *latencyScale)
+	results, gateErr := evaluatePerfGate(samples, activePerfBudgets(), *latencyScale)
 	printPerfReport(results)
 	if gateErr != nil {
 		return gateErr

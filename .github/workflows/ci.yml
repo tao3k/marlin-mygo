@@ -114,7 +114,7 @@ jobs:
         run: bun test packages/panel-sdk
 
       - name: Enforce Go + TypeScript performance gate (strict zero-alloc + tightened latency ceilings)
-        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=250ms -latency-scale=4.0
+        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=250ms -latency-scale=2.5
 
   reuse-spdx:
     name: REUSE SPDX License Compliance

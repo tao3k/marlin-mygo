@@ -65,6 +65,7 @@ type CancellationReceiptView struct {
 }
 
 // TranscriptEntry stores one row in the Fenwick-virtualized live transcript.
+// Precomputed display strings avoid per-frame fmt.Sprintf heap allocations at 120Hz/240Hz.
 type TranscriptEntry struct {
 	ID           string
 	Role         TranscriptRole
@@ -78,6 +79,57 @@ type TranscriptEntry struct {
 	ToolCard     *ToolCallCardView
 	HumanGate    *HumanGateCardView
 	Cancellation *CancellationReceiptView
+
+	headerLabel   string
+	outcomeBadge  string
+	foldKey       string
+	collapseLabel string
+	expandLabel   string
+	foldedSummary string
+	receiptBadge  string
+	denialBadge   string
+	cancelBadge   string
+}
+
+func (e *TranscriptEntry) refreshLabels() {
+	if e.Title != "" {
+		e.headerLabel = string(e.Role) + " · " + e.Title
+	} else {
+		e.headerLabel = string(e.Role)
+	}
+	if e.OutcomeLabel != "" {
+		e.outcomeBadge = "[" + e.OutcomeLabel + "]"
+	} else {
+		e.outcomeBadge = ""
+	}
+	if e.Collapsible {
+		e.foldKey = "fold-" + e.ID
+		e.collapseLabel = "Collapse " + e.ID
+		e.expandLabel = "Expand " + e.ID
+		e.foldedSummary = fmt.Sprintf("(folded · %d chars)", len(e.Text))
+	} else {
+		e.foldKey = ""
+		e.collapseLabel = ""
+		e.expandLabel = ""
+		e.foldedSummary = ""
+	}
+	if e.ToolCard != nil && e.ToolCard.ReceiptID != "" {
+		e.receiptBadge = "RECEIPT: " + e.ToolCard.ReceiptID
+	} else {
+		e.receiptBadge = ""
+	}
+	if e.ToolCard != nil && e.ToolCard.DenialMessage != "" {
+		e.denialBadge = "DENIED: " + e.ToolCard.DenialMessage
+	} else {
+		e.denialBadge = ""
+	}
+	if e.Cancellation != nil {
+		rc := e.Cancellation
+		e.cancelBadge = fmt.Sprintf("CANCELLATION RECEIPT · status=%s completed=%v tracker_closed=%v tasks=%d->%d",
+			rc.Status, rc.Completed, rc.TrackerClosed, rc.TrackedTasks, rc.RemainingTasks)
+	} else {
+		e.cancelBadge = ""
+	}
 }
 
 const (
@@ -108,6 +160,15 @@ type TranscriptController struct {
 	composerText string
 	activeTurn   uint64
 	inFlight     bool
+
+	// Single-frame scratch buffers reused across 120Hz/240Hz Render calls (0 slice allocs/frame).
+	renderMu       sync.Mutex
+	renderEntries  []TranscriptEntry
+	renderIndices  []int
+	statsRows      int
+	statsVisible   int
+	statsHeight    uint64
+	cachedStatsStr string
 }
 
 func NewTranscriptController() *TranscriptController {
@@ -182,6 +243,7 @@ func (tc *TranscriptController) UpsertToolCall(card ToolCallCardView, folded boo
 		tc.entries[row].Text = body
 		tc.entries[row].OutcomeLabel = cp.Phase
 		tc.entries[row].ToolCard = &cp
+		tc.entries[row].refreshLabels()
 		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
 		if tc.autoFollow {
 			tc.scrollToBottomLocked()
@@ -223,6 +285,7 @@ func (tc *TranscriptController) UpsertHumanGate(gate HumanGateCardView) int {
 		tc.entries[row].Text = cp.Prompt
 		tc.entries[row].OutcomeLabel = badge
 		tc.entries[row].HumanGate = &cp
+		tc.entries[row].refreshLabels()
 		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
 		if tc.autoFollow {
 			tc.scrollToBottomLocked()
@@ -265,6 +328,7 @@ func (tc *TranscriptController) ApplyCancellationReceipt(receipt CancellationRec
 		tc.entries[row].OutcomeLabel = "CANCELLED"
 	}
 	tc.entries[row].Cancellation = &cp
+	tc.entries[row].refreshLabels()
 	if tc.activeTurn == cp.TurnOrdinal {
 		tc.inFlight = false
 	}
@@ -327,6 +391,7 @@ func (tc *TranscriptController) ApplyCheckpoint(turnOrdinal uint64, eventID, tex
 	tc.inFlight = true
 	tc.entries[row].Text += textDelta
 	tc.entries[row].Streaming = true
+	tc.entries[row].refreshLabels()
 	tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
 	if tc.autoFollow {
 		tc.scrollToBottomLocked()
@@ -341,6 +406,7 @@ func (tc *TranscriptController) CompleteTurn(turnOrdinal uint64, outcomeLabel st
 	if row, ok := tc.turnRow[turnOrdinal]; ok {
 		tc.entries[row].Streaming = false
 		tc.entries[row].OutcomeLabel = outcomeLabel
+		tc.entries[row].refreshLabels()
 		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
 	}
 	if tc.activeTurn == turnOrdinal {
@@ -448,23 +514,34 @@ func (tc *TranscriptController) SetComposerText(text string) {
 // Render paints ONLY the Fenwick-virtualized visible slice of transcript rows
 // plus the interactive chat composer onto MyGo's GPU scene graph.
 func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(string), onCancel func()) {
+	tc.renderMu.Lock()
+	defer tc.renderMu.Unlock()
+
 	tc.mu.RLock()
 	first, last, _ := tc.heights.VisibleRange(tc.scrollY, tc.viewportH)
 	totalRows := len(tc.entries)
 	totalH := tc.heights.TotalHeight()
 	inFlight := tc.inFlight
 	draft := tc.composerText
-	var visible []TranscriptEntry
-	var visibleIndices []int
+	tc.renderEntries = tc.renderEntries[:0]
+	tc.renderIndices = tc.renderIndices[:0]
 	if first >= 0 && last >= first && last < totalRows {
-		visible = make([]TranscriptEntry, 0, last-first+1)
-		visibleIndices = make([]int, 0, last-first+1)
 		for i := first; i <= last; i++ {
-			visible = append(visible, tc.entries[i])
-			visibleIndices = append(visibleIndices, i)
+			tc.renderEntries = append(tc.renderEntries, tc.entries[i])
+			tc.renderIndices = append(tc.renderIndices, i)
 		}
 	}
 	tc.mu.RUnlock()
+
+	visible := tc.renderEntries
+	visibleIndices := tc.renderIndices
+	if tc.cachedStatsStr == "" || tc.statsRows != totalRows || tc.statsVisible != len(visible) || tc.statsHeight != totalH {
+		tc.statsRows = totalRows
+		tc.statsVisible = len(visible)
+		tc.statsHeight = totalH
+		tc.cachedStatsStr = fmt.Sprintf("rows:%d visible:%d height:%dpx", totalRows, len(visible), totalH)
+	}
+	statsLine := tc.cachedStatsStr
 
 	var toggleRow = -1
 	var submitPrompt string
@@ -474,8 +551,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		Background(t.Surface).Border(1, t.Border).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).Bold().TextColor(t.TextMuted)
-			ui.Textf(c, "rows:%d visible:%d height:%dpx", totalRows, len(visible), totalH).
-				FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, statsLine).FontSize(11).TextColor(t.TextMuted)
 			ui.Spacer(c)
 			if inFlight {
 				ui.Text(c, "STREAMING").FontSize(11).Bold().TextColor(t.Warning)
@@ -489,7 +565,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				FontSize(12).TextColor(t.TextMuted)
 		} else {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-				for idx, entry := range visible {
+				for idx := range visible {
+					entry := &visible[idx]
 					rowIdx := visibleIndices[idx]
 					border := t.Border
 					roleColor := t.Accent
@@ -507,46 +584,38 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 					ui.Column(c).MinWidth(0).Padding(8).Gap(4).Radius(6).
 						Border(1, border).Children(func() {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							header := string(entry.Role)
-							if entry.Title != "" {
-								header = fmt.Sprintf("%s · %s", entry.Role, entry.Title)
-							}
-							ui.Text(c, header).FontSize(11).Bold().TextColor(roleColor)
+							ui.Text(c, entry.headerLabel).FontSize(11).Bold().TextColor(roleColor)
 							if entry.Streaming {
 								ui.Text(c, "[streaming...]").FontSize(11).TextColor(t.Warning)
-							} else if entry.OutcomeLabel != "" {
-								ui.Textf(c, "[%s]", entry.OutcomeLabel).FontSize(11).TextColor(t.TextMuted)
+							} else if entry.outcomeBadge != "" {
+								ui.Text(c, entry.outcomeBadge).FontSize(11).TextColor(t.TextMuted)
 							}
 							ui.Spacer(c)
 							if entry.Collapsible {
-								btnLabel := fmt.Sprintf("Collapse %s", entry.ID)
+								btnLabel := entry.collapseLabel
 								if entry.Folded {
-									btnLabel = fmt.Sprintf("Expand %s", entry.ID)
+									btnLabel = entry.expandLabel
 								}
-								if ui.Button(c.Key("fold-"+entry.ID), btnLabel).Clicked() {
+								if ui.Button(c.Key(entry.foldKey), btnLabel).Clicked() {
 									toggleRow = rowIdx
 								}
 							}
 						})
 						if entry.Collapsible && entry.Folded {
-							ui.Textf(c, "(folded · %d chars)", len(entry.Text)).
-								FontSize(11).TextColor(t.TextMuted)
+							ui.Text(c, entry.foldedSummary).FontSize(11).TextColor(t.TextMuted)
 						} else if entry.Text != "" {
 							ui.Text(c, entry.Text).FontSize(13)
 						}
 						if entry.ToolCard != nil && !entry.Folded {
-							if entry.ToolCard.ReceiptID != "" {
-								ui.Textf(c, "RECEIPT: %s", entry.ToolCard.ReceiptID).FontSize(11).TextColor(t.Accent)
+							if entry.receiptBadge != "" {
+								ui.Text(c, entry.receiptBadge).FontSize(11).TextColor(t.Accent)
 							}
-							if entry.ToolCard.DenialMessage != "" {
-								ui.Textf(c, "DENIED: %s", entry.ToolCard.DenialMessage).FontSize(11).TextColor(t.Warning)
+							if entry.denialBadge != "" {
+								ui.Text(c, entry.denialBadge).FontSize(11).TextColor(t.Warning)
 							}
 						}
-						if entry.Cancellation != nil {
-							rc := entry.Cancellation
-							ui.Textf(c, "CANCELLATION RECEIPT · status=%s completed=%v tracker_closed=%v tasks=%d->%d",
-								rc.Status, rc.Completed, rc.TrackerClosed, rc.TrackedTasks, rc.RemainingTasks).
-								FontSize(11).Bold().TextColor(t.Warning)
+						if entry.cancelBadge != "" {
+							ui.Text(c, entry.cancelBadge).FontSize(11).Bold().TextColor(t.Warning)
 						}
 					})
 				}
@@ -603,6 +672,7 @@ func formatToolCardBody(card ToolCallCardView) string {
 }
 
 func (tc *TranscriptController) appendLocked(entry TranscriptEntry) int {
+	entry.refreshLabels()
 	h := tc.estimateHeightLocked(entry)
 	row := tc.heights.Append(h)
 	tc.entries = append(tc.entries, entry)
