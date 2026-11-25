@@ -247,6 +247,7 @@ func registerRemoteTarget(
 	ctx context.Context,
 	targets *transport.TargetRegistry,
 	federation *transport.FederationSupervisor,
+	authTokenSource func(context.Context) (string, error),
 	targetID, displayName, endpoint, bearerToken string,
 ) error {
 	id := strings.TrimSpace(targetID)
@@ -261,13 +262,17 @@ func registerRemoteTarget(
 	if authHeader != "" && !strings.HasPrefix(authHeader, "Bearer ") {
 		authHeader = "Bearer " + authHeader
 	}
-	dialed, err := grpcwire.Dial(grpcwire.DialConfig{
+	dialCfg := grpcwire.DialConfig{
 		ID:          id,
 		DisplayName: displayName,
 		Mode:        transport.ModeRemoteGRPC,
 		Address:     addr,
 		AuthToken:   authHeader,
-	})
+	}
+	if authHeader == "" && authTokenSource != nil {
+		dialCfg.AuthTokenSource = authTokenSource
+	}
+	dialed, err := grpcwire.Dial(dialCfg)
 	if err != nil {
 		return err
 	}

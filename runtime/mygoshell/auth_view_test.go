@@ -144,3 +144,42 @@ func TestTier0AuthModalOAuthEmailAndZeroTokenExposure(t *testing.T) {
 		t.Fatalf("expected signed-out UI after Sign Out, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }
+
+func TestAdaptiveShellSharedAuthAcrossDesktopAndMobile(t *testing.T) {
+	authMgr := auth.NewManager(auth.ManagerConfig{
+		EmailBackend: uiTestEmailBackend{},
+	})
+	_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider("marlin-adaptive"))
+	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
+	sharedAuth := mygoshell.NewAuthController(authMgr)
+
+	adaptive := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{
+		BrandTitle:     "Marlin Adaptive",
+		InitialThemeID: "midnight",
+		FormFactor:     mygoshell.FormFactorAuto,
+		Auth:           sharedAuth,
+	})
+
+	// Phone viewport (< 720px) displays shared Sign In pill and opens Tier-0 Auth Modal!
+	mobileTester := ui.NewTester(adaptive.View, 393, 852)
+	if !mobileTester.HasText("Sign In") {
+		t.Fatalf("expected Mobile companion nav bar to show shared 'Sign In' pill, got %q", strings.Join(mobileTester.Texts(), " | "))
+	}
+	if err := mobileTester.Click("Sign In"); err != nil {
+		t.Fatalf("clicking Mobile Sign In failed: %v", err)
+	}
+	mobileTester.Frame()
+	if !mobileTester.HasText("TIER-0 HOST AUTH") || !mobileTester.HasText("Continue with Google") {
+		t.Fatalf("expected Tier-0 Auth Modal on Mobile Companion, got %q", strings.Join(mobileTester.Texts(), " | "))
+	}
+
+	// Sign in on Mobile -> Desktop viewport (>= 720px) immediately reflects the signed-in account!
+	_, _ = authMgr.RequestEmailLogin(context.Background(), "sync@marlin.dev", auth.MethodEmailOTP)
+	if _, err := authMgr.VerifyEmailLogin(context.Background(), "123456"); err != nil {
+		t.Fatal(err)
+	}
+	desktopTester := ui.NewTester(adaptive.View, 1280, 800)
+	if !desktopTester.HasText("Guangtao Dev") {
+		t.Fatalf("expected Desktop top bar to mirror signed-in account immediately, got %q", strings.Join(desktopTester.Texts(), " | "))
+	}
+}

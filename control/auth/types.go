@@ -86,6 +86,8 @@ type ProviderConfig struct {
 	DeviceAuthURL   string   // optional RFC 8628 device authorization endpoint
 	UserInfoURL     string   // optional OIDC UserInfo endpoint
 	RevokeURL       string   // optional RFC 7009 token revocation endpoint
+	Issuer          string   // optional OIDC expected `iss` claim for id_token verification
+	JWKSURL         string   // optional RFC 7517 JWKS endpoint for cryptographic id_token verification
 	ClientID        string   // public native client ID (PKCE requires no client secret)
 	Scopes          []string // requested OAuth scopes
 	RedirectURI     string   // optional fixed redirect URI (loopback chosen dynamically when empty)
@@ -138,6 +140,11 @@ func (c ProviderConfig) Validate() error {
 			return fmt.Errorf("auth: RevokeURL: %w", err)
 		}
 	}
+	if c.JWKSURL != "" {
+		if err := ValidateSecureURL(c.JWKSURL, c.AllowLoopback); err != nil {
+			return fmt.Errorf("auth: JWKSURL: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -153,6 +160,8 @@ func GoogleOAuthProvider(clientID string, extraScopes ...string) ProviderConfig 
 		TokenURL:        "https://oauth2.googleapis.com/token",
 		UserInfoURL:     "https://openidconnect.googleapis.com/v1/userinfo",
 		RevokeURL:       "https://oauth2.googleapis.com/revoke",
+		Issuer:          "https://accounts.google.com",
+		JWKSURL:         "https://www.googleapis.com/oauth2/v3/certs",
 		ClientID:        strings.TrimSpace(clientID),
 		Scopes:          scopes,
 		SupportsRefresh: true,

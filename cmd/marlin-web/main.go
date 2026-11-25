@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/control/auth"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -120,6 +121,12 @@ func main() {
 		},
 	})
 
+	webAuthMgr := auth.NewManager(auth.ManagerConfig{})
+	_ = webAuthMgr.RegisterProvider(auth.GoogleOAuthProvider("marlin-web-client"))
+	_ = webAuthMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-web-client"))
+	_ = webAuthMgr.RegisterProvider(auth.EmailOTPProvider())
+	webAuth := mygoshell.NewAuthController(webAuthMgr)
+
 	adaptive := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{
 		BrandTitle:     "Marlin Web",
 		BrandSubtitle:  "WASM · Desktop / iOS / Android",
@@ -128,6 +135,7 @@ func main() {
 		Targets:        targets,
 		Slots:          slots,
 		Projection:     proj,
+		Auth:           webAuth,
 	})
 	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, and theme tokens on Web deploy.")
 	_, _ = adaptive.Windows.OpenTabInFocused(shell.PaneBuffer{

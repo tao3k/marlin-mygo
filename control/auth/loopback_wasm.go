@@ -30,4 +30,6 @@ func (r *LoopbackReceiver) Wait(context.Context) (LoopbackCallback, error) {
 	return LoopbackCallback{}, ErrNotSupported
 }
 
+func (r *LoopbackReceiver) SetExpectedState(string) {}
+
 func (r *LoopbackReceiver) Close() {}

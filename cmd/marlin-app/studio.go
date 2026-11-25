@@ -125,6 +125,16 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		} else {
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
 		}
+		if app.Auth != nil && app.Auth.Manager != nil {
+			app.Auth.OnChanged = win.Invalidate
+			app.Auth.OnStartOAuth = func(providerID auth.ProviderID) error {
+				go func() {
+					_, _ = app.Auth.Manager.RunLoopbackOAuth(ctx, providerID)
+					win.Invalidate()
+				}()
+				return nil
+			}
+		}
 
 		if !cfg.showcase {
 			wireDemoHotPlugToggle(ctx, app, host, &mounted, win)
@@ -217,9 +227,25 @@ func buildWorkbenchApp(
 	if liveTarget == nil {
 		initialProjection = sampleProjectionSnapshot()
 	}
+	authMgr := auth.NewManager(auth.ManagerConfig{
+		OpenBrowser: auth.OpenSystemBrowser,
+	})
+	if googleID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GOOGLE_CLIENT_ID")); googleID != "" {
+		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider(googleID))
+	} else {
+		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider("marlin-desktop-native"))
+	}
+	if githubID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GITHUB_CLIENT_ID")); githubID != "" {
+		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider(githubID))
+	} else {
+		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
+	}
+	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
+	app.Auth = mygoshell.NewAuthController(authMgr)
+
 	app.Projection = mygoshell.NewProjectionController(initialProjection)
 	app.OnAddRemoteTarget = func(targetID, displayName, endpoint, bearerToken string) error {
-		return registerRemoteTarget(ctx, targets, federation, targetID, displayName, endpoint, bearerToken)
+		return registerRemoteTarget(ctx, targets, federation, authMgr.AuthorizationHeader, targetID, displayName, endpoint, bearerToken)
 	}
 
 	applyThemePreset := wireThemeControls(app, wb, wvRuntime)
@@ -276,21 +302,6 @@ func buildWorkbenchApp(
 		return nil
 	}
 	app.Marketplace = mktUI
-
-	authMgr := auth.NewManager(auth.ManagerConfig{})
-	if googleID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GOOGLE_CLIENT_ID")); googleID != "" {
-		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider(googleID))
-	} else {
-		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider("marlin-desktop-native"))
-	}
-	if githubID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GITHUB_CLIENT_ID")); githubID != "" {
-		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider(githubID))
-	} else {
-		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
-	}
-	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
-	app.Auth = mygoshell.NewAuthController(authMgr)
-
 	app.Commands = []input.CommandEntry{
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
 		{Name: "workbench.open-marketplace", Description: "Open Tier-0 built-in Marketplace drawer"},

@@ -899,16 +899,21 @@ func (m *AuthManager) emit() {
 }
 
 // HTTPOAuthExchanger implements standard RFC 6749 + RFC 7636 PKCE + RFC 7009
-// OAuth 2.1 HTTP form-encoded token exchange, refresh, and revocation.
+// OAuth 2.1 HTTP form-encoded token exchange, refresh, revocation, and
+// cryptographic OIDC JWT id_token verification via JWKS.
 type HTTPOAuthExchanger struct {
 	Client *http.Client
+	JWKS   *HTTPJWKSCache
 }
 
 func NewHTTPOAuthExchanger(client *http.Client) *HTTPOAuthExchanger {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	return &HTTPOAuthExchanger{Client: client}
+	return &HTTPOAuthExchanger{
+		Client: client,
+		JWKS:   NewHTTPJWKSCache(client, 15*time.Minute),
+	}
 }
 
 func (e *HTTPOAuthExchanger) ExchangeCode(
@@ -930,24 +935,63 @@ func (e *HTTPOAuthExchanger) ExchangeCode(
 	if err != nil {
 		return TokenSet{}, AccountProfile{}, err
 	}
-	if expectedNonce != "" && strings.TrimSpace(tok.IDToken) != "" {
-		if err := verifyIDTokenNonce(tok.IDToken, expectedNonce); err != nil {
-			return TokenSet{}, AccountProfile{}, err
-		}
-	}
 	profile := AccountProfile{
 		ProviderID:   cfg.ID,
 		ProviderName: cfg.DisplayName,
 		Method:       cfg.Method,
 		Scopes:       tok.Scopes,
 	}
+	if strings.TrimSpace(tok.IDToken) != "" {
+		if cfg.JWKSURL != "" {
+			if e.JWKS == nil {
+				e.JWKS = NewHTTPJWKSCache(e.Client, 15*time.Minute)
+			}
+			verifyCfg := IDTokenVerifyConfig{
+				ExpectedIssuer:   cfg.Issuer,
+				ExpectedAudience: cfg.ClientID,
+				ExpectedNonce:    expectedNonce,
+			}
+			keySet, kErr := e.JWKS.Get(ctx, cfg.JWKSURL, cfg.AllowLoopback, false)
+			if kErr != nil {
+				return TokenSet{}, AccountProfile{}, fmt.Errorf("auth: fetch OIDC JWKS: %w", kErr)
+			}
+			claims, vErr := VerifyIDToken(tok.IDToken, keySet, verifyCfg)
+			if errors.Is(vErr, ErrKeyNotFound) {
+				if refreshedSet, rErr := e.JWKS.Get(ctx, cfg.JWKSURL, cfg.AllowLoopback, true); rErr == nil {
+					claims, vErr = VerifyIDToken(tok.IDToken, refreshedSet, verifyCfg)
+				}
+			}
+			if vErr != nil {
+				return TokenSet{}, AccountProfile{}, vErr
+			}
+			profile.Subject = claims.Subject
+			profile.Email = claims.Email
+			profile.DisplayName = claims.Name
+			profile.AvatarURL = claims.Picture
+			profile.EmailVerified = claims.EmailVerified
+		} else if expectedNonce != "" {
+			if err := verifyIDTokenNonce(tok.IDToken, expectedNonce); err != nil {
+				return TokenSet{}, AccountProfile{}, err
+			}
+		}
+	}
 	if cfg.UserInfoURL != "" {
 		if uiProf, uErr := e.fetchUserInfo(ctx, cfg.UserInfoURL, tok.AccessToken); uErr == nil {
-			profile.Subject = uiProf.Subject
-			profile.Email = uiProf.Email
-			profile.DisplayName = uiProf.DisplayName
-			profile.AvatarURL = uiProf.AvatarURL
-			profile.EmailVerified = uiProf.EmailVerified
+			if profile.Subject == "" {
+				profile.Subject = uiProf.Subject
+			}
+			if profile.Email == "" {
+				profile.Email = uiProf.Email
+			}
+			if profile.DisplayName == "" {
+				profile.DisplayName = uiProf.DisplayName
+			}
+			if profile.AvatarURL == "" {
+				profile.AvatarURL = uiProf.AvatarURL
+			}
+			if uiProf.EmailVerified {
+				profile.EmailVerified = true
+			}
 		}
 	}
 	return tok, profile, nil

@@ -41,6 +41,7 @@ type AdaptiveShellConfig struct {
 	Slots            *shell.SlotRegistry
 	Workbench        *shell.WorkbenchController
 	Projection       *ProjectionController
+	Auth             *AuthController
 	OnThemeChange    func(DerivedTheme)
 }
 
@@ -107,6 +108,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	}
 	desktop.Transcript = transcript
 	desktop.Projection = cfg.Projection
+	desktop.Auth = cfg.Auth
 	desktop.Windows = tree
 	desktop.WindowBuffers = []shell.PaneBuffer{bufMain, bufSecondary, bufChat, bufProj, bufDock}
 	desktop.OnSelectPerspective = func(name string) {
@@ -117,6 +119,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	mobile := NewMobileCompanionAppForPlatform(cfg.MobilePlatform, "", cfg.BrandTitle)
 	mobile.Transcript = transcript
 	mobile.Windows = tree
+	mobile.Auth = cfg.Auth
 	mobile.SetThemePreset(preset.ID)
 
 	as := &AdaptiveShell{

@@ -128,6 +128,7 @@ type MobileCompanionApp struct {
 	Theme           schema.UITheme
 	Transcript      *TranscriptController
 	Windows         *shell.WindowTree
+	Auth            *AuthController
 	OnSendPrompt    func(prompt string)
 	OnCancelTurn    func()
 	OnGateDecision  func(gateID string, approve bool)
@@ -136,6 +137,7 @@ type MobileCompanionApp struct {
 	DeviceBridge      *device.Bridge
 	LastStatusLine    string
 	mu                sync.Mutex
+	authOpen          bool
 	bridgeDescriptors []device.CapabilityDescriptor
 	themePresetID     string
 	activeTab       MobileTab
@@ -414,6 +416,14 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		m.renderBottomBar(c, t, dt, plat, dev, tab, len(gates), &nextTab)
 	})
 
+	if m.Auth != nil {
+		ui.Modal(c, &m.authOpen, func() {
+			m.Auth.Render(c, t, dt, func() {
+				m.authOpen = false
+			})
+		})
+	}
+
 	// Commit state transitions atomically outside layout closures.
 	m.mu.Lock()
 	m.activeTab = nextTab
@@ -543,6 +553,15 @@ func (m *MobileCompanionApp) renderNavigationBar(
 			ui.Spacer(c)
 			if gateCount > 0 {
 				AppleBadgePill(c, fmt.Sprintf("%d GATE", gateCount), dt.Warning, dt)
+			}
+			if m.Auth != nil {
+				authVar := BtnGlass
+				if m.Auth.IsSignedIn() {
+					authVar = BtnTinted
+				}
+				if ApplePillButton(c, "mob-auth", m.Auth.TopBarLabel(), authVar, dt, svgIconShield, true).Clicked() {
+					m.authOpen = true
+				}
 			}
 			if AppleSwatchPill(c, "mob-theme", themeName, dt.Accent, false, dt).Clicked() {
 				*cycleThemeNow = true
