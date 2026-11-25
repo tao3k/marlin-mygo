@@ -68,6 +68,8 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "d"}, ActionKind: "buffer", CommandName: CmdTabClose},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "s"}, ActionKind: "buffer", CommandName: CmdTabHibernate},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "P"}, ActionKind: "buffer", CommandName: CmdTabTogglePin},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "m"}, ActionKind: "buffer", CommandName: CmdTabMoveNextPane},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "t"}, ActionKind: "buffer", CommandName: CmdTabTearOffRight},
 
 		// Perspectives (SPC p ...)
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "1"}, ActionKind: "perspective", CommandName: CmdPerspectiveFocus},

@@ -42,22 +42,37 @@ const (
 	CmdTabClose            = "tab.close"
 	CmdTabHibernate        = "tab.hibernate"
 	CmdTabTogglePin        = "tab.toggle-pin"
+	CmdTabMoveNextPane     = "tab.move-next-pane"
+	CmdTabTearOffRight     = "tab.tear-off-right"
 	CmdPerspectiveFocus    = "window.perspective.focus"
 	CmdPerspectiveSplit    = "window.perspective.split"
 	CmdPerspectiveCockpit  = "window.perspective.cockpit"
 	CmdPerspectiveZen      = "window.perspective.zen"
 )
 
+// LayoutTabSpec describes one stacked tab inside a declarative LayoutNodeSpec
+// received from or exported to the Rust durable session backend. On restore,
+// only ActiveTab mounts as TabActive; all other tabs start in TabHibernated
+// (0MB runtime RAM) for sub-millisecond cold start.
+type LayoutTabSpec struct {
+	BufferID string `json:"bufferId"`
+	Title    string `json:"title,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Pinned   bool   `json:"pinned,omitempty"`
+}
+
 // LayoutNodeSpec describes one node in a declarative Scheme layout projection
-// (either a leaf buffer binding or a binary split container with ratio).
+// (either a leaf buffer/tab-stack binding or a binary split container with ratio).
 type LayoutNodeSpec struct {
-	Axis     SplitAxis       `json:"axis,omitempty"`     // "row" | "column" (empty for leaf)
-	Ratio    float32         `json:"ratio,omitempty"`    // clamped to [0.20, 0.80]
-	BufferID string          `json:"bufferId,omitempty"` // leaf buffer identifier
-	Title    string          `json:"title,omitempty"`    // optional override title
-	Kind     string          `json:"kind,omitempty"`     // optional override kind
-	First    *LayoutNodeSpec `json:"first,omitempty"`
-	Second   *LayoutNodeSpec `json:"second,omitempty"`
+	Axis      SplitAxis       `json:"axis,omitempty"`      // "row" | "column" (empty for leaf)
+	Ratio     float32         `json:"ratio,omitempty"`     // clamped to [0.20, 0.80]
+	BufferID  string          `json:"bufferId,omitempty"`  // active leaf buffer identifier
+	Title     string          `json:"title,omitempty"`     // optional override title
+	Kind      string          `json:"kind,omitempty"`      // optional override kind
+	Tabs      []LayoutTabSpec `json:"tabs,omitempty"`      // optional stacked tabs (non-active restore as TabHibernated 0MB)
+	ActiveTab int             `json:"activeTab,omitempty"` // index into Tabs
+	First     *LayoutNodeSpec `json:"first,omitempty"`
+	Second    *LayoutNodeSpec `json:"second,omitempty"`
 }
 
 // LayoutSpec is a typed, Scheme-authored Emacs workspace layout projection.
@@ -118,7 +133,7 @@ func countSpecLeaves(n *LayoutNodeSpec) int {
 		}
 		return a + b
 	}
-	if strings.TrimSpace(n.BufferID) == "" {
+	if strings.TrimSpace(n.BufferID) == "" && len(n.Tabs) == 0 {
 		return -1
 	}
 	return 1
@@ -156,27 +171,79 @@ func buildNodeFromSpec(
 			Second:  second,
 		}, nil
 	}
-	bufID := strings.TrimSpace(spec.BufferID)
-	if bufID == "" {
-		return nil, fmt.Errorf("%w: empty leaf bufferId", ErrInvalidLayoutSpec)
+	resolveBuf := func(rawID, title, kind string) PaneBuffer {
+		bid := strings.TrimSpace(rawID)
+		buf, ok := catalog[bid]
+		if !ok {
+			buf = PaneBuffer{BufferID: bid, Title: bid, Kind: "native-gpu"}
+		}
+		if title != "" {
+			buf.Title = title
+		}
+		if kind != "" {
+			buf.Kind = kind
+		}
+		return buf
 	}
-	buf, ok := catalog[bufID]
-	if !ok {
-		buf = PaneBuffer{BufferID: bufID, Title: bufID, Kind: "native-gpu"}
+
+	now := tree.nowLocked()
+	var tabs []PaneTab
+	activeIdx := 0
+	if len(spec.Tabs) > 0 {
+		maxTabs := tree.tabPolicy.MaxTabsPerPane
+		if maxTabs <= 0 {
+			maxTabs = DefaultMaxTabsPerPane
+		}
+		limit := min(len(spec.Tabs), maxTabs)
+		activeIdx = spec.ActiveTab
+		if activeIdx < 0 || activeIdx >= limit {
+			activeIdx = 0
+		}
+		tabs = make([]PaneTab, 0, limit)
+		for i := 0; i < limit; i++ {
+			ts := spec.Tabs[i]
+			if strings.TrimSpace(ts.BufferID) == "" {
+				continue
+			}
+			// Lazy 0MB restore: only ActiveTab mounts live; all background tabs
+			// start directly in TabHibernated (0MB RAM) until focused!
+			state := TabHibernated
+			if i == activeIdx {
+				state = TabActive
+			}
+			tabs = append(tabs, PaneTab{
+				Buffer:       resolveBuf(ts.BufferID, ts.Title, ts.Kind),
+				State:        state,
+				Pinned:       ts.Pinned,
+				LastActiveAt: now,
+			})
+		}
+		if len(tabs) == 0 {
+			return nil, fmt.Errorf("%w: empty tabs in leaf", ErrInvalidLayoutSpec)
+		}
+		if activeIdx >= len(tabs) {
+			activeIdx = 0
+			tabs[0].State = TabActive
+		}
+	} else {
+		bufID := strings.TrimSpace(spec.BufferID)
+		if bufID == "" {
+			return nil, fmt.Errorf("%w: empty leaf bufferId", ErrInvalidLayoutSpec)
+		}
+		buf := resolveBuf(bufID, spec.Title, spec.Kind)
+		tabs = []PaneTab{{Buffer: buf, State: TabActive, LastActiveAt: now}}
+		activeIdx = 0
 	}
-	if spec.Title != "" {
-		buf.Title = spec.Title
-	}
-	if spec.Kind != "" {
-		buf.Kind = spec.Kind
-	}
+
 	id := tree.allocIDLocked("win")
 	if *firstLeaf == "" {
 		*firstLeaf = id
 	}
 	return &WindowNode{
-		ID:     id,
-		Buffer: buf,
+		ID:        id,
+		Buffer:    tabs[activeIdx].Buffer,
+		Tabs:      tabs,
+		ActiveTab: activeIdx,
 	}, nil
 }
 
@@ -292,6 +359,11 @@ func ExecuteWindowCommand(tree *WindowTree, cmdName string, buffers []PaneBuffer
 	case CmdTabTogglePin:
 		tree.TogglePinFocusedTab()
 		return true, nil
+	case CmdTabMoveNextPane:
+		return true, tree.MoveFocusedTabToNextPane()
+	case CmdTabTearOffRight:
+		_, err = tree.TearOffFocusedTabRight()
+		return true, err
 	case CmdPerspectiveFocus:
 		tree.ApplyBuiltinPerspective("focus", primary, dock, secondary, projection)
 		return true, nil
@@ -360,6 +432,8 @@ func DefaultEmacsWindowCommands() []input.CommandEntry {
 		{Name: CmdTabClose, Description: "Close active tab in focused pane (SPC b d)"},
 		{Name: CmdTabHibernate, Description: "Hibernate tab to 0MB RAM (SPC b s)"},
 		{Name: CmdTabTogglePin, Description: "Pin/unpin active tab against hibernation (SPC b P)"},
+		{Name: CmdTabMoveNextPane, Description: "Move active tab to next split pane (SPC b m)"},
+		{Name: CmdTabTearOffRight, Description: "Detach active tab into a new right split (SPC b t)"},
 		{Name: CmdPerspectiveFocus, Description: "Apply Focus 2-pane perspective"},
 		{Name: CmdPerspectiveSplit, Description: "Apply Split 2-pane perspective"},
 		{Name: CmdPerspectiveCockpit, Description: "Apply Cockpit 3-pane perspective"},
@@ -394,11 +468,24 @@ func exportNodeSpec(n *WindowNode) *LayoutNodeSpec {
 			Second: exportNodeSpec(n.Second),
 		}
 	}
-	return &LayoutNodeSpec{
+	spec := &LayoutNodeSpec{
 		BufferID: n.Buffer.BufferID,
 		Title:    n.Buffer.Title,
 		Kind:     n.Buffer.Kind,
 	}
+	if len(n.Tabs) > 1 {
+		spec.Tabs = make([]LayoutTabSpec, len(n.Tabs))
+		for i, tab := range n.Tabs {
+			spec.Tabs[i] = LayoutTabSpec{
+				BufferID: tab.Buffer.BufferID,
+				Title:    tab.Buffer.Title,
+				Kind:     tab.Buffer.Kind,
+				Pinned:   tab.Pinned,
+			}
+		}
+		spec.ActiveTab = n.ActiveTab
+	}
+	return spec
 }
 
 // MarshalLayoutSpecJSON encodes spec into deterministic formatted JSON.

@@ -94,3 +94,77 @@ func TestWindowTabsLazyLifecycleLRUIdleReapPinAndTransparentWake(t *testing.T) {
 		t.Fatalf("expected 0 allocs/op on 120Hz Snapshot() with stacked tabs, got %.2f", allocs)
 	}
 }
+
+func TestLayoutSpecLazyZeroMBRestoreAndCrossPaneTabMoveDetach(t *testing.T) {
+	wt := NewWindowTree(PaneBuffer{BufferID: "slot:workbench.main", Title: "Main"})
+
+	// Simulate Rust durable backend restoring a pane with 6 stacked tabs over gRPC.
+	spec := LayoutSpec{
+		Perspective: "restored-session",
+		Root: &LayoutNodeSpec{
+			ActiveTab: 2,
+			Tabs: []LayoutTabSpec{
+				{BufferID: "plugin:tab-0", Title: "Tab 0", Kind: "webview", Pinned: true},
+				{BufferID: "plugin:tab-1", Title: "Tab 1", Kind: "webview"},
+				{BufferID: "plugin:tab-2", Title: "Tab 2", Kind: "webview"},
+				{BufferID: "plugin:tab-3", Title: "Tab 3", Kind: "webview"},
+				{BufferID: "plugin:tab-4", Title: "Tab 4", Kind: "webview"},
+				{BufferID: "plugin:tab-5", Title: "Tab 5", Kind: "wasm-gpu"},
+			},
+		},
+	}
+	if err := ApplyLayoutSpec(wt, spec, nil); err != nil {
+		t.Fatalf("ApplyLayoutSpec(multi-tab): %v", err)
+	}
+
+	// Lazy 0MB cold start: ONLY ActiveTab (index 2) is TabActive; all 5 others start TabHibernated!
+	snap := wt.Snapshot()
+	if snap.TotalTabs != 6 || snap.ActiveTabs != 1 || snap.PausedTabs != 0 || snap.HibernatedTabs != 5 {
+		t.Fatalf("expected lazy 0MB restore (1 active, 0 paused, 5 hibernated), got %+v", snap)
+	}
+	if snap.Root.ActiveTab != 2 || snap.Root.Buffer.BufferID != "plugin:tab-2" || !snap.Root.Tabs[0].Pinned {
+		t.Fatalf("unexpected restored active tab / pinned metadata: %+v", snap.Root)
+	}
+
+	// Pure DTO round-trip preserves multi-tab stack & pinned flags for backend gRPC serialization.
+	exported := ExportLayoutSpec(wt)
+	raw, err := MarshalLayoutSpecJSON(exported)
+	if err != nil {
+		t.Fatalf("MarshalLayoutSpecJSON: %v", err)
+	}
+	parsed, err := UnmarshalLayoutSpecJSON(raw)
+	if err != nil {
+		t.Fatalf("UnmarshalLayoutSpecJSON: %v", err)
+	}
+	if len(parsed.Root.Tabs) != 6 || parsed.Root.ActiveTab != 2 || !parsed.Root.Tabs[0].Pinned {
+		t.Fatalf("LayoutSpec multi-tab round-trip mismatch: %+v", parsed.Root)
+	}
+
+	// Tear off active tab (Tab 2) into a new right-hand split pane (`SPC b t`).
+	newWin, err := wt.TearOffFocusedTabRight()
+	if err != nil {
+		t.Fatalf("TearOffFocusedTabRight: %v", err)
+	}
+	snap = wt.Snapshot()
+	if snap.LeafCount != 2 || snap.FocusedID != newWin {
+		t.Fatalf("expected 2 leaves focused on detached pane %q, got %+v", newWin, snap)
+	}
+	if len(snap.Root.First.Tabs) != 5 || len(snap.Root.Second.Tabs) != 1 || snap.Root.Second.Buffer.BufferID != "plugin:tab-2" {
+		t.Fatalf("unexpected tabs after tear-off: first=%d second=%d buf=%q",
+			len(snap.Root.First.Tabs), len(snap.Root.Second.Tabs), snap.Root.Second.Buffer.BufferID)
+	}
+
+	// Move Tab 2 back into the left pane (`SPC b m`) -> right pane collapses cleanly back to 1 leaf!
+	if err := wt.MoveFocusedTabToNextPane(); err != nil {
+		t.Fatalf("MoveFocusedTabToNextPane: %v", err)
+	}
+	snap = wt.Snapshot()
+	if snap.LeafCount != 1 || snap.TotalTabs != 6 || snap.Root.Buffer.BufferID != "plugin:tab-2" {
+		t.Fatalf("expected moved tab merged back into 1 leaf with 6 tabs, got %+v", snap)
+	}
+
+	// Winner-Mode Undo restores the 2-pane detached layout!
+	if !wt.Undo() || wt.Snapshot().LeafCount != 2 {
+		t.Fatalf("expected Winner-Mode Undo to restore 2-pane split, got %+v", wt.Snapshot())
+	}
+}

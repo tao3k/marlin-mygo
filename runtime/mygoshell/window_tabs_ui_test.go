@@ -96,4 +96,24 @@ func TestPaneMultiTabStripHibernationAndMinibufferPickerUI(t *testing.T) {
 	if tree.Snapshot().Root.Tabs[0].WakeCount != 1 {
 		t.Fatalf("expected Workspace tab WakeCount=1 after waking from Minibuffer, got %d", tree.Snapshot().Root.Tabs[0].WakeCount)
 	}
+
+	// 3. Click "Split Out" on the active stacked tab -> detaches into a 2nd side-by-side split pane!
+	if err := tt.Click("Split Out"); err != nil {
+		t.Fatalf("click Split Out failed: %v", err)
+	}
+	tt.Frame()
+	if tree.Snapshot().LeafCount != 2 {
+		t.Fatalf("expected 2 split panes after clicking Split Out, got %d", tree.Snapshot().LeafCount)
+	}
+
+	// 4. Focus the left pane (which still has 2 stacked tabs) and click "Move ->" to transfer a tab across panes!
+	if err := tt.Click("Move ->"); err != nil {
+		t.Fatalf("click Move -> failed: %v", err)
+	}
+	tt.Frame()
+	afterMove := tree.Snapshot()
+	if afterMove.LeafCount != 2 || len(afterMove.Root.Second.Tabs) != 2 {
+		t.Fatalf("expected right pane to hold 2 tabs after Move ->, got leaves=%d rightTabs=%d",
+			afterMove.LeafCount, len(afterMove.Root.Second.Tabs))
+	}
 }

@@ -331,6 +331,21 @@ func renderWindowLeaf(
 					}
 				}
 				ui.Spacer(c)
+				if snap.LeafCount < shell.MaxOpenWindows {
+					if ApplePillButton(c, "wtabtear-"+string(leaf.ID), "Split Out", BtnGlass, dt, nil, true).Clicked() {
+						if _, err := tree.TearOffTabRight(leaf.ID, leaf.ActiveTab); err == nil && cb.OnLayoutChanged != nil {
+							cb.OnLayoutChanged(tree.Snapshot())
+						}
+					}
+				}
+				if snap.LeafCount > 1 {
+					if ApplePillButton(c, "wtabmove-"+string(leaf.ID), "Move ->", BtnGlass, dt, nil, true).Clicked() {
+						tree.FocusWindow(leaf.ID)
+						if err := tree.MoveFocusedTabToNextPane(); err == nil && cb.OnLayoutChanged != nil {
+							cb.OnLayoutChanged(tree.Snapshot())
+						}
+					}
+				}
 				if ApplePillButton(c, "wtabsleep-"+string(leaf.ID), "Sleep Tab", BtnGlass, dt, nil, true).Clicked() {
 					if tree.HibernateTab(leaf.ID, leaf.ActiveTab) && cb.OnLayoutChanged != nil {
 						cb.OnLayoutChanged(tree.Snapshot())
