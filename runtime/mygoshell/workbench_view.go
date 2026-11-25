@@ -60,6 +60,9 @@ type WorkbenchApp struct {
 	// Optional built-in Tier-0 Host GPU Marketplace control drawer (floats above WebViews).
 	Marketplace *MarketplaceController
 
+	// Optional Tier-0 Host GPU Authentication & Account Center modal (OAuth 2.1 PKCE / Email).
+	Auth *AuthController
+
 	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
 	Projection *ProjectionController
 
@@ -101,6 +104,7 @@ type WorkbenchApp struct {
 	bufferPickerOpen  bool
 	bufferPickerQuery string
 	marketplaceOpen   bool
+	authOpen          bool
 	settingsOpen      bool
 	projectionOpen    bool
 	addRemoteOpen     bool
@@ -272,6 +276,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.SetKeyMode(input.ScopeNormal)
 	case shell.CmdStudioOpenMarketplace:
 		a.marketplaceOpen = true
+	case "studio.open-auth":
+		a.OpenAuth()
 	case shell.CmdStudioOpenProjection:
 		a.projectionOpen = true
 	case shell.CmdStudioOpenPalette:
@@ -800,6 +806,24 @@ func formatFederatedNodeLabel(n transport.FederatedNode) string {
 	return b.String()
 }
 
+// OpenAuth opens the Tier-0 Host Authentication & Account Center modal above all slots.
+func (a *WorkbenchApp) OpenAuth() {
+	if a.Auth == nil {
+		return
+	}
+	a.authOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.marketplaceOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
+// IsAuthOpen reports whether the Tier-0 Host Auth modal is currently visible.
+func (a *WorkbenchApp) IsAuthOpen() bool { return a.authOpen }
+
 // ToggleSidebar collapses or expands the persistent left navigation sidebar
 // (`Cmd+B` / `SPC w B`) to reclaim 228px of split workspace width on demand.
 func (a *WorkbenchApp) ToggleSidebar() bool {
@@ -895,6 +919,15 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 		if a.Marketplace != nil {
 			if ApplePillButton(c, "open-marketplace", "Marketplace", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.marketplaceOpen = true
+			}
+		}
+		if a.Auth != nil {
+			authVar := BtnGlass
+			if a.Auth.IsSignedIn() {
+				authVar = BtnTinted
+			}
+			if ApplePillButton(c, "open-auth", a.Auth.TopBarLabel(), authVar, a.cachedDerivedTheme, svgIconShield, true).Clicked() {
+				a.OpenAuth()
 			}
 		}
 		if ApplePillButton(c, "open-palette", "Cmd+K Commands", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
@@ -1108,6 +1141,14 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		ui.Modal(c, &a.marketplaceOpen, func() {
 			a.Marketplace.Render(c, t, func() {
 				a.marketplaceOpen = false
+			})
+		})
+	}
+
+	if a.Auth != nil {
+		ui.Modal(c, &a.authOpen, func() {
+			a.Auth.Render(c, t, dt, func() {
+				a.authOpen = false
 			})
 		})
 	}

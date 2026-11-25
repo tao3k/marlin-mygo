@@ -19,6 +19,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/control/auth"
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/marketplace"
 	"github.com/tao3k/marlin-mygo/control/transport"
@@ -275,9 +276,25 @@ func buildWorkbenchApp(
 		return nil
 	}
 	app.Marketplace = mktUI
+
+	authMgr := auth.NewManager(auth.ManagerConfig{})
+	if googleID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GOOGLE_CLIENT_ID")); googleID != "" {
+		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider(googleID))
+	} else {
+		_ = authMgr.RegisterProvider(auth.GoogleOAuthProvider("marlin-desktop-native"))
+	}
+	if githubID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GITHUB_CLIENT_ID")); githubID != "" {
+		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider(githubID))
+	} else {
+		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
+	}
+	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
+	app.Auth = mygoshell.NewAuthController(authMgr)
+
 	app.Commands = []input.CommandEntry{
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
 		{Name: "workbench.open-marketplace", Description: "Open Tier-0 built-in Marketplace drawer"},
+		{Name: "studio.open-auth", Description: "Open Tier-0 Account & OAuth Sign-In Center"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}

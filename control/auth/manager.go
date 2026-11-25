@@ -1,0 +1,1117 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+package auth
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+// ManagerConfig configures an AuthManager instance.
+type ManagerConfig struct {
+	Vault        CredentialVault   // defaults to NewMemoryVault()
+	Exchanger    TokenExchanger    // defaults to HTTPOAuthExchanger
+	DeviceFlow   DeviceFlowBackend // optional RFC 8628 backend
+	EmailBackend EmailAuthBackend  // optional passwordless Email OTP / Magic Link backend
+	OpenBrowser  BrowserOpener     // optional OS browser launcher for OAuth PKCE
+	AttemptTTL   time.Duration     // defaults to 5m
+	RefreshSkew  time.Duration     // defaults to 60s
+	Now          func() time.Time  // injectable clock for deterministic security tests
+}
+
+type refreshFlight struct {
+	done chan struct{}
+	tok  TokenSet
+	err  error
+}
+
+// AuthManager coordinates multi-provider, multi-account authentication,
+// OAuth 2.1 PKCE S256 state machines, Email OTP/Magic Link challenges,
+// singleflight token refresh, and redacted 120Hz UI snapshots.
+type AuthManager struct {
+	vault       CredentialVault
+	exchanger   TokenExchanger
+	deviceFlow  DeviceFlowBackend
+	email       EmailAuthBackend
+	openBrowser BrowserOpener
+	attemptTTL  time.Duration
+	refreshSkew time.Duration
+	now         func() time.Time
+
+	mu              sync.RWMutex
+	providerOrder   []ProviderID
+	providers       map[ProviderID]ProviderConfig
+	accountOrder    []AccountID
+	accounts        map[AccountID]AccountProfile
+	activeAccountID AccountID
+	phase           AuthPhase
+	lastError       string
+	oauthAttempts   map[string]*oauthAttempt
+	pendingOAuth    *PendingOAuthFlow
+	pendingEmail    *PendingEmailChallenge
+	flights         map[AccountID]*refreshFlight
+	flowEpoch       uint64
+	accountEpoch    map[AccountID]uint64
+	nextSub         uint64
+	subs            map[uint64]func(AuthSnapshot)
+}
+
+// NewManager creates an AuthManager with safe security defaults.
+func NewManager(cfg ManagerConfig) *AuthManager {
+	if cfg.Vault == nil {
+		cfg.Vault = NewMemoryVault()
+	}
+	if cfg.Exchanger == nil {
+		cfg.Exchanger = NewHTTPOAuthExchanger(nil)
+	}
+	if cfg.AttemptTTL <= 0 {
+		cfg.AttemptTTL = 5 * time.Minute
+	}
+	if cfg.RefreshSkew <= 0 {
+		cfg.RefreshSkew = 60 * time.Second
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &AuthManager{
+		vault:         cfg.Vault,
+		exchanger:     cfg.Exchanger,
+		deviceFlow:    cfg.DeviceFlow,
+		email:         cfg.EmailBackend,
+		openBrowser:   cfg.OpenBrowser,
+		attemptTTL:    cfg.AttemptTTL,
+		refreshSkew:   cfg.RefreshSkew,
+		now:           cfg.Now,
+		providers:     make(map[ProviderID]ProviderConfig),
+		accounts:      make(map[AccountID]AccountProfile),
+		oauthAttempts: make(map[string]*oauthAttempt),
+		flights:       make(map[AccountID]*refreshFlight),
+		accountEpoch:  make(map[AccountID]uint64),
+		phase:         PhaseSignedOut,
+		subs:          make(map[uint64]func(AuthSnapshot)),
+	}
+}
+
+// RegisterProvider validates and registers one auth provider (e.g. Google, GitHub, Email, OIDC).
+func (m *AuthManager) RegisterProvider(cfg ProviderConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if _, exists := m.providers[cfg.ID]; !exists {
+		m.providerOrder = append(m.providerOrder, cfg.ID)
+	}
+	m.providers[cfg.ID] = cfg
+	m.mu.Unlock()
+	m.emit()
+	return nil
+}
+
+// BeginOAuth initiates an OAuth 2.1 PKCE S256 authorization flow, generating
+// cryptographic state, nonce, and S256 code_verifier, and returning the
+// PendingOAuthFlow whose AuthorizeURL should be opened in the system browser.
+func (m *AuthManager) BeginOAuth(providerID ProviderID, redirectURI string) (PendingOAuthFlow, error) {
+	m.mu.Lock()
+	cfg, ok := m.providers[providerID]
+	m.mu.Unlock()
+	if !ok {
+		return PendingOAuthFlow{}, fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
+	}
+	if cfg.Method != MethodOAuthPKCE {
+		return PendingOAuthFlow{}, fmt.Errorf("%w: provider %s uses %s", ErrNotSupported, providerID, cfg.Method)
+	}
+	if strings.TrimSpace(redirectURI) == "" {
+		redirectURI = cfg.RedirectURI
+	}
+	pkce, err := GeneratePKCE()
+	if err != nil {
+		return PendingOAuthFlow{}, err
+	}
+	state, err := GenerateRandomToken(32)
+	if err != nil {
+		return PendingOAuthFlow{}, err
+	}
+	nonce, err := GenerateRandomToken(24)
+	if err != nil {
+		return PendingOAuthFlow{}, err
+	}
+	attemptID, err := GenerateRandomToken(16)
+	if err != nil {
+		return PendingOAuthFlow{}, err
+	}
+	authURL, err := BuildAuthorizeURL(cfg, redirectURI, state, nonce, pkce)
+	if err != nil {
+		return PendingOAuthFlow{}, err
+	}
+
+	expiresAt := m.now().Add(m.attemptTTL)
+	att := &oauthAttempt{
+		id:           attemptID,
+		providerID:   providerID,
+		redirectURI:  redirectURI,
+		state:        state,
+		nonce:        nonce,
+		codeVerifier: pkce.Verifier,
+		expiresAt:    expiresAt,
+	}
+	flow := PendingOAuthFlow{
+		AttemptID:    attemptID,
+		ProviderID:   providerID,
+		ProviderName: cfg.DisplayName,
+		Method:       cfg.Method,
+		AuthorizeURL: authURL,
+		RedirectURI:  redirectURI,
+		ExpiresAt:    expiresAt,
+	}
+
+	m.mu.Lock()
+	m.pruneExpiredAttemptsLocked(m.now())
+	m.oauthAttempts[attemptID] = att
+	m.pendingOAuth = &flow
+	m.phase = PhaseAuthorizing
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return flow, nil
+}
+
+// CompleteOAuthCallback verifies CSRF state (constant-time), enforces single-use
+// and TTL expiry, exchanges the authorization code with the PKCE code_verifier,
+// stores tokens inside the Tier-0 CredentialVault, and activates the account.
+func (m *AuthManager) CompleteOAuthCallback(
+	ctx context.Context,
+	attemptID string,
+	cb LoopbackCallback,
+) (AccountProfile, error) {
+	m.mu.Lock()
+	att, ok := m.oauthAttempts[attemptID]
+	if !ok {
+		m.phase = PhaseError
+		m.lastError = ErrInvalidState.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, ErrInvalidState
+	}
+	if err := att.validate(m.now(), cb.State, cb.Code, cb.Error, cb.ErrorDescription); err != nil {
+		att.consumed = true
+		delete(m.oauthAttempts, attemptID)
+		m.pendingOAuth = nil
+		m.phase = PhaseError
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, err
+	}
+	// Single-use: mark consumed immediately before any network I/O!
+	att.consumed = true
+	delete(m.oauthAttempts, attemptID)
+	cfg := m.providers[att.providerID]
+	startFlowEpoch := m.flowEpoch
+	m.phase = PhaseExchanging
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+
+	tokens, profile, err := m.exchanger.ExchangeCode(ctx, cfg, cb.Code, att.codeVerifier, att.redirectURI, att.nonce)
+	if err != nil {
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+	return m.admitSignedInAccountIfCurrent(ctx, cfg, tokens, profile, startFlowEpoch)
+}
+
+// RunLoopbackOAuth executes the full RFC 8252 native desktop OAuth 2.1 PKCE S256
+// flow end-to-end: binds an ephemeral 127.0.0.1:0 callback server, generates
+// PKCE+state+nonce, opens the system browser via OpenBrowser, waits for the
+// single-use redirect, and exchanges the authorization code.
+func (m *AuthManager) RunLoopbackOAuth(ctx context.Context, providerID ProviderID) (AccountProfile, error) {
+	recv, err := StartLoopbackReceiver()
+	if err != nil {
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+	defer recv.Close()
+
+	flow, err := m.BeginOAuth(providerID, recv.RedirectURI())
+	if err != nil {
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+	m.mu.RLock()
+	if att, ok := m.oauthAttempts[flow.AttemptID]; ok {
+		recv.SetExpectedState(att.state)
+	}
+	m.mu.RUnlock()
+	if m.openBrowser != nil {
+		if err := m.openBrowser(ctx, flow.AuthorizeURL); err != nil {
+			m.CancelPending()
+			m.setError(err)
+			return AccountProfile{}, err
+		}
+	}
+	cb, err := recv.Wait(ctx)
+	if err != nil {
+		m.CancelPending()
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+	return m.CompleteOAuthCallback(ctx, flow.AttemptID, cb)
+}
+
+// BeginDeviceAuth initiates an RFC 8628 Device Authorization flow (for headless
+// remote workstations, SSH, CLI, or WebAssembly environments).
+func (m *AuthManager) BeginDeviceAuth(ctx context.Context, providerID ProviderID) (PendingOAuthFlow, string, error) {
+	if m.deviceFlow == nil {
+		return PendingOAuthFlow{}, "", ErrNotSupported
+	}
+	m.mu.RLock()
+	cfg, ok := m.providers[providerID]
+	m.mu.RUnlock()
+	if !ok {
+		return PendingOAuthFlow{}, "", fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
+	}
+	resp, err := m.deviceFlow.RequestDeviceCode(ctx, cfg)
+	if err != nil {
+		m.setError(err)
+		return PendingOAuthFlow{}, "", err
+	}
+	ttl := resp.ExpiresIn
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	flow := PendingOAuthFlow{
+		ProviderID:      providerID,
+		ProviderName:    cfg.DisplayName,
+		Method:          MethodDeviceCode,
+		UserCode:        resp.UserCode,
+		VerificationURI: resp.VerificationURI,
+		AuthorizeURL:    resp.VerificationURI,
+		ExpiresAt:       m.now().Add(ttl),
+	}
+	m.mu.Lock()
+	m.pendingOAuth = &flow
+	m.phase = PhaseAuthorizing
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return flow, resp.DeviceCode, nil
+}
+
+// CompleteDeviceAuth polls once (or finishes) a pending RFC 8628 device flow.
+func (m *AuthManager) CompleteDeviceAuth(ctx context.Context, providerID ProviderID, deviceCode string) (AccountProfile, bool, error) {
+	if m.deviceFlow == nil {
+		return AccountProfile{}, false, ErrNotSupported
+	}
+	m.mu.RLock()
+	cfg, ok := m.providers[providerID]
+	m.mu.RUnlock()
+	if !ok {
+		return AccountProfile{}, false, fmt.Errorf("%w: %s", ErrProviderNotFound, providerID)
+	}
+	tokens, profile, ready, err := m.deviceFlow.PollDeviceToken(ctx, cfg, deviceCode)
+	if err != nil {
+		m.setError(err)
+		return AccountProfile{}, false, err
+	}
+	if !ready {
+		return AccountProfile{}, false, nil
+	}
+	acc, err := m.admitSignedInAccount(ctx, cfg, tokens, profile)
+	if err != nil {
+		return AccountProfile{}, false, err
+	}
+	return acc, true, nil
+}
+
+// RequestEmailLogin validates the email address, enforces resend cooldown,
+// and triggers a passwordless Email OTP or Magic Link challenge.
+func (m *AuthManager) RequestEmailLogin(ctx context.Context, rawEmail string, method AuthMethod) (PendingEmailChallenge, error) {
+	if m.email == nil {
+		return PendingEmailChallenge{}, ErrNotSupported
+	}
+	if method != MethodEmailOTP && method != MethodEmailMagicLink {
+		method = MethodEmailOTP
+	}
+	email, err := NormalizeAndValidateEmail(rawEmail)
+	if err != nil {
+		m.setError(err)
+		return PendingEmailChallenge{}, err
+	}
+
+	now := m.now()
+	m.mu.RLock()
+	prev := m.pendingEmail
+	m.mu.RUnlock()
+	if prev != nil && prev.Email == email && now.Before(prev.CooldownUntil) {
+		return PendingEmailChallenge{}, ErrCooldownActive
+	}
+
+	resp, err := m.email.RequestChallenge(ctx, email, method)
+	if err != nil {
+		m.setError(err)
+		return PendingEmailChallenge{}, err
+	}
+	ttl := resp.ExpiresIn
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	cooldown := resp.Cooldown
+	if cooldown <= 0 {
+		cooldown = 30 * time.Second
+	}
+	maxAttempts := resp.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	ch := PendingEmailChallenge{
+		ChallengeID:   resp.ChallengeID,
+		Email:         email,
+		Method:        method,
+		ExpiresAt:     now.Add(ttl),
+		CooldownUntil: now.Add(cooldown),
+		Attempts:      0,
+		MaxAttempts:   maxAttempts,
+	}
+	m.mu.Lock()
+	m.pendingEmail = &ch
+	m.pendingOAuth = nil
+	m.phase = PhaseAwaitingCode
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return ch, nil
+}
+
+// VerifyEmailLogin submits the user's OTP code or Magic Link token to complete
+// passwordless Email sign-in, enforcing expiry and max-attempt lockouts.
+func (m *AuthManager) VerifyEmailLogin(ctx context.Context, codeOrToken string) (AccountProfile, error) {
+	if m.email == nil {
+		return AccountProfile{}, ErrNotSupported
+	}
+	code := strings.TrimSpace(codeOrToken)
+	if code == "" {
+		m.setError(ErrEmptyCode)
+		return AccountProfile{}, ErrEmptyCode
+	}
+	now := m.now()
+	m.mu.Lock()
+	ch := m.pendingEmail
+	if ch == nil {
+		m.mu.Unlock()
+		return AccountProfile{}, ErrAttemptExpired
+	}
+	if now.After(ch.ExpiresAt) {
+		m.pendingEmail = nil
+		m.phase = PhaseError
+		m.lastError = ErrAttemptExpired.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, ErrAttemptExpired
+	}
+	if ch.Attempts >= ch.MaxAttempts {
+		m.pendingEmail = nil
+		err := errors.New("auth: maximum email verification attempts exceeded")
+		m.phase = PhaseError
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, err
+	}
+	ch.Attempts++
+	challengeCopy := *ch
+	cfg, hasCfg := m.providers[ProviderEmail]
+	if !hasCfg {
+		cfg = EmailOTPProvider()
+	}
+	cfg.Method = challengeCopy.Method
+	startFlowEpoch := m.flowEpoch
+	m.phase = PhaseExchanging
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+
+	tokens, profile, err := m.email.VerifyChallenge(ctx, challengeCopy.ChallengeID, challengeCopy.Email, code, challengeCopy.Method)
+	if err != nil {
+		m.mu.Lock()
+		if m.pendingEmail != nil && m.pendingEmail.Attempts >= m.pendingEmail.MaxAttempts {
+			m.pendingEmail = nil
+			m.phase = PhaseError
+		} else {
+			m.phase = PhaseAwaitingCode
+		}
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, err
+	}
+	if profile.Email == "" {
+		profile.Email = challengeCopy.Email
+	}
+	profile.EmailVerified = true
+	return m.admitSignedInAccountIfCurrent(ctx, cfg, tokens, profile, startFlowEpoch)
+}
+
+// CancelPending aborts any in-flight OAuth or Email login challenge cleanly.
+func (m *AuthManager) CancelPending() {
+	m.mu.Lock()
+	m.flowEpoch++
+	for id, att := range m.oauthAttempts {
+		att.consumed = true
+		delete(m.oauthAttempts, id)
+	}
+	m.pendingOAuth = nil
+	m.pendingEmail = nil
+	m.lastError = ""
+	if m.activeAccountID != "" {
+		m.phase = PhaseSignedIn
+	} else {
+		m.phase = PhaseSignedOut
+	}
+	m.mu.Unlock()
+	m.emit()
+}
+
+// ValidAccessToken returns a live non-expired Bearer access token for accountID
+// (or the active account when accountID == ""), using singleflight coalescing so
+// concurrent gRPC streams trigger at most ONE refresh call on expiry.
+func (m *AuthManager) ValidAccessToken(ctx context.Context, accountID AccountID) (string, error) {
+	m.mu.RLock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	cfg := m.providers[acc.ProviderID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", ErrAccountNotFound
+	}
+
+	tok, found, err := m.vault.Load(ctx, accountID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", ErrAccountNotFound
+	}
+	if !tok.IsExpired(m.now(), m.refreshSkew) {
+		return tok.AccessToken, nil
+	}
+	if tok.RefreshToken == "" {
+		return "", ErrRefreshUnavailable
+	}
+
+	// Singleflight refresh per accountID to prevent concurrent refresh-token rotation storms.
+	m.mu.Lock()
+	if fl, inFlight := m.flights[accountID]; inFlight {
+		m.mu.Unlock()
+		select {
+		case <-fl.done:
+			return fl.tok.AccessToken, fl.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	if _, stillSignedIn := m.accounts[accountID]; !stillSignedIn {
+		m.mu.Unlock()
+		return "", ErrAccountNotFound
+	}
+	startEpoch := m.accountEpoch[accountID]
+	grantedScopes := append([]string(nil), m.accounts[accountID].Scopes...)
+	fl := &refreshFlight{done: make(chan struct{})}
+	m.flights[accountID] = fl
+	m.phase = PhaseRefreshing
+	m.mu.Unlock()
+	m.emit()
+
+	refreshed, rErr := m.exchanger.RefreshToken(ctx, cfg, tok.RefreshToken)
+	if rErr == nil {
+		if refreshed.RefreshToken == "" {
+			refreshed.RefreshToken = tok.RefreshToken
+		}
+		if len(refreshed.Scopes) == 0 {
+			refreshed.Scopes = tok.Scopes
+		}
+		if len(grantedScopes) > 0 && len(refreshed.Scopes) > 0 && !scopesSubset(refreshed.Scopes, grantedScopes) {
+			rErr = ErrScopeEscalation
+			refreshed = TokenSet{}
+			m.mu.Lock()
+			m.phase = PhaseError
+			m.lastError = rErr.Error()
+			m.mu.Unlock()
+		} else {
+			// Guard against zombie token resurrection if SignOut ran while refresh was in-flight.
+			m.mu.Lock()
+			_, stillSignedIn := m.accounts[accountID]
+			epochCurrent := m.accountEpoch[accountID] == startEpoch
+			if !stillSignedIn || !epochCurrent {
+				m.mu.Unlock()
+				if m.exchanger != nil && cfg.RevokeURL != "" && refreshed.RefreshToken != "" {
+					_ = m.exchanger.RevokeToken(ctx, cfg, refreshed.RefreshToken)
+				}
+				rErr = ErrSessionRevoked
+				refreshed = TokenSet{}
+			} else {
+				m.mu.Unlock()
+				if storeErr := m.vault.Store(ctx, accountID, refreshed); storeErr != nil {
+					rErr = storeErr
+				} else {
+					m.mu.Lock()
+					if cur, exists := m.accounts[accountID]; exists && m.accountEpoch[accountID] == startEpoch {
+						cur.ExpiresAt = refreshed.ExpiresAt
+						cur.HasRefresh = refreshed.RefreshToken != ""
+						if len(refreshed.Scopes) > 0 {
+							cur.Scopes = append([]string(nil), refreshed.Scopes...)
+						}
+						m.accounts[accountID] = cur
+						m.phase = PhaseSignedIn
+						m.lastError = ""
+						m.mu.Unlock()
+					} else {
+						m.mu.Unlock()
+						_ = m.vault.Delete(ctx, accountID)
+						rErr = ErrSessionRevoked
+						refreshed = TokenSet{}
+					}
+				}
+			}
+		}
+	} else {
+		m.mu.Lock()
+		m.phase = PhaseError
+		m.lastError = rErr.Error()
+		m.mu.Unlock()
+	}
+
+	fl.tok = refreshed
+	fl.err = rErr
+	close(fl.done)
+
+	m.mu.Lock()
+	delete(m.flights, accountID)
+	m.mu.Unlock()
+	m.emit()
+	return refreshed.AccessToken, rErr
+}
+
+// AuthorizationHeader returns `"Bearer <token>"` for the active account, suitable
+// for attaching to remote Rust App Server gRPC calls.
+func (m *AuthManager) AuthorizationHeader(ctx context.Context) (string, error) {
+	tok, err := m.ValidAccessToken(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	return "Bearer " + tok, nil
+}
+
+// SwitchAccount changes the active account among signed-in profiles.
+func (m *AuthManager) SwitchAccount(accountID AccountID) error {
+	m.mu.Lock()
+	if _, ok := m.accounts[accountID]; !ok {
+		m.mu.Unlock()
+		return ErrAccountNotFound
+	}
+	m.activeAccountID = accountID
+	m.phase = PhaseSignedIn
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return nil
+}
+
+// SignOut revokes the account's refresh/access token if supported, scrubs its
+// credentials from the Tier-0 CredentialVault, and switches to another signed-in
+// account or PhaseSignedOut.
+func (m *AuthManager) SignOut(ctx context.Context, accountID AccountID) error {
+	m.mu.Lock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	cfg := m.providers[acc.ProviderID]
+	if ok {
+		// Advance account epoch immediately so any in-flight refresh cannot resurrect the vault entry.
+		m.accountEpoch[accountID]++
+		delete(m.accounts, accountID)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	if tok, found, err := m.vault.Load(ctx, accountID); err == nil && found && m.exchanger != nil && cfg.RevokeURL != "" {
+		revokeTarget := tok.RefreshToken
+		if revokeTarget == "" {
+			revokeTarget = tok.AccessToken
+		}
+		if revokeTarget != "" {
+			_ = m.exchanger.RevokeToken(ctx, cfg, revokeTarget)
+		}
+	}
+	if err := m.vault.Delete(ctx, accountID); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.accounts, accountID)
+	nextOrder := make([]AccountID, 0, len(m.accountOrder))
+	for _, id := range m.accountOrder {
+		if id != accountID {
+			nextOrder = append(nextOrder, id)
+		}
+	}
+	m.accountOrder = nextOrder
+	if m.activeAccountID == accountID {
+		if len(m.accountOrder) > 0 {
+			m.activeAccountID = m.accountOrder[0]
+			m.phase = PhaseSignedIn
+		} else {
+			m.activeAccountID = ""
+			m.phase = PhaseSignedOut
+		}
+	}
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return nil
+}
+
+// SignOutAll revokes and scrubs every signed-in account.
+func (m *AuthManager) SignOutAll(ctx context.Context) error {
+	m.mu.RLock()
+	ids := append([]AccountID(nil), m.accountOrder...)
+	m.mu.RUnlock()
+	var firstErr error
+	for _, id := range ids {
+		if err := m.SignOut(ctx, id); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// Snapshot returns an immutable, secret-free AuthSnapshot safe for 120Hz UI reads.
+func (m *AuthManager) Snapshot() AuthSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	accounts := make([]AccountProfile, 0, len(m.accountOrder))
+	for _, id := range m.accountOrder {
+		if acc, ok := m.accounts[id]; ok {
+			cp := acc
+			if len(acc.Scopes) > 0 {
+				cp.Scopes = append([]string(nil), acc.Scopes...)
+			}
+			accounts = append(accounts, cp)
+		}
+	}
+	providers := make([]ProviderSummary, 0, len(m.providerOrder))
+	for _, id := range m.providerOrder {
+		if p, ok := m.providers[id]; ok {
+			providers = append(providers, ProviderSummary{
+				ID:          p.ID,
+				DisplayName: p.DisplayName,
+				Method:      p.Method,
+				Scopes:      append([]string(nil), p.Scopes...),
+			})
+		}
+	}
+	var po *PendingOAuthFlow
+	if m.pendingOAuth != nil {
+		cp := *m.pendingOAuth
+		po = &cp
+	}
+	var pe *PendingEmailChallenge
+	if m.pendingEmail != nil {
+		cp := *m.pendingEmail
+		pe = &cp
+	}
+	return AuthSnapshot{
+		Phase:           m.phase,
+		ActiveAccountID: m.activeAccountID,
+		Accounts:        accounts,
+		Providers:       providers,
+		PendingOAuth:    po,
+		PendingEmail:    pe,
+		LastError:       m.lastError,
+	}
+}
+
+// Subscribe registers a listener notified on every auth state change.
+func (m *AuthManager) Subscribe(fn func(AuthSnapshot)) func() {
+	if fn == nil {
+		return func() {}
+	}
+	m.mu.Lock()
+	m.nextSub++
+	id := m.nextSub
+	m.subs[id] = fn
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		delete(m.subs, id)
+		m.mu.Unlock()
+	}
+}
+
+func (m *AuthManager) admitSignedInAccountIfCurrent(
+	ctx context.Context,
+	cfg ProviderConfig,
+	tokens TokenSet,
+	profile AccountProfile,
+	expectedFlowEpoch uint64,
+) (AccountProfile, error) {
+	m.mu.RLock()
+	current := m.flowEpoch == expectedFlowEpoch
+	m.mu.RUnlock()
+	if !current {
+		if m.exchanger != nil && cfg.RevokeURL != "" && tokens.RefreshToken != "" {
+			_ = m.exchanger.RevokeToken(ctx, cfg, tokens.RefreshToken)
+		}
+		return AccountProfile{}, ErrFlowCancelled
+	}
+	return m.admitSignedInAccount(ctx, cfg, tokens, profile)
+}
+
+func scopesSubset(candidate, allowed []string) bool {
+	set := make(map[string]struct{}, len(allowed))
+	for _, s := range allowed {
+		set[s] = struct{}{}
+	}
+	for _, s := range candidate {
+		if _, ok := set[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *AuthManager) admitSignedInAccount(
+	ctx context.Context,
+	cfg ProviderConfig,
+	tokens TokenSet,
+	profile AccountProfile,
+) (AccountProfile, error) {
+	if strings.TrimSpace(tokens.AccessToken) == "" {
+		err := errors.New("auth: token exchange returned empty access token")
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+	if tokens.TokenType == "" {
+		tokens.TokenType = "Bearer"
+	}
+	if tokens.IssuedAt.IsZero() {
+		tokens.IssuedAt = m.now()
+	}
+	profile.ProviderID = cfg.ID
+	if profile.ProviderName == "" {
+		profile.ProviderName = cfg.DisplayName
+	}
+	profile.Method = cfg.Method
+	if profile.ID == "" {
+		ident := profile.Subject
+		if ident == "" {
+			ident = profile.Email
+		}
+		if ident == "" {
+			ident = fmt.Sprintf("user-%d", m.now().UnixNano())
+		}
+		profile.ID = AccountID(fmt.Sprintf("%s:%s", cfg.ID, ident))
+	}
+	if profile.DisplayName == "" {
+		if profile.Email != "" {
+			profile.DisplayName = profile.Email
+		} else {
+			profile.DisplayName = string(profile.ID)
+		}
+	}
+	if len(profile.Scopes) == 0 {
+		if len(tokens.Scopes) > 0 {
+			profile.Scopes = append([]string(nil), tokens.Scopes...)
+		} else {
+			profile.Scopes = append([]string(nil), cfg.Scopes...)
+		}
+	}
+	profile.SignedInAt = m.now()
+	profile.ExpiresAt = tokens.ExpiresAt
+	profile.HasRefresh = tokens.RefreshToken != ""
+
+	if err := m.vault.Store(ctx, profile.ID, tokens); err != nil {
+		m.setError(err)
+		return AccountProfile{}, err
+	}
+
+	m.mu.Lock()
+	if _, exists := m.accounts[profile.ID]; !exists {
+		m.accountOrder = append(m.accountOrder, profile.ID)
+	}
+	m.accountEpoch[profile.ID]++
+	m.accounts[profile.ID] = profile
+	m.activeAccountID = profile.ID
+	m.pendingOAuth = nil
+	m.pendingEmail = nil
+	m.phase = PhaseSignedIn
+	m.lastError = ""
+	m.mu.Unlock()
+	m.emit()
+	return profile, nil
+}
+
+func (m *AuthManager) setError(err error) {
+	m.mu.Lock()
+	m.phase = PhaseError
+	if err != nil {
+		m.lastError = err.Error()
+	}
+	m.mu.Unlock()
+	m.emit()
+}
+
+func (m *AuthManager) pruneExpiredAttemptsLocked(now time.Time) {
+	for id, att := range m.oauthAttempts {
+		if att.consumed || now.After(att.expiresAt) {
+			delete(m.oauthAttempts, id)
+		}
+	}
+}
+
+func (m *AuthManager) emit() {
+	snap := m.Snapshot()
+	m.mu.RLock()
+	listeners := make([]func(AuthSnapshot), 0, len(m.subs))
+	for _, fn := range m.subs {
+		listeners = append(listeners, fn)
+	}
+	m.mu.RUnlock()
+	for _, fn := range listeners {
+		fn(snap)
+	}
+}
+
+// HTTPOAuthExchanger implements standard RFC 6749 + RFC 7636 PKCE + RFC 7009
+// OAuth 2.1 HTTP form-encoded token exchange, refresh, and revocation.
+type HTTPOAuthExchanger struct {
+	Client *http.Client
+}
+
+func NewHTTPOAuthExchanger(client *http.Client) *HTTPOAuthExchanger {
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	return &HTTPOAuthExchanger{Client: client}
+}
+
+func (e *HTTPOAuthExchanger) ExchangeCode(
+	ctx context.Context,
+	cfg ProviderConfig,
+	code, codeVerifier, redirectURI, expectedNonce string,
+) (TokenSet, AccountProfile, error) {
+	if err := ValidateSecureURL(cfg.TokenURL, cfg.AllowLoopback); err != nil {
+		return TokenSet{}, AccountProfile{}, err
+	}
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("client_id", cfg.ClientID)
+	form.Set("code", code)
+	form.Set("code_verifier", codeVerifier)
+	form.Set("redirect_uri", redirectURI)
+
+	tok, err := e.postTokenForm(ctx, cfg.TokenURL, form)
+	if err != nil {
+		return TokenSet{}, AccountProfile{}, err
+	}
+	if expectedNonce != "" && strings.TrimSpace(tok.IDToken) != "" {
+		if err := verifyIDTokenNonce(tok.IDToken, expectedNonce); err != nil {
+			return TokenSet{}, AccountProfile{}, err
+		}
+	}
+	profile := AccountProfile{
+		ProviderID:   cfg.ID,
+		ProviderName: cfg.DisplayName,
+		Method:       cfg.Method,
+		Scopes:       tok.Scopes,
+	}
+	if cfg.UserInfoURL != "" {
+		if uiProf, uErr := e.fetchUserInfo(ctx, cfg.UserInfoURL, tok.AccessToken); uErr == nil {
+			profile.Subject = uiProf.Subject
+			profile.Email = uiProf.Email
+			profile.DisplayName = uiProf.DisplayName
+			profile.AvatarURL = uiProf.AvatarURL
+			profile.EmailVerified = uiProf.EmailVerified
+		}
+	}
+	return tok, profile, nil
+}
+
+func (e *HTTPOAuthExchanger) RefreshToken(ctx context.Context, cfg ProviderConfig, refreshToken string) (TokenSet, error) {
+	if err := ValidateSecureURL(cfg.TokenURL, cfg.AllowLoopback); err != nil {
+		return TokenSet{}, err
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", cfg.ClientID)
+	form.Set("refresh_token", refreshToken)
+	return e.postTokenForm(ctx, cfg.TokenURL, form)
+}
+
+func (e *HTTPOAuthExchanger) RevokeToken(ctx context.Context, cfg ProviderConfig, token string) error {
+	if cfg.RevokeURL == "" {
+		return nil
+	}
+	if err := ValidateSecureURL(cfg.RevokeURL, cfg.AllowLoopback); err != nil {
+		return err
+	}
+	form := url.Values{}
+	form.Set("token", token)
+	if cfg.ClientID != "" {
+		form.Set("client_id", cfg.ClientID)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.RevokeURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return nil
+}
+
+func (e *HTTPOAuthExchanger) postTokenForm(ctx context.Context, endpoint string, form url.Values) (TokenSet, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return TokenSet{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return TokenSet{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return TokenSet{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return TokenSet{}, fmt.Errorf("auth: token endpoint returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		TokenType    string `json:"token_type"`
+		Scope        string `json:"scope"`
+		ExpiresIn    int64  `json:"expires_in"`
+		Error        string `json:"error"`
+		ErrorDesc    string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return TokenSet{}, fmt.Errorf("auth: decode token response: %w", err)
+	}
+	if payload.Error != "" {
+		return TokenSet{}, fmt.Errorf("auth: token exchange rejected (%s: %s)", payload.Error, payload.ErrorDesc)
+	}
+	now := time.Now()
+	tok := TokenSet{
+		AccessToken:  payload.AccessToken,
+		RefreshToken: payload.RefreshToken,
+		IDToken:      payload.IDToken,
+		TokenType:    payload.TokenType,
+		IssuedAt:     now,
+	}
+	if payload.ExpiresIn > 0 {
+		tok.ExpiresAt = now.Add(time.Duration(payload.ExpiresIn) * time.Second)
+	}
+	if payload.Scope != "" {
+		tok.Scopes = strings.Fields(payload.Scope)
+	}
+	return tok, nil
+}
+
+func (e *HTTPOAuthExchanger) fetchUserInfo(ctx context.Context, endpoint, accessToken string) (AccountProfile, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return AccountProfile{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return AccountProfile{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return AccountProfile{}, fmt.Errorf("auth: userinfo returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
+	if err != nil {
+		return AccountProfile{}, err
+	}
+	var payload struct {
+		Sub           string `json:"sub"`
+		ID            any    `json:"id"`
+		Email         string `json:"email"`
+		Name          string `json:"name"`
+		Login         string `json:"login"`
+		Picture       string `json:"picture"`
+		AvatarURL     string `json:"avatar_url"`
+		EmailVerified bool   `json:"email_verified"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return AccountProfile{}, err
+	}
+	sub := payload.Sub
+	if sub == "" && payload.ID != nil {
+		sub = fmt.Sprint(payload.ID)
+	}
+	name := payload.Name
+	if name == "" {
+		name = payload.Login
+	}
+	avatar := payload.Picture
+	if avatar == "" {
+		avatar = payload.AvatarURL
+	}
+	return AccountProfile{
+		Subject:       sub,
+		Email:         payload.Email,
+		DisplayName:   name,
+		AvatarURL:     avatar,
+		EmailVerified: payload.EmailVerified,
+	}, nil
+}
+
+func verifyIDTokenNonce(idToken, expectedNonce string) error {
+	parts := strings.Split(idToken, ".")
+	if len(parts) < 2 {
+		return ErrNonceMismatch
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ErrNonceMismatch
+	}
+	var claims struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return ErrNonceMismatch
+	}
+	if !ConstantTimeTokenEqual(claims.Nonce, expectedNonce) {
+		return ErrNonceMismatch
+	}
+	return nil
+}

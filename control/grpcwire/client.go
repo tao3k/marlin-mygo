@@ -97,6 +97,9 @@ type DialConfig struct {
 	Mode        transport.Mode
 	Address     string
 	AuthToken   string
+	// AuthTokenSource optionally resolves a fresh per-RPC Authorization header
+	// (e.g. auth.AuthManager.AuthorizationHeader for auto-refreshed OAuth Bearer tokens).
+	AuthTokenSource func(ctx context.Context) (string, error)
 	// TLS configures TLS 1.3 or mutual TLS for remote targets.
 	TLS *TLSConfig
 	// Policy optionally overrides HTTP/2 keepalive, flow control, and connect backoff.
@@ -162,7 +165,12 @@ func Dial(cfg DialConfig) (*Target, error) {
 	} else {
 		opts = append(opts, cfg.DialOptions...)
 	}
-	if cfg.AuthToken != "" {
+	if cfg.AuthTokenSource != nil {
+		opts = append(opts,
+			grpc.WithUnaryInterceptor(unaryAuthSourceInterceptor(cfg.AuthTokenSource)),
+			grpc.WithStreamInterceptor(streamAuthSourceInterceptor(cfg.AuthTokenSource)),
+		)
+	} else if cfg.AuthToken != "" {
 		opts = append(opts,
 			grpc.WithUnaryInterceptor(unaryAuthInterceptor(cfg.AuthToken)),
 			grpc.WithStreamInterceptor(streamAuthInterceptor(cfg.AuthToken)),
@@ -352,6 +360,32 @@ func unaryAuthInterceptor(token string) grpc.UnaryClientInterceptor {
 func streamAuthInterceptor(token string) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", token)
+		return streamer(ctx, desc, cc, method, opts...)
+	}
+}
+
+func unaryAuthSourceInterceptor(source func(context.Context) (string, error)) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		token, err := source(ctx)
+		if err != nil {
+			return err
+		}
+		if token != "" {
+			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", token)
+		}
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+func streamAuthSourceInterceptor(source func(context.Context) (string, error)) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		token, err := source(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if token != "" {
+			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", token)
+		}
 		return streamer(ctx, desc, cc, method, opts...)
 	}
 }
