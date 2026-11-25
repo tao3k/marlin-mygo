@@ -416,6 +416,41 @@ func buildWorkbenchApp(
 	app.Auth = authCtrl
 
 	app.Projection = mygoshell.NewProjectionController(initialProjection)
+	app.Projection.OnMentionFile = func(path string) {
+		if transcript.Composer != nil {
+			transcript.Composer.AddMention(composer.ContextMention{
+				Kind:   "file",
+				Target: path,
+				Label:  filepath.Base(path),
+			})
+			_, _ = notifyCenter.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityInfo, Source: notify.SourceHost,
+				Title: "Context Mention Added", Message: "@file:" + path,
+			})
+		}
+	}
+	app.Projection.OnAttachDiff = func(file mygoshell.WorkspaceDiffFileView) {
+		patch := strings.Join(file.HunkLines, "\n")
+		if strings.TrimSpace(patch) == "" {
+			patch = fmt.Sprintf("--- %s\n+++ %s\n", file.Path, file.Path)
+		}
+		_, _ = transcript.AttachFile(composer.AttachmentInput{
+			Filename: filepath.Base(file.Path) + ".diff",
+			MIMEType: "text/plain",
+			Data:     []byte(patch),
+		})
+	}
+	app.Projection.OnAttachProcessLogs = func(proc mygoshell.ManagedProcessView) {
+		body := strings.Join(proc.TailLines, "\n")
+		if strings.TrimSpace(body) == "" {
+			body = "(empty process tail)\n"
+		}
+		_, _ = transcript.AttachFile(composer.AttachmentInput{
+			Filename: proc.ProcessID + ".log",
+			MIMEType: "text/plain",
+			Data:     []byte(body),
+		})
+	}
 	app.OnAddRemoteTarget = func(targetID, displayName, endpoint, bearerToken string) error {
 		return registerRemoteTarget(ctx, targets, federation, authMgr.AuthorizationHeader, targetID, displayName, endpoint, bearerToken)
 	}

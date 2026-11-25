@@ -262,6 +262,8 @@ type TranscriptController struct {
 	OnPickAttachment  func()
 	OnPasteAttachment func()
 	OnSearchSession   func(query string) []SessionSearchHit
+	OnRetryTurn       func(turnOrdinal uint64)
+	OnForkTurn        func(turnOrdinal uint64)
 	// Optional external parser hook backed by org-rz1 WASM or the Rust backend
 	// for rendering rich Org-mode / Markdown previews without Go-side parsing.
 	OnParseRichDoc func(format richtext.Format, docID, source string) ([]richtext.Block, error)
@@ -423,6 +425,22 @@ func (tc *TranscriptController) CloseAttachmentPreview() {
 	tc.previewAtt = nil
 	tc.previewBlocks = nil
 	tc.mu.Unlock()
+}
+
+// SetAllThinkingFolded folds or unfolds every collapsible RoleThinking block
+// in the transcript while preserving ScrollAnchor zero-drift invariants.
+func (tc *TranscriptController) SetAllThinkingFolded(folded bool) int {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	changed := 0
+	for i := range tc.entries {
+		if tc.entries[i].Role == RoleThinking && tc.entries[i].Collapsible && tc.entries[i].Folded != folded {
+			tc.entries[i].Folded = folded
+			tc.updateRowHeightLocked(i)
+			changed++
+		}
+	}
+	return changed
 }
 
 // AppendAssistantRichBlocks admits pre-parsed Org-mode or Markdown Document IR
@@ -1032,12 +1050,24 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	searchHits := append([]SessionSearchHit(nil), tc.searchHits...)
 	searchHitIdx := tc.searchHitIdx
 	searchFn := tc.OnSearchSession
+	retryTurnFn := tc.OnRetryTurn
+	forkTurnFn := tc.OnForkTurn
 	mentionFn := tc.OnQueryMentions
 	pickAttFn := tc.OnPickAttachment
 	pasteAttFn := tc.OnPasteAttachment
 	submitTurnFn := tc.OnSubmitTurn
 	slashFn := tc.OnSlashCommand
 	compState := tc.Composer
+	hasThinking := false
+	anyThinkingExpanded := false
+	for i := range tc.entries {
+		if tc.entries[i].Role == RoleThinking && tc.entries[i].Collapsible {
+			hasThinking = true
+			if !tc.entries[i].Folded {
+				anyThinkingExpanded = true
+			}
+		}
+	}
 	var activePreview *composer.AttachmentRef
 	var activePreviewBlocks []richtext.Block
 	if tc.previewAtt != nil {
@@ -1086,6 +1116,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		openPreviewAtt   *composer.AttachmentRef
 		closePreviewNow  bool
 		droppedPayload   *transfer.Drop
+		foldAllThinkAct  int // 0=none, +1=fold all, -1=unfold all
+		retryTurnOrd     uint64
+		forkTurnOrd      uint64
 		copiedKey        string
 		copiedCode       string
 	)
@@ -1111,6 +1144,17 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
 			ui.Text(c, statsLine).FontSize(11).TextColor(toColor(dt.InkMuted))
 			ui.Spacer(c)
+			if hasThinking {
+				lbl := "Unfold Thinking"
+				act := -1
+				if anyThinkingExpanded {
+					lbl = "Fold Thinking"
+					act = 1
+				}
+				if ApplePillButton(c, "transcript-fold-thinking", lbl, BtnGlass, dt, nil, true).Clicked() {
+					foldAllThinkAct = act
+				}
+			}
 			if searchFn != nil || searchOpen {
 				if ApplePillButton(c, "transcript-find", "Find", BtnGlass, dt, svgIconSearch, true).Clicked() {
 					openSearchNow = true
@@ -1278,6 +1322,33 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 							}
 							if entry.cancelBadge != "" {
 								ui.Text(c, entry.cancelBadge).FontSize(11).FontWeight(700).TextColor(toColor(dt.Warning))
+							}
+							if entry.Role == RoleAssistant && !entry.Streaming && (retryTurnFn != nil || forkTurnFn != nil || (tc.OnCopyCode != nil && entry.Text != "")) {
+								ui.Row(c).Gap(6).Padding(2, 0, 0, 0).AlignItems(ui.Center).Children(func() {
+									if tc.OnCopyCode != nil && entry.Text != "" {
+										cKey := "copy-turn-" + entry.ID
+										cLbl := "Copy"
+										cVar := BtnGlass
+										if lastCopied == cKey {
+											cLbl = "Copied"
+											cVar = BtnSuccess
+										}
+										if ApplePillButton(c, cKey, cLbl, cVar, dt, nil, true).Clicked() {
+											copiedKey = cKey
+											copiedCode = entry.Text
+										}
+									}
+									if retryTurnFn != nil && entry.TurnOrdinal > 0 {
+										if ApplePillButton(c, "retry-"+entry.ID, "Retry", BtnGlass, dt, nil, true).Clicked() {
+											retryTurnOrd = entry.TurnOrdinal
+										}
+									}
+									if forkTurnFn != nil && entry.TurnOrdinal > 0 {
+										if ApplePillButton(c, "fork-"+entry.ID, "Fork", BtnGlass, dt, nil, true).Clicked() {
+											forkTurnOrd = entry.TurnOrdinal
+										}
+									}
+								})
 							}
 						})
 					}
@@ -1468,6 +1539,17 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	if openPreviewAtt != nil {
 		tc.OpenAttachmentPreview(*openPreviewAtt)
+	}
+	if foldAllThinkAct == 1 {
+		tc.SetAllThinkingFolded(true)
+	} else if foldAllThinkAct == -1 {
+		tc.SetAllThinkingFolded(false)
+	}
+	if retryTurnOrd > 0 && retryTurnFn != nil {
+		retryTurnFn(retryTurnOrd)
+	}
+	if forkTurnOrd > 0 && forkTurnFn != nil {
+		forkTurnFn(forkTurnOrd)
 	}
 	if droppedPayload != nil {
 		_, _ = tc.HandleDroppedTransfer(*droppedPayload)
