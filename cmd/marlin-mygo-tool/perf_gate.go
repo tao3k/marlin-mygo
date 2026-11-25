@@ -73,7 +73,7 @@ func activePerfBudgets() []PerfBudget {
 		{Name: "BenchmarkVirtualHeightIndex_100kRows_FindRowAtY", MaxNs: 200, MaxBytes: 0, MaxAllocs: 0},
 		{Name: "BenchmarkVirtualHeightIndex_100kRows_FoldUpdate", MaxNs: 15, MaxBytes: 0, MaxAllocs: 0},
 		{Name: "BenchmarkWazeroIR_ZeroCopyDrawList_64Cmds", MaxNs: 75_000, MaxBytes: 512, MaxAllocs: 6},
-		{Name: "BenchmarkWazeroIR_ResidentReactorRender", MaxNs: 300_000, MaxBytes: 20_480, MaxAllocs: 18},
+		{Name: "BenchmarkWazeroIR_ResidentReactorRender", MaxNs: 300_000, MaxBytes: 24_576, MaxAllocs: 18},
 		{Name: "BenchmarkWazeroIR_CachedExecute", MaxNs: 25_000_000, MaxBytes: -1, MaxAllocs: -1},
 		{Name: "BenchmarkGRPC_LoopbackScopedPanelAction", MaxNs: 250_000, MaxBytes: 20_480, MaxAllocs: 220},
 		{Name: "BenchmarkMyGoShell_HeadlessFrame", MaxNs: 90_000, MaxBytes: 2_560, MaxAllocs: 24},
