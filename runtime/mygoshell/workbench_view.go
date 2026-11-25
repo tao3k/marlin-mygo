@@ -39,6 +39,11 @@ type WorkbenchApp struct {
 	Commands []input.CommandEntry
 	KeyTrie  *input.KeyTrie
 
+	// Optional live Fenwick-virtualized streaming transcript + interactive composer.
+	Transcript   *TranscriptController
+	OnSendPrompt func(prompt string)
+	OnCancelTurn func()
+
 	// Optional callbacks invoked by top-level chrome controls.
 	OnGateDecision  func(gateID string, approve bool)
 	OnCommandInvoke func(commandName string)
@@ -168,8 +173,11 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				if hasSnap {
 					rctx.SessionID = snap.SessionLabel
 					RenderUIElement(c, snap.FrameTree, a.Slots, rctx)
-				} else {
+				} else if a.Transcript == nil {
 					ui.Text(c, "Waiting for marlin.ui.v1 workbench snapshot...").TextColor(t.TextMuted)
+				}
+				if a.Transcript != nil {
+					a.Transcript.Render(c, t, a.OnSendPrompt, a.OnCancelTurn)
 				}
 			})
 		})

@@ -16,9 +16,11 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
+	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 	gatev1 "github.com/tao3k/marlin-mygo/gen/marlin/gate/v1"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/device"
@@ -54,7 +57,8 @@ func (demoDispatcher) SubmitScopedPanelAction(_ context.Context, req pluginhost.
 }
 
 func main() {
-	sidecarBin := flag.String("sidecar", "", "optional local Rust marlin-host/mygo_bridge_server binary to spawn with ephemeral token")
+	sidecarBin := flag.String("sidecar", "", "optional local Rust marlin-mygo-host binary to spawn with ephemeral token")
+	realSession := flag.Bool("real-session", false, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised sidecar")
 	pubKeyFile := flag.String("pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
 	hostAddr := flag.String("host", "", "optional live Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
 	token := flag.String("token", "marlin-dev-token", "Bearer token for live Rust host")
@@ -112,9 +116,14 @@ func main() {
 			}
 			pubHex = strings.TrimSpace(string(raw))
 		}
+		var extraEnv []string
+		if *realSession {
+			extraEnv = append(extraEnv, "MARLIN_BRIDGE_REAL_SESSION=1")
+		}
 		managed, err := grpcwire.LaunchSidecarTarget(ctx, "local-rust-sidecar", "Rust Authority Sidecar", transport.SidecarConfig{
 			BinaryPath:      *sidecarBin,
 			PublisherKeyHex: pubHex,
+			ExtraEnv:        extraEnv,
 			Stderr:          os.Stderr,
 		})
 		if err != nil {
@@ -216,6 +225,8 @@ func main() {
 
 	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
 	app.Federation = federation
+	transcript := mygoshell.NewTranscriptController()
+	app.Transcript = transcript
 	app.Commands = []input.CommandEntry{
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
@@ -273,6 +284,90 @@ func main() {
 				if approve {
 					_, _ = liveDriver.ApproveGateOnce(ctx, gateID, "call-"+gateID, "ui-"+gateID)
 				}
+				win.Invalidate()
+			}
+
+			turnCtrl := grpcwire.NewTurnStreamController(liveTarget)
+			var (
+				turnMu     sync.Mutex
+				sessionUp  bool
+				lastTurn   uint64
+				activeRef  *appv1.SessionTurnRef
+				subCounter atomic.Uint64
+			)
+			app.OnSendPrompt = func(prompt string) {
+				transcript.AppendUser(prompt)
+				win.Invalidate()
+				go func() {
+					turnMu.Lock()
+					if !sessionUp {
+						if _, err := turnCtrl.OpenSession(ctx, *sessionID, true); err != nil {
+							_, _ = turnCtrl.OpenSession(ctx, *sessionID, false)
+						}
+						sessionUp = true
+					}
+					after := lastTurn
+					subID := fmt.Sprintf("ui-sub-%d", subCounter.Add(1))
+					turnMu.Unlock()
+
+					turnRef, err := turnCtrl.StartTurn(ctx, *sessionID, prompt, after, subID)
+					if err != nil {
+						log.Printf("StartSessionTurn failed: %v", err)
+						return
+					}
+					turnMu.Lock()
+					activeRef = turnRef
+					turnMu.Unlock()
+					transcript.BeginAssistantTurn(turnRef.GetOrdinal())
+					win.Invalidate()
+
+					_, outcome, watchErr := turnCtrl.WatchTurn(ctx, turnRef, "", func(upd grpcwire.TurnStreamUpdate) {
+						if upd.TextDelta != "" {
+							transcript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+							win.Invalidate()
+						}
+						if upd.HasOutcome {
+							transcript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
+							win.Invalidate()
+						}
+					})
+					if watchErr != nil {
+						log.Printf("WatchSessionTurn error: %v", watchErr)
+						transcript.CompleteTurn(turnRef.GetOrdinal(), "INTERRUPTED")
+						win.Invalidate()
+					} else if outcome == appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {
+						turnMu.Lock()
+						if turnRef.GetOrdinal() > lastTurn {
+							lastTurn = turnRef.GetOrdinal()
+						}
+						activeRef = nil
+						turnMu.Unlock()
+					}
+				}()
+			}
+			app.OnCancelTurn = func() {
+				turnMu.Lock()
+				ref := activeRef
+				turnMu.Unlock()
+				if ref == nil {
+					return
+				}
+				go func() {
+					if _, err := turnCtrl.CancelTurn(ctx, ref); err != nil {
+						log.Printf("CancelSessionTurn failed: %v", err)
+					}
+					win.Invalidate()
+				}()
+			}
+		} else {
+			var demoTurn atomic.Uint64
+			app.OnSendPrompt = func(prompt string) {
+				transcript.AppendUser(prompt)
+				ord := demoTurn.Add(1)
+				transcript.BeginAssistantTurn(ord)
+				transcript.ApplyCheckpoint(ord, fmt.Sprintf("demo-%d", ord),
+					fmt.Sprintf("[standalone demo] Received %q — launch with -sidecar <marlin-mygo-host> -real-session for live Rust streaming.", prompt))
+				transcript.CompleteTurn(ord, "DEMO_COMPLETED")
 				win.Invalidate()
 			}
 		}
