@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/tao3k/marlin-mygo/control/transport"
@@ -34,7 +33,9 @@ type DialConfig struct {
 	Mode        transport.Mode
 	Address     string
 	AuthToken   string
-	// TransportCredentials defaults to loopback insecure when nil; supply TLS/mTLS for remote hosts.
+	// TLS configures TLS 1.3 or mutual TLS for remote targets.
+	TLS *TLSConfig
+	// Optional low-level gRPC dial options (overrides default credentials when supplied).
 	DialOptions []grpc.DialOption
 }
 
@@ -60,7 +61,11 @@ func Dial(cfg DialConfig) (*Target, error) {
 	}
 	opts := append([]grpc.DialOption{}, cfg.DialOptions...)
 	if len(opts) == 0 {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		creds, err := BuildTransportCredentials(cfg.Mode, cfg.Address, cfg.TLS)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(creds))
 	}
 	if cfg.AuthToken != "" {
 		opts = append(opts,
