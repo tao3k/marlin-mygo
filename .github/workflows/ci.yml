@@ -80,6 +80,16 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      - name: Cache wazero persistent AOT compilation artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/marlin-mygo/wazero-aot-v1
+            ~/Library/Caches/marlin-mygo/wazero-aot-v1
+          key: wazero-aot-${{ runner.os }}-${{ hashFiles('go.mod', 'sdk/go-ui-ir/**', 'examples/plugins/**/*.go') }}
+          restore-keys: |
+            wazero-aot-${{ runner.os }}-
+
       - name: Install build-time TS/React 19 dependencies (dev/bundle only; zero runtime Bun)
         run: bun install --frozen-lockfile
 

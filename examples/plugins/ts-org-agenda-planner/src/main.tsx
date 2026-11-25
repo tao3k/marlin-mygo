@@ -5,6 +5,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  createOrgizeWorkerClient,
+  type OrgizeWorkerPort,
+} from "@tao3k/marlin-panel-sdk";
+import {
   MarlinPanelProvider,
   useMarlinAction,
   useMarlinProjection,
@@ -146,6 +150,8 @@ export function OrgAgendaPlannerApp() {
   const [titleInput, setTitleInput] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [winInput, setWinInput] = useState("");
+  const [scratchOpen, setScratchOpen] = useState(false);
+  const [scratchInput, setScratchInput] = useState("");
   const [receiptMsg, setReceiptMsg] = useState("React 19 + tao3k/orgize DTOs ready.");
 
   const [alarm, setAlarm] = useState<FocusAlarmState>({
@@ -269,6 +275,40 @@ export function OrgAgendaPlannerApp() {
     }
   }
 
+  async function handleApplyScratchpad() {
+    const raw = scratchInput.trim();
+    if (!raw) return;
+    const g = globalThis as unknown as { __MARLIN_ORGIZE_WORKER__?: OrgizeWorkerPort };
+    if (g.__MARLIN_ORGIZE_WORKER__) {
+      const workerClient = createOrgizeWorkerClient(g.__MARLIN_ORGIZE_WORKER__, "agenda-scratch");
+      try {
+        const parsed = await workerClient.parseAgendaView<OrgizeAgendaViewResponseDto>(raw, TODAY_ISO);
+        if (parsed && Array.isArray(parsed.cards)) {
+          agendaProj.setLocal(parsed);
+          setReceiptMsg(`Parsed ${parsed.cards.length} cards offline via tao3k/orgize-wasm Worker`);
+          setScratchOpen(false);
+        }
+      } catch (err) {
+        setReceiptMsg(`orgize-wasm parse error: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        workerClient.dispose();
+      }
+      return;
+    }
+    try {
+      const dto = parseAgendaDTO(JSON.parse(raw));
+      if (dto) {
+        agendaProj.setLocal(dto);
+        setReceiptMsg(`Loaded ${dto.cards.length} cards from pasted orgize DTO snapshot`);
+        setScratchOpen(false);
+        return;
+      }
+    } catch {
+      // Fall through with guidance when no local orgize-wasm Worker is mounted.
+    }
+    setReceiptMsg("Attach tao3k/orgize-wasm Worker (__MARLIN_ORGIZE_WORKER__) for raw .org parsing, or paste an OrgizeAgendaViewResponseDto JSON.");
+  }
+
   const sessionLabel = sessionProj.data.sessionId
     ? `React 19 · orgize DTOs · session ${String(sessionProj.data.sessionId)} · turn #${String(sessionProj.data.turnOrdinal ?? 0)}`
     : "React 19 · Powered by tao3k/orgize DTOs (zero JS Org parsing)";
@@ -285,6 +325,9 @@ export function OrgAgendaPlannerApp() {
             Clocked today: {clockSummary.totalMinutes}m
             {clockSummary.runningCount > 0 ? ` · active: ${clockSummary.runningTitle}` : ""}
           </span>
+          <button type="button" onClick={() => setScratchOpen((o) => !o)}>
+            {scratchOpen ? "Close Scratchpad" : "Orgize Scratchpad"}
+          </button>
           <button
             className="ok"
             type="button"
@@ -295,6 +338,22 @@ export function OrgAgendaPlannerApp() {
           </button>
         </div>
       </header>
+
+      {scratchOpen && (
+        <div className="card">
+          <h3>Offline tao3k/orgize-wasm Scratchpad (Zero JS Org Parsing)</h3>
+          <textarea
+            rows={4}
+            style={{ width: "100%", background: "var(--bg)", color: "var(--fg)", border: "1px solid var(--muted)", borderRadius: 6, padding: 8, marginBottom: 8 }}
+            value={scratchInput}
+            onChange={(e) => setScratchInput(e.target.value)}
+            placeholder="Paste .org text (when tao3k/orgize-wasm Worker is mounted) or an OrgizeAgendaViewResponseDto JSON snapshot..."
+          />
+          <button className="primary" type="button" onClick={() => void handleApplyScratchpad()}>
+            Project via orgize
+          </button>
+        </div>
+      )}
 
       <form className="capture-bar" onSubmit={(e) => void handleCapture(e)}>
         <select value={kind} onChange={(e) => setKind(e.target.value as OrgizeAgentCaptureKindDto)} aria-label="Capture Kind">

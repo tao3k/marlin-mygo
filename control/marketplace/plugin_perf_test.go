@@ -20,7 +20,7 @@ func TestBenchPluginDirPassesAllThreePersonalPlanningExamples(t *testing.T) {
 	examplesRoot := filepath.Join("..", "..", "examples", "plugins")
 	cfg := marketplace.PluginPerfConfig{
 		Iterations:   40,
-		LatencyScale: 2.5, // generous for -race / shared CI runners
+		LatencyScale: 4.0, // accounts for Go -race detector instrumentation (~4x) on 3-CPU CI runners
 	}
 
 	// 1. All 3 React 19 AI Workflow WebView plugins (real `bun build` + React 19 + `src/perf.ts` macro suites).

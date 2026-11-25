@@ -27,6 +27,9 @@ export * from "./generated/wire_types";
 // Re-export declarative plugin performance-budget test macros for human & LLM authors.
 export * from "./perf";
 
+// Re-export typed tao3k/orgize-wasm Worker client (zero duplicated Org parsing).
+export * from "./orgize_worker";
+
 export interface ScopedPanelEvent<T = unknown> {
   eventId: EventCursor;
   pluginId: string;
