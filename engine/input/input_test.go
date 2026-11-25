@@ -55,3 +55,24 @@ func TestFuzzyRankPrefersWordBoundaryAndPrefix(t *testing.T) {
 		t.Fatalf("expected boundary match 'select-buffer' second, got %q", cmds[ranked[1].Index].Name)
 	}
 }
+
+func TestFuzzyScoreCJKAndUnicodeFold(t *testing.T) {
+	// CJK subsequence match: query "部署" must rank inside "部署工作台".
+	if _, ok := FuzzyScore("部署", "部署工作台"); !ok {
+		t.Fatal("expected CJK subsequence match")
+	}
+	// Case folding applies to non-ASCII letters too (Cyrillic).
+	if _, ok := FuzzyScore("мар", "марлин-marlin"); !ok {
+		t.Fatal("expected Cyrillic case-folded match")
+	}
+	// Non-subsequence stays rejected.
+	if _, ok := FuzzyScore("台署", "部署工作台"); ok {
+		t.Fatal("expected CJK out-of-order subsequence to be rejected")
+	}
+
+	cmds := []CommandEntry{{Name: "部署工作台"}, {Name: "select-buffer"}}
+	ranked := RankCommands("部署", cmds, nil)
+	if len(ranked) != 1 || cmds[ranked[0].Index].Name != "部署工作台" {
+		t.Fatalf("expected CJK command ranked, got %+v", ranked)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"testing"
+	"unicode"
 )
 
 func linearOracleLookup(bindings []Binding, mode KeyScope, seq []string) (MatchKind, Binding) {
@@ -115,26 +116,36 @@ func TestKeyTriePropertyMatchesLinearOracle(t *testing.T) {
 	}
 }
 
-func isASCIISubsequence(query, target string) bool {
+func isCaseFoldedSubsequence(query, target string) bool {
+	qr := []rune(query)
 	qi := 0
-	for ti := 0; ti < len(target) && qi < len(query); ti++ {
-		if toLowerASCII(target[ti]) == toLowerASCII(query[qi]) {
+	for _, tr := range target {
+		if qi >= len(qr) {
+			break
+		}
+		if unicode.ToLower(tr) == unicode.ToLower(qr[qi]) {
 			qi++
 		}
 	}
-	return qi == len(query)
+	return qi == len(qr)
 }
 
-func hasASCIIPrefix(target, prefix string) bool {
-	if len(target) < len(prefix) {
+func hasCaseFoldedPrefix(target, prefix string) bool {
+	pr := []rune(prefix)
+	if len([]rune(target)) < len(pr) {
 		return false
 	}
-	for i := 0; i < len(prefix); i++ {
-		if toLowerASCII(target[i]) != toLowerASCII(prefix[i]) {
+	i := 0
+	for _, tr := range target {
+		if i >= len(pr) {
+			break
+		}
+		if unicode.ToLower(tr) != unicode.ToLower(pr[i]) {
 			return false
 		}
+		i++
 	}
-	return true
+	return i == len(pr)
 }
 
 func FuzzFuzzyScore(f *testing.F) {
@@ -142,9 +153,11 @@ func FuzzFuzzyScore(f *testing.F) {
 	f.Add("Marlin", "marlin.plugin.reload")
 	f.Add("", "anything")
 	f.Add("zzz", "abc")
+	f.Add("部署", "部署工作台")
+	f.Add("工作台", "部署工作台")
 	f.Fuzz(func(t *testing.T, query, target string) {
 		score, ok := FuzzyScore(query, target)
-		want := isASCIISubsequence(query, target)
+		want := isCaseFoldedSubsequence(query, target)
 		if ok != want {
 			t.Fatalf("FuzzyScore(%q, %q) ok=%v want %v", query, target, ok, want)
 		}
@@ -153,7 +166,7 @@ func FuzzFuzzyScore(f *testing.F) {
 			if !exactOK {
 				t.Fatalf("exact self-match failed for %q", query)
 			}
-			if len(target) > len(query) && hasASCIIPrefix(target, query) {
+			if len(target) > len(query) && hasCaseFoldedPrefix(target, query) {
 				// Same prefix + trailing chars must not outscore exact self-match.
 				if score > exactScore {
 					t.Fatalf("prefix+suffix %q (%d) outscored exact %q (%d)", target, score, query, exactScore)

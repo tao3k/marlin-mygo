@@ -77,7 +77,13 @@ type Bridge struct {
 	mu               sync.RWMutex
 	providers        map[schema.CapabilityID]CapabilityProvider
 	consumedReceipts map[string]struct{}
+	receiptOrder     []string // FIFO window so replay-protection memory stays bounded
 }
+
+// maxTrackedReceipts bounds the one-shot replay-protection window. Receipts are
+// consumed exactly once server-side; the window only needs to cover receipts a
+// buggy or malicious caller might resubmit within a short burst.
+const maxTrackedReceipts = 4096
 
 func NewBridge(kind schema.TargetKind) *Bridge {
 	return &Bridge{
@@ -165,6 +171,13 @@ func (b *Bridge) Dispatch(ctx context.Context, req InvocationRequest) (Invocatio
 			return InvocationResult{InvocationID: req.InvocationID, OK: false, ErrorMessage: ErrGateReceiptReplayed.Error()}, ErrGateReceiptReplayed
 		}
 		b.consumedReceipts[req.GateReceiptID] = struct{}{}
+		b.receiptOrder = append(b.receiptOrder, req.GateReceiptID)
+		if len(b.receiptOrder) > maxTrackedReceipts {
+			// Evict the oldest receipt so replay memory stays O(window), not O(lifetime).
+			delete(b.consumedReceipts, b.receiptOrder[0])
+			b.receiptOrder[0] = ""
+			b.receiptOrder = b.receiptOrder[1:]
+		}
 		b.mu.Unlock()
 	}
 	return provider.Invoke(ctx, req)

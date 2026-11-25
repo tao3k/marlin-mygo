@@ -54,11 +54,47 @@ type Percentiles struct {
 	P99     time.Duration
 }
 
+// taskQueue is a FIFO queue with amortized O(1) push and pop. The drained
+// head prefix is compacted back to the front of the backing array once it
+// dominates, so a large per-frame backlog never costs O(n) per pop.
+type taskQueue struct {
+	items []Task
+	head  int
+}
+
+func (q *taskQueue) push(t Task) {
+	q.items = append(q.items, t)
+}
+
+func (q *taskQueue) len() int { return len(q.items) - q.head }
+
+func (q *taskQueue) pop() (Task, bool) {
+	if q.head >= len(q.items) {
+		return Task{}, false
+	}
+	t := q.items[q.head]
+	q.items[q.head] = Task{} // release closure references eagerly
+	q.head++
+	switch {
+	case q.head == len(q.items):
+		// Fully drained: reset in place, keeping the backing capacity.
+		clear(q.items)
+		q.items = q.items[:0]
+		q.head = 0
+	case q.head > 64 && q.head*2 >= len(q.items):
+		n := copy(q.items, q.items[q.head:])
+		clear(q.items[n:])
+		q.items = q.items[:n]
+		q.head = 0
+	}
+	return t, true
+}
+
 // FrameScheduler executes priority-tiered work inside a fixed frame budget
 // (e.g. 8.33ms for 120Hz or 16.67ms for 60Hz) and tracks rolling frame latency.
 type FrameScheduler struct {
 	mu      sync.Mutex
-	queues  [3][]Task
+	queues  [3]taskQueue
 	history []time.Duration
 	histPos int
 	histLen int
@@ -81,7 +117,7 @@ func (s *FrameScheduler) Enqueue(t Task) {
 		t.Priority = PriorityBackground
 	}
 	s.mu.Lock()
-	s.queues[t.Priority] = append(s.queues[t.Priority], t)
+	s.queues[t.Priority].push(t)
 	s.mu.Unlock()
 }
 
@@ -127,8 +163,8 @@ func (s *FrameScheduler) RunFrame(budget time.Duration) FrameReport {
 	rep.OverBudget = rep.Duration > budget
 
 	s.mu.Lock()
-	rep.DeferredP1 = len(s.queues[PriorityActive])
-	rep.DeferredP2 = len(s.queues[PriorityBackground])
+	rep.DeferredP1 = s.queues[PriorityActive].len()
+	rep.DeferredP2 = s.queues[PriorityBackground].len()
 	s.history[s.histPos] = rep.Duration
 	s.histPos = (s.histPos + 1) % len(s.history)
 	if s.histLen < len(s.history) {
@@ -139,17 +175,7 @@ func (s *FrameScheduler) RunFrame(budget time.Duration) FrameReport {
 }
 
 func (s *FrameScheduler) pop(p Priority) (Task, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q := s.queues[p]
-	if len(q) == 0 {
-		return Task{}, false
-	}
-	t := q[0]
-	copy(q, q[1:])
-	q[len(q)-1] = Task{}
-	s.queues[p] = q[:len(q)-1]
-	return t, true
+	return s.queues[p].pop()
 }
 
 func (s *FrameScheduler) Percentiles() Percentiles {

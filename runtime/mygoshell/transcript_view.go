@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/egoist/mygo/ui"
 
@@ -146,20 +147,21 @@ const (
 // inline approval gate cards, durable cancellation receipts, idempotent event
 // replay, and an interactive MyGo GPU chat composer.
 type TranscriptController struct {
-	mu           sync.RWMutex
-	entries      []TranscriptEntry
-	turnRow      map[uint64]int
-	toolRows     map[string]int
-	gateRows     map[string]int
-	seenEvents   map[string]struct{}
-	heights      *viewport.VirtualHeightIndex
-	scrollY      uint64
-	viewportH    uint64
-	wrapCols     int
-	autoFollow   bool
-	composerText string
-	activeTurn   uint64
-	inFlight     bool
+	mu             sync.RWMutex
+	entries        []TranscriptEntry
+	turnRow        map[uint64]int
+	toolRows       map[string]int
+	gateRows       map[string]int
+	seenEvents     map[string]struct{}
+	seenEventOrder []string // FIFO window so dedup memory stays bounded on 100k-row sessions
+	heights        *viewport.VirtualHeightIndex
+	scrollY        uint64
+	viewportH      uint64
+	wrapCols       int
+	autoFollow     bool
+	composerText   string
+	activeTurn     uint64
+	inFlight       bool
 
 	// Single-frame scratch buffers reused across 120Hz/240Hz Render calls (0 slice allocs/frame).
 	renderMu       sync.Mutex
@@ -170,6 +172,11 @@ type TranscriptController struct {
 	statsHeight    uint64
 	cachedStatsStr string
 }
+
+// maxTrackedEventIDs bounds the idempotent-replay dedup window. It must exceed
+// the largest reconnect replay burst (journal tail) the Rust host resends after
+// a cursor resume; older events can no longer be replayed once evicted.
+const maxTrackedEventIDs = 8192
 
 func NewTranscriptController() *TranscriptController {
 	return &TranscriptController{
@@ -375,6 +382,13 @@ func (tc *TranscriptController) ApplyCheckpoint(turnOrdinal uint64, eventID, tex
 			return -1
 		}
 		tc.seenEvents[eventID] = struct{}{}
+		tc.seenEventOrder = append(tc.seenEventOrder, eventID)
+		if len(tc.seenEventOrder) > maxTrackedEventIDs {
+			// Evict the oldest eventID so dedup memory stays O(window), not O(session).
+			delete(tc.seenEvents, tc.seenEventOrder[0])
+			tc.seenEventOrder[0] = ""
+			tc.seenEventOrder = tc.seenEventOrder[1:]
+		}
 	}
 	row, ok := tc.turnRow[turnOrdinal]
 	if !ok {
@@ -711,7 +725,10 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 	}
 	lines := 0
 	for _, para := range strings.Split(entry.Text, "\n") {
-		n := len(para)
+		// Display-width estimate: CJK/fullwidth runes occupy 2 columns while
+		// everything else occupies 1, so CJK replies no longer underestimate
+		// wrapped line count (and thus row height).
+		n := displayWidth(para)
 		if n == 0 {
 			lines++
 			continue
@@ -722,4 +739,39 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 		lines = 1
 	}
 	return transcriptHeaderPx + uint32(lines)*transcriptLinePx + extra
+}
+
+// displayWidth approximates the terminal column width of s: East Asian Wide
+// and Fullwidth runes count as 2 columns, combining marks as 0, and all other
+// runes as 1. This mirrors how CJK glyphs actually wrap in the renderer.
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		switch {
+		case unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf):
+			// Combining marks and format runes add no columns.
+		case isEastAsianWide(r):
+			w += 2
+		default:
+			w++
+		}
+	}
+	return w
+}
+
+// isEastAsianWide reports whether r renders double-width (CJK ideographs,
+// kana, Hangul, fullwidth forms, and common CJK punctuation blocks).
+func isEastAsianWide(r rune) bool {
+	switch {
+	case unicode.In(r, unicode.Han, unicode.Hangul, unicode.Hiragana, unicode.Katakana):
+		return true
+	case r >= 0x3000 && r <= 0x303F: // CJK Symbols and Punctuation
+		return true
+	case r >= 0xFF00 && r <= 0xFF60: // Halfwidth and Fullwidth Forms (fullwidth half)
+		return true
+	case r >= 0xFFE0 && r <= 0xFFE6: // Fullwidth signs
+		return true
+	default:
+		return false
+	}
 }

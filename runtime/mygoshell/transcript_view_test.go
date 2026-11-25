@@ -224,3 +224,58 @@ func TestTranscriptToolCallHumanGateAndCancellationReceiptCards(t *testing.T) {
 		t.Fatalf("expected authoritative cancellation receipt badge in GPU frame, got %q", tt.Texts())
 	}
 }
+
+func TestTranscriptSeenEventsWindowStaysBounded(t *testing.T) {
+	tc := NewTranscriptController()
+	tc.BeginAssistantTurn(1)
+
+	// Feed far more distinct eventIDs than the dedup window holds.
+	const total = maxTrackedEventIDs + 512
+	for i := 0; i < total; i++ {
+		tc.ApplyCheckpoint(1, fmt.Sprintf("evt-%d", i), "x")
+	}
+	if got := len(tc.seenEvents); got != maxTrackedEventIDs {
+		t.Fatalf("expected dedup map bounded at %d, got %d", maxTrackedEventIDs, got)
+	}
+	if got := len(tc.seenEventOrder); got != maxTrackedEventIDs {
+		t.Fatalf("expected FIFO window bounded at %d, got %d", maxTrackedEventIDs, got)
+	}
+
+	// The oldest long-evicted event may be re-applied without dedup (documented
+	// window semantics), but events inside the window must still dedupe.
+	row := tc.turnRow[1]
+	before := tc.entries[row].Text
+	tc.ApplyCheckpoint(1, fmt.Sprintf("evt-%d", total-1), "DUPLICATE")
+	if tc.entries[row].Text != before {
+		t.Fatal("event inside dedup window was re-applied")
+	}
+}
+
+func TestTranscriptCJKHeightEstimateUsesDisplayWidth(t *testing.T) {
+	tc := NewTranscriptController()
+
+	// 72 ASCII chars fill exactly 1 wrap line at the default 72-column budget.
+	asciiRow := tc.AppendUser(strings.Repeat("a", 72))
+	// 36 CJK ideographs render 72 columns wide but are only 108 bytes; a
+	// byte-based estimator would claim 2 lines instead of 1.
+	cjkRow := tc.AppendUser(strings.Repeat("字", 36))
+	// Same display width via fullwidth punctuation: 36×2 = 72 columns.
+	mixedRow := tc.AppendUser(strings.Repeat("！", 36))
+
+	ha, hb, hc := tc.RowHeight(asciiRow), tc.RowHeight(cjkRow), tc.RowHeight(mixedRow)
+	if ha != hb || ha != hc {
+		t.Fatalf("expected equal display-width rows to have equal heights: ascii=%d cjk=%d mixed=%d", ha, hb, hc)
+	}
+	// And the CJK row must be exactly one header+line unit, not byte-inflated.
+	want := transcriptHeaderPx + transcriptLinePx
+	if hb != want {
+		t.Fatalf("expected CJK row height %d (single wrapped line), got %d", want, hb)
+	}
+
+	// Byte-based height would double-count CJK: 108 bytes / 72 cols = 2 lines.
+	longCJK := tc.AppendUser(strings.Repeat("字", 80)) // 160 display cols → 3 lines
+	wantLong := transcriptHeaderPx + 3*transcriptLinePx
+	if got := tc.RowHeight(longCJK); got != wantLong {
+		t.Fatalf("expected 80-CJK row height %d (3 wrapped lines), got %d", wantLong, got)
+	}
+}

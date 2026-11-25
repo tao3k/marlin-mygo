@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -135,12 +137,32 @@ type RankedCommand struct {
 // FuzzyScore computes a deterministic, zero-allocation subsequence match score
 // rewarding exact matches, prefixes, word boundaries ('-', '_', '/', '.', CamelCase),
 // and consecutive runs while lightly penalizing gaps and excess length.
+// Pure-ASCII inputs take a byte-level fast path (zero allocations, as measured
+// by the engine benchmarks); inputs containing non-ASCII runes fall back to a
+// case-folded rune path so CJK command names rank like any other subsequence.
 func FuzzyScore(query, target string) (int32, bool) {
-	qLen := len(query)
-	tLen := len(target)
-	if qLen == 0 {
+	if len(query) == 0 {
 		return 1, true
 	}
+	if isASCII(query) && isASCII(target) {
+		return fuzzyScoreASCII(query, target)
+	}
+	return fuzzyScoreUnicode(query, target)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// fuzzyScoreASCII is the zero-allocation byte-level fast path over ASCII input.
+func fuzzyScoreASCII(query, target string) (int32, bool) {
+	qLen := len(query)
+	tLen := len(target)
 	if qLen > tLen {
 		return 0, false
 	}
@@ -160,6 +182,59 @@ func FuzzyScore(query, target string) (int32, bool) {
 		if ti == 0 {
 			score += 32 // prefix start bonus
 		} else if isBoundary(target[ti-1], target[ti]) {
+			score += 18 // segment / CamelCase boundary bonus
+		}
+		if ti == prevMatch+1 {
+			consecutive++
+			score += 12 * consecutive
+		} else {
+			if prevMatch >= 0 {
+				gap := int32(ti - prevMatch - 1)
+				score -= min(gap, 8)
+			}
+			consecutive = 0
+		}
+		prevMatch = ti
+		qi++
+	}
+	if qi != qLen {
+		return 0, false
+	}
+	if qLen == tLen {
+		score += 64 // exact length match
+	}
+	score -= int32(tLen - qLen)
+	return score, true
+}
+
+// fuzzyScoreUnicode is the rune-level case-folded path for non-ASCII input.
+// Matching operates on folded runes, so CJK command names rank like any other
+// subsequence; boundary bonuses still apply between a delimiter rune and an
+// uppercase rune (CamelCase segments inside localized names).
+func fuzzyScoreUnicode(query, target string) (int32, bool) {
+	qRunes := []rune(query)
+	tRunes := []rune(target)
+	qLen := len(qRunes)
+	tLen := len(tRunes)
+	if qLen > tLen {
+		return 0, false
+	}
+
+	var score int32
+	qi := 0
+	prevMatch := -2
+	consecutive := int32(0)
+
+	for ti := 0; ti < tLen && qi < qLen; ti++ {
+		tc := unicode.ToLower(tRunes[ti])
+		qc := unicode.ToLower(qRunes[qi])
+		if tc != qc {
+			continue
+		}
+		score += 10
+		if ti == 0 {
+			score += 32 // prefix start bonus
+		} else if isBoundaryRune(tRunes[ti-1], tRunes[ti]) {
 			score += 18 // segment / CamelCase boundary bonus
 		}
 		if ti == prevMatch+1 {
@@ -228,4 +303,12 @@ func isBoundary(prev, cur byte) bool {
 		return true
 	}
 	return prev >= 'a' && prev <= 'z' && cur >= 'A' && cur <= 'Z'
+}
+
+func isBoundaryRune(prev, cur rune) bool {
+	switch prev {
+	case '-', '_', '/', '.', ' ':
+		return true
+	}
+	return unicode.IsLower(prev) && unicode.IsUpper(cur)
 }
