@@ -275,20 +275,31 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				})
 			}
 			if len(a.QuickPlugins) > 0 && a.OnQuickPluginSelect != nil {
-				ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).Bold().TextColor(t.TextMuted)
+				ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).FontWeight(700).LetterSpacing(0.5).TextColor(t.TextMuted)
 				activeID := ""
 				if a.ActiveQuickPluginID != nil {
 					activeID = a.ActiveQuickPluginID()
 				}
 				ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 					for _, qp := range a.QuickPlugins {
-						var clicked bool
-						if qp.PluginID == activeID {
-							clicked = ui.PrimaryButton(c.Key(qp.PluginID), qp.Label).Clicked()
+						active := qp.PluginID == activeID
+						rowBtn := ui.ButtonBase(c.Key(qp.PluginID)).Label(qp.Label).
+							Padding(8, 12).Radius(12).AlignItems(ui.Center).Justify(ui.Start).Gap(8)
+						txtCol := toColor(dt.Ink)
+						if active {
+							topCol := toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.12))
+							rowBtn.Gradient(topCol, toColor(dt.Accent), 180).
+								InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.24)).
+								Shadow(0, 3, 10, -2, rgbaFromRGB(dt.Accent, 0.34))
+							txtCol = toColor(dt.InkOnAccent)
 						} else {
-							clicked = ui.Button(c.Key(qp.PluginID), qp.Label).Clicked()
+							rowBtn.Background(toColor(dt.SurfaceElevated)).
+								Border(1, glassBorderColor(dt))
 						}
-						if clicked {
+						rowBtn.Children(func() {
+							ui.Text(c, qp.Label).FontSize(12).FontWeight(600).TextColor(txtCol).MaxLines(1)
+						})
+						if rowBtn.Clicked() {
 							a.OnQuickPluginSelect(qp.PluginID)
 						}
 					}
@@ -296,7 +307,7 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			}
 			a.renderTargetSidebar(c, t)
 			if a.OnAddRemoteTarget != nil {
-				if ui.Button(c.Key("open-add-remote"), "+ Remote Target").Clicked() {
+				if ApplePillButton(c, "open-add-remote", "+ Remote Target", BtnTinted, dt, nil, true).Clicked() {
 					if a.addRemoteState == nil {
 						a.addRemoteState = NewSchemaFormState(remoteTargetFormSchema(), nil)
 					}
@@ -314,7 +325,7 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				if a.PluginMountedFn != nil && a.PluginMountedFn() {
 					label = "Unmount Plugin"
 				}
-				if ui.Button(c.Key("toggle-plugin"), label).Clicked() {
+				if ApplePillButton(c, "toggle-plugin", label, BtnGlass, dt, nil, true).Clicked() {
 					a.OnTogglePlugin()
 				}
 			}
@@ -450,21 +461,13 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 		}
 		if a.Windows != nil && a.OnSelectPerspective != nil {
 			activePersp := a.Windows.Snapshot().Perspective
-			for _, p := range []struct{ id, label string }{
-				{"focus", "Focus"},
-				{"split", "Split"},
-				{"cockpit", "Cockpit"},
-				{"zen", "Zen"},
-			} {
-				var clicked bool
-				if activePersp == p.id {
-					clicked = ui.PrimaryButton(c.Key("persp-"+p.id), p.label).Clicked()
-				} else {
-					clicked = ui.Button(c.Key("persp-"+p.id), p.label).Clicked()
-				}
-				if clicked {
-					a.OnSelectPerspective(p.id)
-				}
+			if chosen := AppleSegmentedControl(c, "persp", []SegmentedItem{
+				{ID: "focus", Label: "Focus"},
+				{ID: "split", Label: "Split"},
+				{ID: "cockpit", Label: "Cockpit"},
+				{ID: "zen", Label: "Zen"},
+			}, activePersp, a.cachedDerivedTheme, true); chosen != "" {
+				a.OnSelectPerspective(chosen)
 			}
 		}
 		a.mu.Lock()
@@ -479,7 +482,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			if !a.TranscriptHidden {
 				chatLabel = "Hide Chat"
 			}
-			if ui.Button(c.Key("toggle-chat"), chatLabel).Clicked() {
+			if ApplePillButton(c, "toggle-chat", chatLabel, BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.TranscriptHidden = !a.TranscriptHidden
 			}
 		}
@@ -488,7 +491,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			if a.ActiveThemeNameFn != nil && a.ActiveThemeNameFn() != "" {
 				themeLbl = a.ActiveThemeNameFn()
 			}
-			if ui.Button(c.Key("cycle-theme"), themeLbl).Clicked() {
+			if AppleSwatchPill(c, "cycle-theme", themeLbl, a.cachedDerivedTheme.Accent, false, a.cachedDerivedTheme).Clicked() {
 				a.OnCycleTheme()
 			}
 		} else if a.OnToggleTheme != nil {
@@ -496,12 +499,12 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			if a.IsLightThemeFn != nil && a.IsLightThemeFn() {
 				themeLbl = "Dark"
 			}
-			if ui.Button(c.Key("toggle-theme"), themeLbl).Clicked() {
+			if ApplePillButton(c, "toggle-theme", themeLbl, BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.OnToggleTheme()
 			}
 		}
 		if a.Projection != nil {
-			if ui.Button(c.Key("open-projection"), "Inspect").Clicked() {
+			if ApplePillButton(c, "open-projection", "Inspect", BtnTinted, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.projectionOpen = true
 				a.paletteOpen = false
 				a.marketplaceOpen = false
@@ -511,7 +514,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			}
 		}
 		if a.SettingsSchema != nil && a.SettingsState != nil && a.OnCycleTheme == nil {
-			if ui.Button(c.Key("open-settings"), "Settings").Clicked() {
+			if ApplePillButton(c, "open-settings", "Settings", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.settingsOpen = true
 				a.paletteOpen = false
 				a.marketplaceOpen = false
@@ -519,11 +522,11 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			}
 		}
 		if a.Marketplace != nil {
-			if ui.Button(c.Key("open-marketplace"), "Marketplace").Clicked() {
+			if ApplePillButton(c, "open-marketplace", "Marketplace", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 				a.marketplaceOpen = true
 			}
 		}
-		if ui.Button(c.Key("open-palette"), "Cmd+K Commands").Clicked() {
+		if ApplePillButton(c, "open-palette", "Cmd+K Commands", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
 			a.paletteOpen = true
 			a.paletteQuery = ""
 			a.paletteRankValid = false
@@ -531,7 +534,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			a.gateOpen = false
 		}
 		if a.pendingGate != nil {
-			if ui.PrimaryButton(c.Key("open-gate"), "Review Gate").Clicked() {
+			if ApplePillButton(c, "open-gate", "Review Gate", BtnPrimary, a.cachedDerivedTheme, svgIconShield, true).Clicked() {
 				a.gateOpen = true
 			}
 		}

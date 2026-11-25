@@ -455,27 +455,40 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 }
 
 func (m *MobileCompanionApp) renderStatusBar(c *ui.Context, dt DerivedTheme, plat MobilePlatform, dev MobileDeviceSpec) {
-	ui.Row(c).Height(dev.StatusBarHeight).Padding(6, 20, 4, 20).AlignItems(ui.Center).
-		Background(toColor(dt.Surface)).Children(func() {
-		ui.Text(c, "9:41").FontSize(12).Bold().TextColor(toColor(dt.Ink))
+	ui.Row(c).Height(dev.StatusBarHeight).Padding(8, 22, 4, 22).AlignItems(ui.Center).
+		Background(toColor(dt.Canvas)).Children(func() {
+		ui.Text(c, "9:41").FontSize(13).FontWeight(600).TextColor(toColor(dt.Ink))
 		ui.Spacer(c)
 		if plat == MobilePlatformIOS {
-			// Dynamic Island silhouette.
-			ui.Row(c).Width(92).Height(22).Radius(11).
-				Background(ui.RGB(8, 10, 14)).Border(1, toColor(dt.BorderSubtle)).Children(func() {})
+			// Authentic iPhone Dynamic Island pill with subtle lens reflection.
+			ui.Row(c).Width(98).Height(26).Radius(13).Padding(0, 10).AlignItems(ui.Center).Justify(ui.End).
+				Background(ui.RGB(5, 6, 9)).
+				Border(1, ui.RGBA(255, 255, 255, 0.08)).
+				Shadow(0, 2, 8, 0, ui.RGBA(0, 0, 0, 0.30)).Children(func() {
+				ui.Box(c).Size(8, 8).Radius(4).Background(ui.RGB(18, 24, 38)).
+					Border(1, ui.RGBA(96, 165, 250, 0.25))
+			})
 		} else {
-			// Android punch-hole camera cutout.
-			ui.Row(c).Width(14).Height(14).Radius(7).
-				Background(ui.RGB(8, 10, 14)).Border(1, toColor(dt.BorderSubtle)).Children(func() {})
+			// Authentic Android Pixel punch-hole camera cutout.
+			ui.Row(c).Width(16).Height(16).Radius(8).AlignItems(ui.Center).Justify(ui.Center).
+				Background(ui.RGB(6, 8, 12)).Border(1, ui.RGBA(255, 255, 255, 0.10)).Children(func() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(ui.RGB(20, 28, 44))
+			})
 		}
 		ui.Spacer(c)
-		ui.Text(c, "5G · 98%").FontSize(11).Bold().TextColor(toColor(dt.InkMuted))
+		ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "5G").FontSize(11).FontWeight(600).TextColor(toColor(dt.Ink))
+			ui.Row(c).Padding(1, 5).Radius(4).Background(rgbaFromRGB(dt.Success, 0.20)).
+				Border(1, rgbaFromRGB(dt.Success, 0.35)).Children(func() {
+				ui.Text(c, "98%").FontSize(10).FontWeight(700).TextColor(toColor(dt.Success))
+			})
+		})
 	})
 }
 
 func (m *MobileCompanionApp) renderNavigationBar(
 	c *ui.Context,
-	t *ui.Theme,
+	_ *ui.Theme,
 	dt DerivedTheme,
 	plat MobilePlatform,
 	tab MobileTab,
@@ -485,32 +498,38 @@ func (m *MobileCompanionApp) renderNavigationBar(
 	togglePlatformTo *MobilePlatform,
 ) {
 	heading := mobileTabHeading(tab, plat)
-	titleSize := float32(22)
+	titleSize := float32(26)
 	if plat == MobilePlatformAndroid {
-		titleSize = 19
+		titleSize = 22
 	}
-	ui.Column(c).Padding(6, 16, 10, 16).Gap(4).AlignItems(ui.Stretch).
-		Background(toColor(dt.Surface)).BorderWidth(0, 0, 1, 0).BorderColor(toColor(dt.BorderSubtle)).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Text(c, heading).FontSize(titleSize).Bold().TextColor(toColor(dt.Ink))
+	ui.Column(c).Padding(4, 16, 10, 16).Gap(8).AlignItems(ui.Stretch).
+		Background(toColor(dt.Canvas)).BorderWidth(0, 0, 1, 0).BorderColor(glassBorderColor(dt)).Children(func() {
+		// Row 1: Platform Segmented Control (iOS | Android always both visible!) + Theme Swatch Pill.
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			chosen := AppleSegmentedControl(c, "mob-plat", []SegmentedItem{
+				{ID: string(MobilePlatformIOS), Label: "iOS"},
+				{ID: string(MobilePlatformAndroid), Label: "Android"},
+			}, string(plat), dt, true)
+			if chosen != "" && MobilePlatform(chosen) != plat {
+				*togglePlatformTo = MobilePlatform(chosen)
+			}
 			ui.Spacer(c)
 			if gateCount > 0 {
-				ui.Textf(c, "%d GATE", gateCount).FontSize(11).Bold().TextColor(toColor(dt.Warning))
+				AppleBadgePill(c, fmt.Sprintf("%d GATE", gateCount), dt.Warning, dt)
 			}
-			platLbl := "iOS"
-			nextPlat := MobilePlatformAndroid
-			if plat == MobilePlatformAndroid {
-				platLbl = "Android"
-				nextPlat = MobilePlatformIOS
-			}
-			if ui.Button(c.Key("mob-plat"), platLbl).Clicked() {
-				*togglePlatformTo = nextPlat
-			}
-			if ui.Button(c.Key("mob-theme"), themeName).Clicked() {
+			if AppleSwatchPill(c, "mob-theme", themeName, dt.Accent, false, dt).Clicked() {
 				*cycleThemeNow = true
 			}
 		})
-		ui.Text(c, m.TargetLabel).FontSize(11).TextColor(t.TextMuted)
+
+		// Row 2: Authentic Apple Large Title (or Material 3 Top App Bar Title) + live connection dot.
+		ui.Column(c).Gap(2).Children(func() {
+			ui.Text(c, heading).FontSize(titleSize).FontWeight(700).LetterSpacing(-0.4).TextColor(toColor(dt.Ink))
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(toColor(dt.Success))
+				ui.Text(c, m.TargetLabel).FontSize(11.5).FontWeight(500).TextColor(toColor(dt.InkMuted))
+			})
+		})
 	})
 }
 
@@ -518,13 +537,13 @@ func (m *MobileCompanionApp) renderChatTab(
 	c *ui.Context,
 	_ *ui.Theme,
 	dt DerivedTheme,
-	dev MobileDeviceSpec,
+	_ MobileDeviceSpec,
 	msgs []MobileMessage,
 	chatDraft *string,
 	submitPrompt *string,
 ) {
-	// Message feed with authentic mobile left/right bubbles.
-	ui.Column(c).Grow(1).MinHeight(0).Gap(10).AlignItems(ui.Stretch).Children(func() {
+	// Message feed with authentic iMessage / Apple Intelligence asymmetric bubbles.
+	ui.Column(c).Grow(1).MinHeight(0).Gap(12).AlignItems(ui.Stretch).Children(func() {
 		start := 0
 		if len(msgs) > 8 {
 			start = len(msgs) - 8
@@ -533,24 +552,37 @@ func (m *MobileCompanionApp) renderChatTab(
 			msg := msgs[i]
 			if msg.FromUser {
 				ui.Row(c.Key(fmt.Sprintf("mbub-%d", i))).Justify(ui.End).Children(func() {
-					ui.Column(c).MaxWidth(285).Padding(10, 14).Gap(3).Radius(dev.CardRadius).
-						Background(toColor(dt.Accent)).Children(func() {
-						ui.Text(c, msg.Text).FontSize(14).TextColor(toColor(dt.InkOnAccent))
+					topCol := toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.10))
+					ui.Column(c).MaxWidth(286).Padding(11, 15).Gap(4).Radius(20, 20, 6, 20).
+						Gradient(topCol, toColor(dt.Accent), 180).
+						InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.24)).
+						Shadow(0, 6, 18, -4, rgbaFromRGB(dt.Accent, 0.36)).Children(func() {
+						ui.Text(c, msg.Text).FontSize(14).LineHeight(1.36).TextColor(toColor(dt.InkOnAccent))
 						if msg.Meta != "" {
-							ui.Text(c, msg.Meta).FontSize(10).TextColor(toColor(dt.InkOnAccent))
+							ui.Text(c, msg.Meta).FontSize(10).FontWeight(500).TextColor(ui.RGBA(dt.InkOnAccent.R, dt.InkOnAccent.G, dt.InkOnAccent.B, 0.78))
 						}
 					})
 				})
 			} else {
 				ui.Row(c.Key(fmt.Sprintf("mbub-%d", i))).Justify(ui.Start).Children(func() {
-					ui.Column(c).MaxWidth(300).Padding(10, 14).Gap(3).Radius(dev.CardRadius).
-						Background(toColor(dt.SurfaceElevated)).Border(1, toColor(dt.BorderSubtle)).Children(func() {
+					bubbleBg := toColor(dt.SurfaceElevated)
+					if dt.Appearance == AppearanceLight {
+						bubbleBg = ui.RGB(255, 255, 255)
+					}
+					ui.Column(c).MaxWidth(306).Padding(12, 15).Gap(4).Radius(20, 20, 20, 6).
+						Background(bubbleBg).
+						Border(1, glassBorderColor(dt)).
+						InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
+						Shadow(0, 4, 14, -4, ambientShadowColor(dt)).Children(func() {
 						if msg.Sender != "" {
-							ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(toColor(dt.Accent))
+							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+								ui.Icon(c, svgIconSparkles).Size(12, 12).TextColor(toColor(dt.Accent))
+								ui.Text(c, msg.Sender).FontSize(11.5).FontWeight(700).TextColor(toColor(dt.Accent))
+							})
 						}
-						ui.Text(c, msg.Text).FontSize(14).TextColor(toColor(dt.Ink))
+						ui.Text(c, msg.Text).FontSize(14).LineHeight(1.38).TextColor(toColor(dt.Ink))
 						if msg.Meta != "" {
-							ui.Text(c, msg.Meta).FontSize(10).TextColor(toColor(dt.InkMuted))
+							ui.Text(c, msg.Meta).FontSize(10).FontWeight(500).TextColor(toColor(dt.InkMuted))
 						}
 					})
 				})
@@ -558,23 +590,32 @@ func (m *MobileCompanionApp) renderChatTab(
 		}
 		ui.Spacer(c)
 
-		// One-tap mobile prompt chips right above the thumb-zone composer.
-		ui.Row(c).Gap(6).Children(func() {
+		// Apple HIG Tinted quick-suggestion capsules above the floating composer pill.
+		ui.Row(c).Gap(8).Children(func() {
 			for _, chip := range []struct{ key, label, prompt string }{
 				{"chip-agenda", "Today's Agenda", "Summarize today's Org Agenda and next time block."},
 				{"chip-gates", "Check Gates", "List pending Tier-0 approval gates across devices."},
 			} {
-				if ui.Button(c.Key(chip.key), chip.label).Clicked() {
+				if ApplePillButton(c, chip.key, chip.label, BtnTinted, dt, svgIconSparkles, true).Clicked() {
 					*submitPrompt = chip.prompt
 				}
 			}
 		})
 
-		// Thumb-zone mobile composer bar.
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(8, 10).Radius(dev.CardRadius).
-			Background(toColor(dt.Surface)).Border(1, toColor(dt.Border)).Children(func() {
-			ui.TextInput(c.Key("mob-chat-input"), chatDraft).Placeholder("Message Marlin...").Grow(1)
-			if ui.PrimaryButton(c.Key("mob-chat-send"), "Send").Clicked() {
+		// Floating Apple Liquid Glass capsule composer with borderless input + circular ↑ send button.
+		compBg := toColor(dt.SurfaceElevated)
+		if dt.Appearance == AppearanceLight {
+			compBg = ui.RGB(255, 255, 255)
+		}
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8, 6, 16).Radius(26).
+			Background(compBg).
+			Border(1, glassBorderColor(dt)).
+			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
+			Shadow(0, 8, 22, -6, ambientShadowColor(dt)).Children(func() {
+			ui.TextInputBase(c.Key("mob-chat-input"), chatDraft).
+				Placeholder("Message Marlin...").
+				FontSize(14).TextColor(toColor(dt.Ink)).Grow(1).Padding(6, 2)
+			if AppleCircleIconButton(c, "mob-chat-send", "Send", svgIconArrowUp, 34, dt).Clicked() {
 				if trimmed := strings.TrimSpace(*chatDraft); trimmed != "" {
 					*submitPrompt = trimmed
 					*chatDraft = ""
@@ -588,35 +629,43 @@ func (m *MobileCompanionApp) renderGatesTab(
 	c *ui.Context,
 	_ *ui.Theme,
 	dt DerivedTheme,
-	dev MobileDeviceSpec,
+	_ MobileDeviceSpec,
 	gates []PendingGateView,
 	decideGateID *string,
 	decideApprove *bool,
 ) {
-	ui.Text(c, "PENDING APPROVAL GATES").FontSize(11).Bold().TextColor(toColor(dt.InkMuted))
+	ui.Text(c, "PENDING APPROVAL GATES").FontSize(11).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
 	if len(gates) == 0 {
-		ui.Column(c).Padding(18).Gap(6).Radius(dev.CardRadius).AlignItems(ui.Center).
-			Background(toColor(dt.Surface)).Border(1, toColor(dt.BorderSubtle)).Children(func() {
-			ui.Text(c, "All clear").FontSize(16).Bold().TextColor(toColor(dt.Success))
-			ui.Text(c, "Zero pending Tier-0 approval gates.").FontSize(13).TextColor(toColor(dt.InkMuted))
+		AppleGlassCard(c, "mgates-empty", dt, 22, 22, 6, func() {
+			ui.Row(c).Justify(ui.Center).Children(func() {
+				ui.Icon(c, svgIconShield).Size(28, 28).TextColor(toColor(dt.Success))
+			})
+			ui.Row(c).Justify(ui.Center).Children(func() {
+				ui.Text(c, "All Clear").FontSize(17).FontWeight(700).TextColor(toColor(dt.Ink))
+			})
+			ui.Row(c).Justify(ui.Center).Children(func() {
+				ui.Text(c, "Zero pending Tier-0 approval gates.").FontSize(13).TextColor(toColor(dt.InkMuted))
+			})
 		})
 		return
 	}
 	for _, g := range gates {
 		gate := g
-		ui.Column(c.Key("mgate-"+gate.GateID)).Padding(14).Gap(8).Radius(dev.CardRadius).
-			Background(toColor(dt.Surface)).Border(1, toColor(dt.Warning)).Children(func() {
-			ui.Text(c, gate.ToolName).Bold().FontSize(13).TextColor(toColor(dt.Warning))
-			ui.Text(c, gate.Prompt).FontSize(15).Bold().TextColor(toColor(dt.Ink))
+		AppleGlassCard(c, "mgate-"+gate.GateID, dt, 22, 16, 10, func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+				AppleBadgePill(c, "TIER-0 GATE", dt.Warning, dt)
+				ui.Text(c, gate.ToolName).FontSize(12).FontWeight(600).TextColor(toColor(dt.InkMuted))
+			})
+			ui.Text(c, gate.Prompt).FontSize(16).FontWeight(700).LineHeight(1.3).TextColor(toColor(dt.Ink))
 			if gate.Description != "" {
-				ui.Text(c, gate.Description).FontSize(12).TextColor(toColor(dt.InkMuted))
+				ui.Text(c, gate.Description).FontSize(13).LineHeight(1.35).TextColor(toColor(dt.InkSecondary))
 			}
-			ui.Row(c).Gap(10).Children(func() {
-				if ui.Button(c.Key("mob-rej-"+gate.GateID), "Reject").Grow(1).Clicked() {
+			ui.Row(c).Gap(10).Padding(4, 0, 0, 0).Children(func() {
+				if ApplePillButton(c, "mob-rej-"+gate.GateID, "Reject", BtnDestructive, dt, svgIconXMark, false).Grow(1).Clicked() {
 					*decideGateID = gate.GateID
 					*decideApprove = false
 				}
-				if ui.PrimaryButton(c.Key("mob-app-"+gate.GateID), "Approve Once").Grow(1).Clicked() {
+				if ApplePillButton(c, "mob-app-"+gate.GateID, "Approve Once", BtnPrimary, dt, svgIconCheck, false).Grow(1).Clicked() {
 					*decideGateID = gate.GateID
 					*decideApprove = true
 				}
@@ -629,33 +678,38 @@ func (m *MobileCompanionApp) renderCaptureTab(
 	c *ui.Context,
 	_ *ui.Theme,
 	dt DerivedTheme,
-	dev MobileDeviceSpec,
+	_ MobileDeviceSpec,
 	plat MobilePlatform,
 	channel string,
 	nextChannel *string,
 	draft *string,
 	submitCapture *string,
 ) {
-	ui.Text(c, "CAPTURE CHANNEL").FontSize(11).Bold().TextColor(toColor(dt.InkMuted))
+	ui.Text(c, "NATIVE CAPTURE CHANNEL").FontSize(11).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
 	ui.Row(c).Gap(6).Children(func() {
 		for _, ch := range m.platformChannels(plat) {
+			variant := BtnGlass
 			if ch.id == channel {
-				if ui.PrimaryButton(c.Key("mch-"+ch.id), ch.label).Clicked() {
-					*nextChannel = ch.id
-				}
-			} else {
-				if ui.Button(c.Key("mch-"+ch.id), ch.label).Clicked() {
-					*nextChannel = ch.id
-				}
+				variant = BtnPrimary
+			}
+			if ApplePillButton(c, "mch-"+ch.id, ch.label, variant, dt, nil, true).Clicked() {
+				*nextChannel = ch.id
 			}
 		}
 	})
 
-	ui.Column(c).Padding(14).Gap(10).Radius(dev.CardRadius).
-		Background(toColor(dt.Surface)).Border(1, toColor(dt.Border)).Children(func() {
-		ui.Text(c, "Route: "+channel).FontSize(12).TextColor(toColor(dt.Accent))
-		ui.TextInput(c.Key("mob-cap-input"), draft).Placeholder("Voice note, screenshot OCR, or Org task...")
-		if ui.PrimaryButton(c.Key("mob-cap-send"), "Capture to Inbox").Clicked() {
+	AppleGlassCard(c, "mcap-card", dt, 22, 16, 12, func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Icon(c, svgIconBolt).Size(14, 14).TextColor(toColor(dt.Accent))
+			ui.Text(c, "Route: "+channel).FontSize(12).FontWeight(600).TextColor(toColor(dt.Accent))
+		})
+		ui.Row(c).Padding(10, 14).Radius(16).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			ui.TextInputBase(c.Key("mob-cap-input"), draft).
+				Placeholder("Voice note, screenshot OCR, or Org task...").
+				FontSize(14).TextColor(toColor(dt.Ink)).Grow(1)
+		})
+		if ApplePillButton(c, "mob-cap-send", "Capture to Inbox", BtnPrimary, dt, svgIconBolt, false).Clicked() {
 			if trimmed := strings.TrimSpace(*draft); trimmed != "" {
 				*submitCapture = trimmed
 				*draft = ""
@@ -668,7 +722,7 @@ func (m *MobileCompanionApp) renderPacksTab(
 	c *ui.Context,
 	_ *ui.Theme,
 	dt DerivedTheme,
-	dev MobileDeviceSpec,
+	_ MobileDeviceSpec,
 	plat MobilePlatform,
 	activeThemeID string,
 	packs []MobileDeclarativePack,
@@ -676,50 +730,68 @@ func (m *MobileCompanionApp) renderPacksTab(
 	selectThemeID *string,
 	activatePackID *string,
 ) {
-	// Native OS Bridge status card.
-	bridgeSummary := "iOS Swift Bridge · PhotoKit + Vision OCR + App Group ShareExt"
+	// Native OS Bridge status card (Apple Settings grouped inset card).
+	bridgeTitle := "iOS Swift Native Bridge"
+	bridgeDetail := "PhotoKit · Vision OCR · Contacts · UserNotifications · AppGroup"
 	if plat == MobilePlatformAndroid {
-		bridgeSummary = "Android Kotlin Bridge · MediaStore + NotificationChannel + Share Intent"
+		bridgeTitle = "Android Kotlin Native Bridge"
+		bridgeDetail = "MediaStore · Vision OCR · ContactsContract · NotificationManager · Share Intent"
 	}
-	ui.Column(c).Padding(12).Gap(4).Radius(dev.CardRadius).
-		Background(toColor(dt.Surface)).Border(1, toColor(dt.BorderSubtle)).Children(func() {
-		ui.Text(c, "NATIVE OS CAPABILITIES").FontSize(10).Bold().TextColor(toColor(dt.InkMuted))
-		ui.Text(c, bridgeSummary).FontSize(12).TextColor(toColor(dt.Ink))
+	AppleGlassCard(c, "mbridge-card", dt, 20, 14, 5, func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Box(c).Size(7, 7).Radius(3.5).Background(toColor(dt.Success))
+			ui.Text(c, bridgeTitle).FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+		})
+		ui.Text(c, bridgeDetail).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.InkMuted))
 	})
 
-	// Curated 5-theme picker.
-	ui.Text(c, "APPEARANCE & THEME").FontSize(10).Bold().TextColor(toColor(dt.InkMuted))
-	ui.Row(c).Gap(6).Children(func() {
-		for _, p := range BuiltinThemes() {
-			if p.ID == activeThemeID {
-				if ui.PrimaryButton(c.Key("mthm-"+p.ID), p.Name).Clicked() {
-					*selectThemeID = p.ID
-				}
-			} else {
-				if ui.Button(c.Key("mthm-"+p.ID), p.Name).Clicked() {
+	// Curated 5-theme swatch pills (two tidy rows so zero horizontal clipping on 393px phone).
+	ui.Text(c, "APPEARANCE & THEME").FontSize(10.5).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
+	themes := BuiltinThemes()
+	ui.Column(c).Gap(6).Children(func() {
+		ui.Row(c).Gap(6).Children(func() {
+			for i := 0; i < 3 && i < len(themes); i++ {
+				p := themes[i]
+				if AppleSwatchPill(c, "mthm-"+p.ID, p.Name, p.Base.Accent, p.ID == activeThemeID, dt).Clicked() {
 					*selectThemeID = p.ID
 				}
 			}
-		}
+		})
+		ui.Row(c).Gap(6).Children(func() {
+			for i := 3; i < len(themes); i++ {
+				p := themes[i]
+				if AppleSwatchPill(c, "mthm-"+p.ID, p.Name, p.Base.Accent, p.ID == activeThemeID, dt).Clicked() {
+					*selectThemeID = p.ID
+				}
+			}
+		})
 	})
 
-	ui.Text(c, "DECLARATIVE OTA PACKS (APP STORE 2.5.2 SAFE)").FontSize(10).Bold().TextColor(toColor(dt.InkMuted))
+	ui.Text(c, "DECLARATIVE OTA PACKS (APP STORE 2.5.2 SAFE)").FontSize(10.5).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
 	if denial != "" {
-		ui.Text(c, denial).FontSize(11).Bold().TextColor(toColor(dt.Warning))
+		ui.Row(c).Padding(10, 12).Radius(14).
+			Background(rgbaFromRGB(dt.Warning, 0.14)).Border(1, rgbaFromRGB(dt.Warning, 0.30)).Children(func() {
+			ui.Text(c, denial).FontSize(11.5).FontWeight(600).TextColor(toColor(dt.Warning))
+		})
 	}
 	for _, pk := range packs {
 		p := pk
-		ui.Column(c.Key("mpk-"+p.PluginID)).Padding(12).Gap(5).Radius(dev.CardRadius).
-			Background(toColor(dt.Surface)).Border(1, toColor(dt.Border)).Children(func() {
-			ui.Textf(c, "%s v%s [%s]", p.PluginID, p.Version, p.Runtime).Bold().FontSize(13).TextColor(toColor(dt.Ink))
+		AppleGlassCard(c, "mpk-"+p.PluginID, dt, 20, 14, 6, func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, p.PluginID).FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				ui.Textf(c, "v%s", p.Version).FontSize(11).TextColor(toColor(dt.InkMuted))
+			})
 			if p.Summary != "" {
-				ui.Text(c, p.Summary).FontSize(11).TextColor(toColor(dt.InkMuted))
+				ui.Text(c, p.Summary).FontSize(11.5).TextColor(toColor(dt.InkSecondary))
 			}
 			btnLbl := "Apply " + p.PluginID
+			variant := BtnTinted
 			if p.Active {
 				btnLbl = "Active: " + p.PluginID
+				variant = BtnSuccess
 			}
-			if ui.Button(c.Key("mob-pk-"+p.PluginID), btnLbl).Clicked() {
+			if ApplePillButton(c, "mob-pk-"+p.PluginID, btnLbl, variant, dt, nil, true).Clicked() {
 				*activatePackID = p.PluginID
 			}
 		})
@@ -736,48 +808,116 @@ func (m *MobileCompanionApp) renderBottomBar(
 	gateCount int,
 	nextTab *MobileTab,
 ) {
-	barBg := toColor(dt.Surface)
-	if plat == MobilePlatformAndroid {
-		barBg = toColor(dt.SurfaceElevated)
+	gateLabel := "Gates"
+	if gateCount > 0 {
+		gateLabel = fmt.Sprintf("Gates (%d)", gateCount)
+	}
+	tabs := []struct {
+		id         MobileTab
+		label      string
+		accessName string
+		icon       *ui.SVG
+		badge      int
+	}{
+		{MobileTabChat, "Chat", "Chat", svgIconChat, 0},
+		{MobileTabGates, gateLabel, gateLabel, svgIconShield, gateCount},
+		{MobileTabCapture, "Capture", "Capture", svgIconBolt, 0},
+		{MobileTabPacks, "Packs", "Packs", svgIconSparkles, 0},
+	}
+
+	if plat == MobilePlatformIOS {
+		// Authentic iOS 18/26 Floating Liquid Glass Capsule Tab Dock + Home Indicator.
+		dockBg := toColor(dt.SurfaceElevated)
+		if dt.Appearance == AppearanceLight {
+			dockBg = ui.RGBA(255, 255, 255, 0.94)
+		}
+		ui.Column(c).AlignItems(ui.Stretch).Background(toColor(dt.Canvas)).Padding(4, 14, 0, 14).Children(func() {
+			ui.Row(c).Padding(5, 6).Gap(4).Radius(28).AlignItems(ui.Center).
+				Background(dockBg).
+				Border(1, glassBorderColor(dt)).
+				InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
+				Shadow(0, 10, 26, -6, ambientShadowColor(dt)).Children(func() {
+				for _, tb := range tabs {
+					active := tab == tb.id
+					btnBg := ui.Transparent
+					ink := toColor(dt.InkMuted)
+					if active {
+						btnBg = rgbaFromRGB(dt.Accent, 0.16)
+						ink = toColor(dt.Accent)
+						if dt.Appearance == AppearanceDark {
+							ink = toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.28))
+						}
+					}
+					btn := ui.ButtonBase(c.Key("mtab-"+string(tb.id))).Label(tb.accessName).
+						Grow(1).Padding(7, 4).Radius(22).
+						Justify(ui.Center).AlignItems(ui.Center).Background(btnBg)
+					btn.Children(func() {
+						ui.Column(c).AlignItems(ui.Center).Gap(3).Children(func() {
+							ui.Icon(c, tb.icon).Size(18, 18).TextColor(ink)
+							lbl := ui.Text(c, tb.label).FontSize(10.5).TextColor(ink).NoWrap()
+							if active {
+								lbl.FontWeight(700)
+							} else {
+								lbl.FontWeight(500)
+							}
+						})
+					})
+					if btn.Clicked() {
+						*nextTab = tb.id
+					}
+				}
+			})
+			// Authentic iOS Home Indicator.
+			ui.Row(c).Padding(8, 0, 8, 0).Justify(ui.Center).Children(func() {
+				ui.Row(c).Width(dev.HomeBarWidth).Height(dev.HomeBarHeight).Radius(dev.HomeBarHeight / 2).
+					Background(toColor(dt.BorderStrong)).Children(func() {})
+			})
+		})
+		return
+	}
+
+	// Authentic Android Material 3 Navigation Bar with active tonal pill indicator + Gesture Pill.
+	barBg := toColor(dt.SurfaceElevated)
+	if dt.Appearance == AppearanceLight {
+		barBg = ui.RGB(250, 251, 254)
 	}
 	ui.Column(c).AlignItems(ui.Stretch).Background(barBg).
-		BorderWidth(1, 0, 0, 0).BorderColor(toColor(dt.BorderSubtle)).Children(func() {
-		ui.Row(c).Padding(8, 12, 6, 12).Gap(6).AlignItems(ui.Center).Children(func() {
-			gateLabel := "Gates"
-			if gateCount > 0 {
-				gateLabel = fmt.Sprintf("Gates (%d)", gateCount)
-			}
-			tabs := []struct {
-				id    MobileTab
-				label string
-			}{
-				{MobileTabChat, "Chat"},
-				{MobileTabGates, gateLabel},
-				{MobileTabCapture, "Capture"},
-				{MobileTabPacks, "Packs"},
-			}
+		BorderWidth(1, 0, 0, 0).BorderColor(glassBorderColor(dt)).Children(func() {
+		ui.Row(c).Padding(8, 10, 4, 10).Gap(4).AlignItems(ui.Center).Children(func() {
 			for _, tb := range tabs {
 				active := tab == tb.id
-				btnBg := ui.Transparent
-				txtColor := toColor(dt.InkMuted)
+				ink := toColor(dt.InkMuted)
 				if active {
-					btnBg = ui.RGBA(dt.Accent.R, dt.Accent.G, dt.Accent.B, 0.16)
-					txtColor = toColor(dt.Accent)
-				}
-				btn := ui.ButtonBase(c.Key("mtab-"+string(tb.id))).Grow(1).Padding(8, 6).Radius(12).
-					Justify(ui.Center).AlignItems(ui.Center).Background(btnBg)
-				btn.Children(func() {
-					lbl := ui.Text(c, tb.label).FontSize(12).TextColor(txtColor)
-					if active {
-						lbl.Bold()
+					ink = toColor(dt.Accent)
+					if dt.Appearance == AppearanceDark {
+						ink = toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.28))
 					}
+				}
+				btn := ui.ButtonBase(c.Key("mtab-"+string(tb.id))).Label(tb.accessName).
+					Grow(1).Padding(4, 4).Radius(16).
+					Justify(ui.Center).AlignItems(ui.Center).Background(ui.Transparent)
+				btn.Children(func() {
+					ui.Column(c).AlignItems(ui.Center).Gap(4).Children(func() {
+						pill := ui.Row(c).Width(56).Height(28).Radius(14).AlignItems(ui.Center).Justify(ui.Center)
+						if active {
+							pill.Background(rgbaFromRGB(dt.Accent, 0.20))
+						}
+						pill.Children(func() {
+							ui.Icon(c, tb.icon).Size(18, 18).TextColor(ink)
+						})
+						lbl := ui.Text(c, tb.label).FontSize(11).TextColor(ink).NoWrap()
+						if active {
+							lbl.FontWeight(700)
+						} else {
+							lbl.FontWeight(500)
+						}
+					})
 				})
 				if btn.Clicked() {
 					*nextTab = tb.id
 				}
 			}
 		})
-		// iOS Home Indicator or Android Gesture Pill safe area.
 		ui.Row(c).Padding(4, 0, 8, 0).Justify(ui.Center).Children(func() {
 			ui.Row(c).Width(dev.HomeBarWidth).Height(dev.HomeBarHeight).Radius(dev.HomeBarHeight / 2).
 				Background(toColor(dt.BorderStrong)).Children(func() {})

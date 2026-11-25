@@ -43,6 +43,10 @@ func TestMobileCompanionTabsGateApprovalCaptureAndAppStorePolicy(t *testing.T) {
 	if !tt.HasText("Marlin Mobile") || !tt.HasText("1 GATE") {
 		t.Fatalf("expected mobile header and gate badge, got %q", tt.Texts())
 	}
+	// Both iOS and Android segments must always be visible side-by-side in the platform switcher.
+	if !tt.HasText("iOS") || !tt.HasText("Android") {
+		t.Fatalf("expected both iOS and Android platform segments visible, got %q", tt.Texts())
+	}
 
 	// Switch to Gates tab and approve once.
 	if err := tt.Click("Gates (1)"); err != nil {
