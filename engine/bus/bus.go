@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-// Package bus implements the lock-free Copy-on-Write (COW) plugin event router,
-// power-of-two coalescing backpressure ring buffers, and O(1) circuit breakers
-// guaranteeing that slow or misbehaving TS/Go plugins never stall gRPC or UI frames.
+// Package bus implements a Copy-on-Write (COW) lock-free routing table
+// (atomic.Pointer with zero global bus lock on Publish), per-subscriber
+// power-of-two coalescing backpressure rings (protected by per-subscriber
+// mutexes), and O(1) circuit breakers so slow or misbehaving TS/Go plugins
+// never stall gRPC or UI frames.
 package bus
 
 import (
@@ -32,7 +34,8 @@ type Envelope struct {
 	Payload     []byte
 }
 
-// CoalescingRing is a bounded, power-of-two ring buffer with zero per-push
+// CoalescingRing is a bounded, power-of-two ring buffer synchronized by a
+// per-subscriber sync.Mutex (avoiding any global bus lock) with zero per-push
 // heap allocations after initialization.
 type CoalescingRing struct {
 	mu        sync.Mutex

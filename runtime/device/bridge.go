@@ -70,21 +70,55 @@ type CapabilityProvider interface {
 	Invoke(ctx context.Context, req InvocationRequest) (InvocationResult, error)
 }
 
+const defaultMaxConsumedReceipts = 16_384
+
 // Bridge validates OS permissions and one-shot Rust gate receipts before
 // dispatching any host-originated device.* invocation to platform adapters.
+// Consumed receipt IDs are retained in a bounded FIFO ring (default 16,384)
+// so long-lived desktop processes never grow memory monotonically; Rust
+// authority gate receipts are short-lived and bound to session generation.
 type Bridge struct {
-	targetKind       schema.TargetKind
-	mu               sync.RWMutex
-	providers        map[schema.CapabilityID]CapabilityProvider
-	consumedReceipts map[string]struct{}
+	targetKind          schema.TargetKind
+	mu                  sync.RWMutex
+	providers           map[schema.CapabilityID]CapabilityProvider
+	consumedReceipts    map[string]struct{}
+	receiptRing         []string
+	receiptHead         int
+	maxConsumedReceipts int
 }
 
 func NewBridge(kind schema.TargetKind) *Bridge {
 	return &Bridge{
-		targetKind:       kind,
-		providers:        make(map[schema.CapabilityID]CapabilityProvider),
-		consumedReceipts: make(map[string]struct{}),
+		targetKind:          kind,
+		providers:           make(map[schema.CapabilityID]CapabilityProvider),
+		consumedReceipts:    make(map[string]struct{}),
+		maxConsumedReceipts: defaultMaxConsumedReceipts,
 	}
+}
+
+// SetMaxConsumedReceipts bounds the FIFO consumed-receipt deduplication ring.
+func (b *Bridge) SetMaxConsumedReceipts(limit int) {
+	if limit < 1 {
+		limit = 1
+	}
+	b.mu.Lock()
+	b.maxConsumedReceipts = limit
+	for len(b.receiptRing) > limit {
+		oldest := b.receiptRing[b.receiptHead]
+		delete(b.consumedReceipts, oldest)
+		b.receiptRing = append(b.receiptRing[:b.receiptHead], b.receiptRing[b.receiptHead+1:]...)
+		if b.receiptHead >= len(b.receiptRing) {
+			b.receiptHead = 0
+		}
+	}
+	b.mu.Unlock()
+}
+
+// ConsumedReceiptCount reports the current size of the consumed-receipt cache.
+func (b *Bridge) ConsumedReceiptCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.consumedReceipts)
 }
 
 func (b *Bridge) TargetKind() schema.TargetKind { return b.targetKind }
@@ -163,6 +197,21 @@ func (b *Bridge) Dispatch(ctx context.Context, req InvocationRequest) (Invocatio
 		if _, used := b.consumedReceipts[req.GateReceiptID]; used {
 			b.mu.Unlock()
 			return InvocationResult{InvocationID: req.InvocationID, OK: false, ErrorMessage: ErrGateReceiptReplayed.Error()}, ErrGateReceiptReplayed
+		}
+		limit := b.maxConsumedReceipts
+		if limit <= 0 {
+			limit = defaultMaxConsumedReceipts
+		}
+		if len(b.receiptRing) >= limit {
+			evicted := b.receiptRing[b.receiptHead]
+			delete(b.consumedReceipts, evicted)
+			b.receiptRing[b.receiptHead] = req.GateReceiptID
+			b.receiptHead++
+			if b.receiptHead >= len(b.receiptRing) {
+				b.receiptHead = 0
+			}
+		} else {
+			b.receiptRing = append(b.receiptRing, req.GateReceiptID)
 		}
 		b.consumedReceipts[req.GateReceiptID] = struct{}{}
 		b.mu.Unlock()

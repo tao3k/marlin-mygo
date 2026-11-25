@@ -54,11 +54,52 @@ type Percentiles struct {
 	P99     time.Duration
 }
 
+// taskRing is an O(1) power-of-two circular queue avoiding O(n) slice memmoves
+// on every dequeue under P1/P2 backpressure.
+type taskRing struct {
+	buf   []Task
+	head  int
+	count int
+}
+
+func (q *taskRing) push(t Task) {
+	if q.count == len(q.buf) {
+		newCap := len(q.buf) * 2
+		if newCap < 16 {
+			newCap = 16
+		}
+		next := make([]Task, newCap)
+		if q.count > 0 {
+			first := min(q.count, len(q.buf)-q.head)
+			copy(next, q.buf[q.head:q.head+first])
+			if first < q.count {
+				copy(next[first:], q.buf[:q.count-first])
+			}
+		}
+		q.buf = next
+		q.head = 0
+	}
+	tail := (q.head + q.count) & (len(q.buf) - 1)
+	q.buf[tail] = t
+	q.count++
+}
+
+func (q *taskRing) pop() (Task, bool) {
+	if q.count == 0 {
+		return Task{}, false
+	}
+	t := q.buf[q.head]
+	q.buf[q.head] = Task{}
+	q.head = (q.head + 1) & (len(q.buf) - 1)
+	q.count--
+	return t, true
+}
+
 // FrameScheduler executes priority-tiered work inside a fixed frame budget
 // (e.g. 8.33ms for 120Hz or 16.67ms for 60Hz) and tracks rolling frame latency.
 type FrameScheduler struct {
 	mu      sync.Mutex
-	queues  [3][]Task
+	queues  [3]taskRing
 	history []time.Duration
 	histPos int
 	histLen int
@@ -81,7 +122,7 @@ func (s *FrameScheduler) Enqueue(t Task) {
 		t.Priority = PriorityBackground
 	}
 	s.mu.Lock()
-	s.queues[t.Priority] = append(s.queues[t.Priority], t)
+	s.queues[t.Priority].push(t)
 	s.mu.Unlock()
 }
 
@@ -127,8 +168,8 @@ func (s *FrameScheduler) RunFrame(budget time.Duration) FrameReport {
 	rep.OverBudget = rep.Duration > budget
 
 	s.mu.Lock()
-	rep.DeferredP1 = len(s.queues[PriorityActive])
-	rep.DeferredP2 = len(s.queues[PriorityBackground])
+	rep.DeferredP1 = s.queues[PriorityActive].count
+	rep.DeferredP2 = s.queues[PriorityBackground].count
 	s.history[s.histPos] = rep.Duration
 	s.histPos = (s.histPos + 1) % len(s.history)
 	if s.histLen < len(s.history) {
@@ -141,15 +182,7 @@ func (s *FrameScheduler) RunFrame(budget time.Duration) FrameReport {
 func (s *FrameScheduler) pop(p Priority) (Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	q := s.queues[p]
-	if len(q) == 0 {
-		return Task{}, false
-	}
-	t := q[0]
-	copy(q, q[1:])
-	q[len(q)-1] = Task{}
-	s.queues[p] = q[:len(q)-1]
-	return t, true
+	return s.queues[p].pop()
 }
 
 func (s *FrameScheduler) Percentiles() Percentiles {

@@ -10,6 +10,8 @@ import (
 	"math/rand/v2"
 	"slices"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 func linearOracleLookup(bindings []Binding, mode KeyScope, seq []string) (MatchKind, Binding) {
@@ -137,14 +139,46 @@ func hasASCIIPrefix(target, prefix string) bool {
 	return true
 }
 
+func isUnicodeSubsequence(query, target string) bool {
+	if len(query) == 0 {
+		return true
+	}
+	qi := 0
+	qr, qSize := utf8.DecodeRuneInString(query[qi:])
+	qInvalid := qr == utf8.RuneError && qSize == 1
+	qrFold := unicode.ToLower(qr)
+	for ti := 0; ti < len(target) && qi < len(query); {
+		tr, tSize := utf8.DecodeRuneInString(target[ti:])
+		tInvalid := tr == utf8.RuneError && tSize == 1
+		matched := false
+		if qInvalid || tInvalid {
+			matched = qInvalid && tInvalid && query[qi] == target[ti]
+		} else {
+			matched = unicode.ToLower(tr) == qrFold
+		}
+		if matched {
+			qi += qSize
+			if qi < len(query) {
+				qr, qSize = utf8.DecodeRuneInString(query[qi:])
+				qInvalid = qr == utf8.RuneError && qSize == 1
+				qrFold = unicode.ToLower(qr)
+			}
+		}
+		ti += tSize
+	}
+	return qi == len(query)
+}
+
 func FuzzFuzzyScore(f *testing.F) {
 	f.Add("ok", "org-kanban")
 	f.Add("Marlin", "marlin.plugin.reload")
 	f.Add("", "anything")
 	f.Add("zzz", "abc")
+	f.Add("\u00fcber", "\u00dcbersicht")
+	f.Add("\u4efb\u770b", "Org \u4efb\u52a1\u770b\u677f")
 	f.Fuzz(func(t *testing.T, query, target string) {
 		score, ok := FuzzyScore(query, target)
-		want := isASCIISubsequence(query, target)
+		want := isUnicodeSubsequence(query, target)
 		if ok != want {
 			t.Fatalf("FuzzyScore(%q, %q) ok=%v want %v", query, target, ok, want)
 		}

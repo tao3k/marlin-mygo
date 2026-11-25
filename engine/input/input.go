@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -132,34 +134,37 @@ type RankedCommand struct {
 	Score int32
 }
 
-// FuzzyScore computes a deterministic, zero-allocation subsequence match score
-// rewarding exact matches, prefixes, word boundaries ('-', '_', '/', '.', CamelCase),
-// and consecutive runs while lightly penalizing gaps and excess length.
+// FuzzyScore computes a deterministic, zero-allocation Unicode subsequence match
+// score rewarding exact matches, prefixes, word boundaries ('-', '_', '/', '.',
+// CamelCase, Unicode spaces/punctuation), and consecutive runs while lightly
+// penalizing gaps and excess length. Uses an inline ASCII fast path with full
+// UTF-8 Unicode folding fallback for CJK and international command titles.
 func FuzzyScore(query, target string) (int32, bool) {
 	qLen := len(query)
 	tLen := len(target)
 	if qLen == 0 {
 		return 1, true
 	}
-	if qLen > tLen {
-		return 0, false
-	}
 
+	// Fast ASCII-only path (preserves sub-70us 1,000-command zero-alloc ranking).
 	var score int32
 	qi := 0
 	prevMatch := -2
 	consecutive := int32(0)
 
 	for ti := 0; ti < tLen && qi < qLen; ti++ {
-		tc := toLowerASCII(target[ti])
-		qc := toLowerASCII(query[qi])
-		if tc != qc {
+		tb := target[ti]
+		qb := query[qi]
+		if tb >= utf8.RuneSelf || qb >= utf8.RuneSelf {
+			return fuzzyScoreUnicode(query, target)
+		}
+		if toLowerASCII(tb) != toLowerASCII(qb) {
 			continue
 		}
 		score += 10
 		if ti == 0 {
 			score += 32 // prefix start bonus
-		} else if isBoundary(target[ti-1], target[ti]) {
+		} else if isBoundary(target[ti-1], tb) {
 			score += 18 // segment / CamelCase boundary bonus
 		}
 		if ti == prevMatch+1 {
@@ -176,6 +181,11 @@ func FuzzyScore(query, target string) (int32, bool) {
 		qi++
 	}
 	if qi != qLen {
+		for ; qi < qLen; qi++ {
+			if query[qi] >= utf8.RuneSelf {
+				return fuzzyScoreUnicode(query, target)
+			}
+		}
 		return 0, false
 	}
 	if qLen == tLen {
@@ -183,6 +193,78 @@ func FuzzyScore(query, target string) (int32, bool) {
 	}
 	score -= int32(tLen - qLen)
 	return score, true
+}
+
+func fuzzyScoreUnicode(query, target string) (int32, bool) {
+	var score int32
+	qi := 0
+	qRunes := 0
+	tRunes := 0
+	prevMatch := -2
+	consecutive := int32(0)
+
+	qr, qSize := utf8.DecodeRuneInString(query[qi:])
+	qInvalid := qr == utf8.RuneError && qSize == 1
+	qrFold := unicode.ToLower(qr)
+
+	var prevRune rune
+	ti := 0
+	for ti < len(target) {
+		tr, tSize := utf8.DecodeRuneInString(target[ti:])
+		tInvalid := tr == utf8.RuneError && tSize == 1
+		matched := false
+		if qi < len(query) {
+			if qInvalid || tInvalid {
+				matched = qInvalid && tInvalid && query[qi] == target[ti]
+			} else {
+				matched = unicode.ToLower(tr) == qrFold
+			}
+		}
+		if matched {
+			score += 10
+			if tRunes == 0 {
+				score += 32
+			} else if isUnicodeBoundary(prevRune, tr) {
+				score += 18
+			}
+			if tRunes == prevMatch+1 {
+				consecutive++
+				score += 12 * consecutive
+			} else {
+				if prevMatch >= 0 {
+					gap := int32(tRunes - prevMatch - 1)
+					score -= min(gap, 8)
+				}
+				consecutive = 0
+			}
+			prevMatch = tRunes
+			qi += qSize
+			qRunes++
+			if qi < len(query) {
+				qr, qSize = utf8.DecodeRuneInString(query[qi:])
+				qInvalid = qr == utf8.RuneError && qSize == 1
+				qrFold = unicode.ToLower(qr)
+			}
+		}
+		prevRune = tr
+		ti += tSize
+		tRunes++
+	}
+	if qi != len(query) {
+		return 0, false
+	}
+	if qRunes == tRunes {
+		score += 64
+	}
+	score -= int32(tRunes - qRunes)
+	return score, true
+}
+
+func isUnicodeBoundary(prev, cur rune) bool {
+	if prev == '-' || prev == '_' || prev == '/' || prev == '.' || unicode.IsSpace(prev) || unicode.IsPunct(prev) {
+		return true
+	}
+	return unicode.IsLower(prev) && unicode.IsUpper(cur)
 }
 
 // RankCommands scores commands against query into caller-provided dst without

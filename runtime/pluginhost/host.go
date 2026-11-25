@@ -84,6 +84,8 @@ func (s ScopedScope) AllowsTopic(topic string) bool {
 }
 
 // Instance represents one live, hot-pluggable plugin mounted into the shell.
+// Implementations must ensure Scope() returns an immutable snapshot without
+// acquiring locks that could deadlock with Host synchronization.
 type Instance interface {
 	Scope() ScopedScope
 	Renderer() shell.SlotRenderer
@@ -151,6 +153,7 @@ type Host struct {
 }
 
 type activeEntry struct {
+	scope   ScopedScope // immutable snapshot cached at Activate (never calls inst.Scope() under h.mu)
 	inst    Instance
 	proxy   *ScopedProxy
 	unmount func()
@@ -177,6 +180,9 @@ func (h *Host) Activate(ctx context.Context, scope ScopedScope) (Instance, error
 	if _, err := schema.ParsePluginID(string(scope.PluginID)); err != nil {
 		return nil, err
 	}
+	if schema.IsRestrictedSlot(scope.SlotID) {
+		return nil, fmt.Errorf("%w: plugin %q cannot mount restricted slot %q", shell.ErrUntrustedForbidden, scope.PluginID, scope.SlotID)
+	}
 	if scope.ActivationGeneration == 0 {
 		return nil, fmt.Errorf("%w: activation generation must be > 0", ErrStaleGeneration)
 	}
@@ -202,14 +208,14 @@ func (h *Host) Activate(ctx context.Context, scope ScopedScope) (Instance, error
 
 	h.mu.Lock()
 	prev, hadPrev := h.active[scope.PluginID]
-	if hadPrev && scope.ActivationGeneration <= prev.inst.Scope().ActivationGeneration {
+	if hadPrev && scope.ActivationGeneration <= prev.scope.ActivationGeneration {
 		h.mu.Unlock()
 		proxy.Revoke()
 		unmount()
 		_ = inst.Close()
-		return nil, fmt.Errorf("%w: activation gen %d <= current %d", ErrStaleGeneration, scope.ActivationGeneration, prev.inst.Scope().ActivationGeneration)
+		return nil, fmt.Errorf("%w: activation gen %d <= current %d", ErrStaleGeneration, scope.ActivationGeneration, prev.scope.ActivationGeneration)
 	}
-	h.active[scope.PluginID] = activeEntry{inst: inst, proxy: proxy, unmount: unmount}
+	h.active[scope.PluginID] = activeEntry{scope: scope, inst: inst, proxy: proxy, unmount: unmount}
 	h.mu.Unlock()
 
 	if hadPrev {
@@ -245,7 +251,7 @@ func (h *Host) ActiveScope(id schema.PluginID) (ScopedScope, bool) {
 	if !ok {
 		return ScopedScope{}, false
 	}
-	return entry.inst.Scope(), true
+	return entry.scope, true
 }
 
 // ActiveScopes returns a snapshot of all currently active plugin scopes.
@@ -254,7 +260,7 @@ func (h *Host) ActiveScopes() []ScopedScope {
 	defer h.mu.RUnlock()
 	out := make([]ScopedScope, 0, len(h.active))
 	for _, entry := range h.active {
-		out = append(out, entry.inst.Scope())
+		out = append(out, entry.scope)
 	}
 	return out
 }
@@ -267,7 +273,7 @@ func (h *Host) RouteEvent(ev ScopedEvent) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrPluginNotActive, ev.PluginID)
 	}
-	scope := entry.inst.Scope()
+	scope := entry.scope
 	if ev.ActivationGeneration != scope.ActivationGeneration {
 		return fmt.Errorf("%w: event gen %d != active %d", ErrStaleGeneration, ev.ActivationGeneration, scope.ActivationGeneration)
 	}
@@ -275,4 +281,45 @@ func (h *Host) RouteEvent(ev ScopedEvent) error {
 		return fmt.Errorf("%w: topic %q for %s", ErrScopeNotAuthorized, ev.Topic, ev.PluginID)
 	}
 	return entry.inst.DeliverEvent(ev)
+}
+
+// PublishTopic fans out a host domain projection strictly to active plugins
+// whose manifest read_scopes authorize topic, stamping each delivery with that
+// plugin's PluginID and current ActivationGeneration.
+func (h *Host) PublishTopic(eventID, topic string, payload json.RawMessage) ([]schema.PluginID, map[schema.PluginID]error) {
+	h.mu.RLock()
+	type target struct {
+		scope ScopedScope
+		inst  Instance
+	}
+	var targets []target
+	for _, entry := range h.active {
+		sc := entry.scope
+		if sc.AllowsTopic(topic) {
+			targets = append(targets, target{scope: sc, inst: entry.inst})
+		}
+	}
+	h.mu.RUnlock()
+
+	var delivered []schema.PluginID
+	var errs map[schema.PluginID]error
+	for _, t := range targets {
+		ev := ScopedEvent{
+			EventID:              eventID,
+			PluginID:             t.scope.PluginID,
+			ActivationGeneration: t.scope.ActivationGeneration,
+			Topic:                topic,
+			Payload:              payload,
+		}
+		if err := t.inst.DeliverEvent(ev); err != nil {
+			if errs == nil {
+				errs = make(map[schema.PluginID]error)
+			}
+			errs[t.scope.PluginID] = err
+		} else {
+			delivered = append(delivered, t.scope.PluginID)
+		}
+	}
+	slices.Sort(delivered)
+	return delivered, errs
 }

@@ -36,17 +36,22 @@ iOS/Android bridges).
   waking, O(1) intrusive LRU working-set eviction, idle memory reclamation, and
   1-command security-certified =doctor= / =publish= into Ed25519-signed
   =catalog.json= registries.
-- *Formally Verified Security Boundaries*: Six core isolation invariants
-  (restricted =approval.gate= protection, =CallerPage == Host= WebView origin
-  pinning, unforgeable WASM module proxy binding, monotonic generation
-  revocation, circuit-breaker fallback, and one-shot Rust =GateReceipt= device
-  writes) are formally challenged in Quint with 7 adversarial negative controls,
-  2,000-step Go adversarial state-machine property tests, and 8 Go fuzzers.
+- *Formally Verified Security Boundaries*: Ten core isolation invariants
+  (restricted =approval.gate= protection, Ed25519 release integrity,
+  =CallerPage == Host= WebView origin pinning + MyGo WebKit =ContentRules=
+  egress blocking, =read_scopes= isolation, one-shot Rust =GateReceipt= device
+  writes, circuit-breaker fallback, lockfile =pinned_sha256= lazy wake,
+  dormant slot isolation, bounded LRU working-set cap, and anti-silent upgrade
+  privilege escalation confirmation) are formally challenged in Quint with
+  *11 adversarial negative controls*, *5,000+ combined randomized adversarial
+  state-machine steps* across =pluginhost= and =marketplace=, and *10 Go fuzzers*.
 
-* Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro, Zero CGO)
+* Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro Baseline, Zero CGO)
 
 All 16 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
-(strict =0 allocs/op= on all 9 core engine & 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget):
+(strict =0 allocs/op= on all 9 core engine & 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
+Reference measurements below were recorded on Apple M2 Pro (=darwin/arm64=, Go 1.27.3);
+newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf-gate= to print your local host hardware and measurements:
 
 | Subsystem / Path | Measured | Strict Budget | Allocs |
 |-----------------------------------------------------------+----------+---------------+--------|
@@ -55,7 +60,7 @@ All 16 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool p
 | =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT)     | *69.2 ns*| <= 200 ns     | *0*    |
 | =engine/viewport= 100k-row fold/unfold height update      | *2.6 ns* | <= 15 ns      | *0*    |
 | =engine/input= 3-key Meow/Hydra =KeyTrie= chord lookup    | *28.3 ns*| <= 75 ns      | *0*    |
-| =engine/bus= lock-free fan-out (16 plugins, coalesced)    | *483 ns* | <= 1.5 µs     | *0*    |
+| =engine/bus= COW route fan-out (16 plugins, per-ring lock)| *483 ns* | <= 1.5 µs     | *0*    |
 | =control/marketplace= 100-plugin lazy hook dispatch (COW) | *12.4 ns*| <= 60 ns      | *0*    |
 | =control/marketplace= 100-plugin O(1) idle-reap check     | *20.4 ns*| <= 60 ns      | *0*    |
 | =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |

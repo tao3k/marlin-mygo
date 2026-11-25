@@ -224,3 +224,34 @@ func TestTranscriptToolCallHumanGateAndCancellationReceiptCards(t *testing.T) {
 		t.Fatalf("expected authoritative cancellation receipt badge in GPU frame, got %q", tt.Texts())
 	}
 }
+
+func TestTranscriptBoundedSeenEventsRingAndCJKVisualWidthEstimation(t *testing.T) {
+	tc := NewTranscriptController()
+	tc.SetMaxSeenEvents(8)
+	tc.BeginAssistantTurn(1)
+	for i := 0; i < 32; i++ {
+		tc.ApplyCheckpoint(1, fmt.Sprintf("ev-%02d", i), "x")
+	}
+	if got := tc.SeenEventCount(); got != 8 {
+		t.Fatalf("expected bounded seenEvents size 8, got %d", got)
+	}
+	// Duplicate of recent event within ring window MUST still be deduplicated.
+	tc.ApplyCheckpoint(1, "ev-31", "DUPLICATE")
+	if strings.Contains(tc.entries[0].Text, "DUPLICATE") {
+		t.Fatalf("recent eventID ev-31 should have been deduplicated")
+	}
+
+	// Verify CJK double-width display column estimation (36 CJK runes * 2 cols = 72 cols = 1 line;
+	// 37 CJK runes * 2 cols = 74 cols -> wraps cleanly to 2 lines instead of over/under-counting bytes).
+	cjk36 := strings.Repeat("\u4efb", 36) // 36 CJK runes (108 UTF-8 bytes, 72 display columns)
+	cjk37 := strings.Repeat("\u4efb", 37) // 37 CJK runes (111 UTF-8 bytes, 74 display columns)
+	if lines := estimateWrappedVisualLines(cjk36, 72); lines != 1 {
+		t.Fatalf("expected 36 CJK runes (72 cols) to fit 1 line, got %d", lines)
+	}
+	if lines := estimateWrappedVisualLines(cjk37, 72); lines != 2 {
+		t.Fatalf("expected 37 CJK runes (74 cols) to wrap to 2 lines, got %d", lines)
+	}
+	if lines := estimateWrappedVisualLines(cjk36+"\n"+cjk36, 72); lines != 2 {
+		t.Fatalf("expected two newline-separated 36-CJK-rune paragraphs to be 2 lines, got %d", lines)
+	}
+}

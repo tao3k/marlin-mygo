@@ -55,3 +55,31 @@ func TestFuzzyRankPrefersWordBoundaryAndPrefix(t *testing.T) {
 		t.Fatalf("expected boundary match 'select-buffer' second, got %q", cmds[ranked[1].Index].Name)
 	}
 }
+
+func TestFuzzyScoreUnicodeAndCJKZeroAlloc(t *testing.T) {
+	// CJK subsequence match (using Unicode escapes to preserve pure-ASCII source files).
+	cjkTarget := "Org \u4efb\u52a1\u770b\u677f"
+	cjkQuery := "\u4efb\u770b"
+	score, ok := FuzzyScore(cjkQuery, cjkTarget)
+	if !ok || score <= 0 {
+		t.Fatalf("expected CJK subsequence match, got score=%d ok=%t", score, ok)
+	}
+
+	// Non-ASCII case folding (German umlaut).
+	uScore, uOK := FuzzyScore("\u00fcber", "\u00dcbersicht")
+	if !uOK || uScore <= 0 {
+		t.Fatalf("expected Unicode case-fold match, got score=%d ok=%t", uScore, uOK)
+	}
+
+	if _, bad := FuzzyScore("\u770b\u4efb", cjkTarget); bad {
+		t.Fatal("out-of-order CJK runes must not match")
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		_, _ = FuzzyScore(cjkQuery, cjkTarget)
+		_, _ = FuzzyScore("\u00fcber", "\u00dcbersicht")
+	})
+	if allocs != 0 {
+		t.Fatalf("expected 0 heap allocs for Unicode FuzzyScore, got %.2f", allocs)
+	}
+}

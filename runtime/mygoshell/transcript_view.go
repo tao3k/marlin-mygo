@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
 
@@ -106,7 +107,7 @@ func (e *TranscriptEntry) refreshLabels() {
 		e.foldKey = "fold-" + e.ID
 		e.collapseLabel = "Collapse " + e.ID
 		e.expandLabel = "Expand " + e.ID
-		e.foldedSummary = fmt.Sprintf("(folded · %d chars)", len(e.Text))
+		e.foldedSummary = fmt.Sprintf("(folded · %d chars)", utf8.RuneCountInString(e.Text))
 	} else {
 		e.foldKey = ""
 		e.collapseLabel = ""
@@ -135,6 +136,7 @@ func (e *TranscriptEntry) refreshLabels() {
 const (
 	defaultTranscriptViewportH uint64 = 420
 	defaultTranscriptWrapCols  int    = 72
+	defaultMaxSeenEvents       int    = 4096
 	transcriptHeaderPx         uint32 = 34
 	transcriptLinePx           uint32 = 20
 	transcriptCollapsedPx      uint32 = 38
@@ -146,20 +148,23 @@ const (
 // inline approval gate cards, durable cancellation receipts, idempotent event
 // replay, and an interactive MyGo GPU chat composer.
 type TranscriptController struct {
-	mu           sync.RWMutex
-	entries      []TranscriptEntry
-	turnRow      map[uint64]int
-	toolRows     map[string]int
-	gateRows     map[string]int
-	seenEvents   map[string]struct{}
-	heights      *viewport.VirtualHeightIndex
-	scrollY      uint64
-	viewportH    uint64
-	wrapCols     int
-	autoFollow   bool
-	composerText string
-	activeTurn   uint64
-	inFlight     bool
+	mu            sync.RWMutex
+	entries       []TranscriptEntry
+	turnRow       map[uint64]int
+	toolRows      map[string]int
+	gateRows      map[string]int
+	seenEvents    map[string]struct{}
+	seenRing      []string
+	seenHead      int
+	maxSeenEvents int
+	heights       *viewport.VirtualHeightIndex
+	scrollY       uint64
+	viewportH     uint64
+	wrapCols      int
+	autoFollow    bool
+	composerText  string
+	activeTurn    uint64
+	inFlight      bool
 
 	// Single-frame scratch buffers reused across 120Hz/240Hz Render calls (0 slice allocs/frame).
 	renderMu       sync.Mutex
@@ -173,15 +178,42 @@ type TranscriptController struct {
 
 func NewTranscriptController() *TranscriptController {
 	return &TranscriptController{
-		turnRow:    make(map[uint64]int),
-		toolRows:   make(map[string]int),
-		gateRows:   make(map[string]int),
-		seenEvents: make(map[string]struct{}),
-		heights:    viewport.NewVirtualHeightIndex(64),
-		viewportH:  defaultTranscriptViewportH,
-		wrapCols:   defaultTranscriptWrapCols,
-		autoFollow: true,
+		turnRow:       make(map[uint64]int),
+		toolRows:      make(map[string]int),
+		gateRows:      make(map[string]int),
+		seenEvents:    make(map[string]struct{}),
+		maxSeenEvents: defaultMaxSeenEvents,
+		heights:       viewport.NewVirtualHeightIndex(64),
+		viewportH:     defaultTranscriptViewportH,
+		wrapCols:      defaultTranscriptWrapCols,
+		autoFollow:    true,
 	}
+}
+
+// SetMaxSeenEvents configures the bounded FIFO deduplication ring capacity for
+// streaming checkpoint eventIDs (preventing unbounded map growth over 100k+ turns).
+func (tc *TranscriptController) SetMaxSeenEvents(limit int) {
+	if limit < 1 {
+		limit = 1
+	}
+	tc.mu.Lock()
+	tc.maxSeenEvents = limit
+	for len(tc.seenRing) > limit {
+		oldest := tc.seenRing[tc.seenHead]
+		delete(tc.seenEvents, oldest)
+		tc.seenRing = append(tc.seenRing[:tc.seenHead], tc.seenRing[tc.seenHead+1:]...)
+		if tc.seenHead >= len(tc.seenRing) {
+			tc.seenHead = 0
+		}
+	}
+	tc.mu.Unlock()
+}
+
+// SeenEventCount reports the current number of cached checkpoint eventIDs.
+func (tc *TranscriptController) SeenEventCount() int {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return len(tc.seenEvents)
 }
 
 // AppendUser appends a user message row in O(log N) and returns its row index.
@@ -374,7 +406,7 @@ func (tc *TranscriptController) ApplyCheckpoint(turnOrdinal uint64, eventID, tex
 			}
 			return -1
 		}
-		tc.seenEvents[eventID] = struct{}{}
+		tc.recordSeenEventLocked(eventID)
 	}
 	row, ok := tc.turnRow[turnOrdinal]
 	if !ok {
@@ -691,6 +723,25 @@ func (tc *TranscriptController) scrollToBottomLocked() {
 	}
 }
 
+func (tc *TranscriptController) recordSeenEventLocked(eventID string) {
+	limit := tc.maxSeenEvents
+	if limit <= 0 {
+		limit = defaultMaxSeenEvents
+	}
+	if len(tc.seenRing) >= limit {
+		evicted := tc.seenRing[tc.seenHead]
+		delete(tc.seenEvents, evicted)
+		tc.seenRing[tc.seenHead] = eventID
+		tc.seenHead++
+		if tc.seenHead >= len(tc.seenRing) {
+			tc.seenHead = 0
+		}
+	} else {
+		tc.seenRing = append(tc.seenRing, eventID)
+	}
+	tc.seenEvents[eventID] = struct{}{}
+}
+
 func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint32 {
 	if entry.Collapsible && entry.Folded {
 		return transcriptCollapsedPx
@@ -709,17 +760,57 @@ func (tc *TranscriptController) estimateHeightLocked(entry TranscriptEntry) uint
 	if cols <= 0 {
 		cols = defaultTranscriptWrapCols
 	}
+	lines := estimateWrappedVisualLines(entry.Text, cols)
+	return transcriptHeaderPx + uint32(lines)*transcriptLinePx + extra
+}
+
+// estimateWrappedVisualLines counts wrapped lines in O(len(text)) with zero heap
+// allocations using Unicode display column width (2 columns for CJK/East Asian
+// wide runes, 1 column for narrow runes) so long CJK responses do not clip.
+func estimateWrappedVisualLines(text string, cols int) int {
+	if cols <= 0 {
+		cols = defaultTranscriptWrapCols
+	}
 	lines := 0
-	for _, para := range strings.Split(entry.Text, "\n") {
-		n := len(para)
-		if n == 0 {
-			lines++
+	colWidth := 0
+	for _, r := range text {
+		if r == '\n' {
+			if colWidth == 0 {
+				lines++
+			} else {
+				lines += (colWidth + cols - 1) / cols
+				colWidth = 0
+			}
 			continue
 		}
-		lines += (n + cols - 1) / cols
+		colWidth += displayRuneWidth(r)
+	}
+	if colWidth == 0 {
+		lines++
+	} else {
+		lines += (colWidth + cols - 1) / cols
 	}
 	if lines < 1 {
-		lines = 1
+		return 1
 	}
-	return transcriptHeaderPx + uint32(lines)*transcriptLinePx + extra
+	return lines
+}
+
+// displayRuneWidth estimates terminal/monospace display columns (2 for CJK,
+// Hangul, Kana, and Fullwidth forms; 1 otherwise) with zero allocations.
+func displayRuneWidth(r rune) int {
+	if r < 0x1100 {
+		return 1
+	}
+	if (r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
+		(r >= 0x2E80 && r <= 0xA4CF && r != 0x303F) || // CJK Radicals, Hiragana, Katakana, Bopomofo, CJK Unified
+		(r >= 0xAC00 && r <= 0xD7A3) || // Hangul Syllables
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility Ideographs
+		(r >= 0xFE10 && r <= 0xFE6F) || // CJK Compatibility Forms
+		(r >= 0xFF00 && r <= 0xFF60) || // Fullwidth Forms
+		(r >= 0xFFE0 && r <= 0xFFE6) ||
+		(r >= 0x20000 && r <= 0x3FFFD) { // CJK Extension B..I
+		return 2
+	}
+	return 1
 }

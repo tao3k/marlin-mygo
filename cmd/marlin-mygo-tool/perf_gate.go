@@ -95,6 +95,7 @@ func runPerfGate(args []string) error {
 		return fmt.Errorf("-latency-scale must be >= 1.0, got %.2f", *latencyScale)
 	}
 
+	fmt.Printf("Host environment: %s/%s (%d CPUs), %s\n", runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.Version())
 	fmt.Printf("[1/2] Running Go engine performance gate (benchtime=%s, latency-scale=%.1fx, alloc-ceilings=STRICT)...\n", *benchTime, *latencyScale)
 	cmd := exec.Command("go", "test", "-run=^$", "-bench=.", "-benchmem", "-benchtime="+*benchTime, "./bench/...")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
