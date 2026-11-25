@@ -67,6 +67,11 @@ type WorkbenchApp struct {
 	QuickPlugins        []QuickPluginEntry
 	ActiveQuickPluginID func() string
 	OnQuickPluginSelect func(pluginID string)
+	OnToggleTheme       func()
+	IsLightThemeFn      func() bool
+	SettingsSchema      *schema.BoundedSchema
+	SettingsState       *SchemaFormState
+	OnSaveSettings      func(values map[string]any)
 
 	mu                sync.Mutex
 	selectedID        string
@@ -76,6 +81,7 @@ type WorkbenchApp struct {
 	paletteLastQuery  string
 	paletteLastCmdLen int
 	marketplaceOpen   bool
+	settingsOpen      bool
 	rankedBuf         []input.RankedCommand
 	activeChord       []string
 	gateOpen          bool
@@ -168,7 +174,25 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			a.paletteQuery = ""
 			a.paletteRankValid = false
 			a.marketplaceOpen = false
+			a.settingsOpen = false
 			a.gateOpen = false
+		}
+	}
+	if a.SettingsSchema != nil && a.SettingsState != nil && c.Shortcut(ui.Cmd, ui.KeyComma) {
+		a.settingsOpen = !a.settingsOpen
+		if a.settingsOpen {
+			a.paletteOpen = false
+			a.marketplaceOpen = false
+			a.gateOpen = false
+		}
+	}
+	if a.OnQuickPluginSelect != nil && len(a.QuickPlugins) > 0 {
+		if c.Shortcut(ui.Cmd, ui.Key1) {
+			a.OnQuickPluginSelect(a.QuickPlugins[0].PluginID)
+		} else if len(a.QuickPlugins) > 1 && c.Shortcut(ui.Cmd, ui.Key2) {
+			a.OnQuickPluginSelect(a.QuickPlugins[1].PluginID)
+		} else if len(a.QuickPlugins) > 2 && c.Shortcut(ui.Cmd, ui.Key3) {
+			a.OnQuickPluginSelect(a.QuickPlugins[2].PluginID)
 		}
 	}
 
@@ -378,6 +402,23 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.TranscriptHidden = !a.TranscriptHidden
 			}
 		}
+		if a.OnToggleTheme != nil {
+			themeLbl := "Light"
+			if a.IsLightThemeFn != nil && a.IsLightThemeFn() {
+				themeLbl = "Dark"
+			}
+			if ui.Button(c.Key("toggle-theme"), themeLbl).Clicked() {
+				a.OnToggleTheme()
+			}
+		}
+		if a.SettingsSchema != nil && a.SettingsState != nil {
+			if ui.Button(c.Key("open-settings"), "Settings").Clicked() {
+				a.settingsOpen = true
+				a.paletteOpen = false
+				a.marketplaceOpen = false
+				a.gateOpen = false
+			}
+		}
 		if a.Marketplace != nil {
 			if ui.Button(c.Key("open-marketplace"), "Marketplace").Clicked() {
 				a.marketplaceOpen = true
@@ -433,6 +474,22 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		ui.Modal(c, &a.marketplaceOpen, func() {
 			a.Marketplace.Render(c, t, func() {
 				a.marketplaceOpen = false
+			})
+		})
+	}
+
+	if a.SettingsSchema != nil && a.SettingsState != nil {
+		ui.Modal(c, &a.settingsOpen, func() {
+			RenderBoundedForm(c, *a.SettingsSchema, a.SettingsState, func(vals map[string]any) {
+				if a.OnSaveSettings != nil {
+					a.OnSaveSettings(vals)
+				}
+				a.settingsOpen = false
+			})
+			ui.Row(c).Justify(ui.End).Children(func() {
+				if ui.Button(c.Key("close-settings"), "Close").Clicked() {
+					a.settingsOpen = false
+				}
 			})
 		})
 	}

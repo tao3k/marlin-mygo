@@ -227,6 +227,12 @@ func runBuildExamples(args []string) error {
 		fmt.Printf("  - %-30s (%s, %d bytes, %d audit checks)\n", rcpt.PluginID, rcpt.Runtime, rcpt.PackageBytes, rcpt.AuditChecks)
 	}
 	fmt.Printf("Built, certified & signed %d example .marlinpkg bundles + catalog.json in %s\n", totalEntries, *outDir)
+	trustRing := fmt.Sprintf("# SPDX-FileCopyrightText: 2026 tao3k team and Contributors\n#\n# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later\n\nschema_version = 1\n\n[publishers.%q]\ned25519_pub_hex = %q\n", *publisher, hex.EncodeToString(pub))
+	trustRingPath := filepath.Join(*outDir, "trust-ring.toml")
+	if err := os.WriteFile(trustRingPath, []byte(trustRing), 0o644); err != nil {
+		return fmt.Errorf("write trust-ring.toml: %w", err)
+	}
+	fmt.Printf("Emitted official trust ring: %s\n", trustRingPath)
 	return nil
 }
 

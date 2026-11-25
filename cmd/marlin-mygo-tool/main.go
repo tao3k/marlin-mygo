@@ -81,6 +81,8 @@ func main() {
 		err = runGenTS(os.Args[2:])
 	case "compat-check":
 		err = runCompatCheck(os.Args[2:])
+	case "wire-sync":
+		err = runWireSync(os.Args[2:])
 	case "model-gate":
 		err = runModelGate(os.Args[2:])
 	case "init-plugin":

@@ -291,6 +291,44 @@ func main() {
 	if *showcase {
 		app.TranscriptHidden = true
 	}
+	studioSettingsSchema := schema.BoundedSchema{
+		ID:    "studio.preferences",
+		Title: "Marlin Studio Preferences (Cmd+,)",
+		Fields: []schema.FieldSpec{
+			{Key: "theme", Label: "Appearance", Kind: schema.FieldEnum, EnumValues: []string{"obsidian", "paper"}, Default: "obsidian"},
+			{Key: "focus_min", Label: "Focus Block Minutes", Kind: schema.FieldInt, MinInt: 5, MaxInt: 90, Default: 25},
+			{Key: "lazy_cap", Label: "Max Active Lazy Plugins", Kind: schema.FieldInt, MinInt: 1, MaxInt: 32, Default: *maxActiveLazy},
+		},
+	}
+	studioSettingsState := mygoshell.NewSchemaFormState(studioSettingsSchema, nil)
+	app.SettingsSchema = &studioSettingsSchema
+	app.SettingsState = studioSettingsState
+	var themeLight atomic.Bool
+	var wbGen atomic.Uint64
+	wbGen.Store(1)
+	applyStudioTheme := func(light bool) {
+		themeLight.Store(light)
+		th := mygoshell.StudioDarkPalette()
+		if light {
+			th = mygoshell.StudioLightPalette()
+		}
+		if cur, ok := wb.Snapshot(); ok {
+			next := *cur
+			next.Generation = wbGen.Add(1)
+			next.Theme = th
+			_ = wb.AdmitSnapshot(next)
+		}
+		wvRuntime.BroadcastTheme(th)
+	}
+	app.IsLightThemeFn = themeLight.Load
+	app.OnToggleTheme = func() {
+		applyStudioTheme(!themeLight.Load())
+	}
+	app.OnSaveSettings = func(vals map[string]any) {
+		if mode, ok := vals["theme"].(string); ok {
+			applyStudioTheme(mode == "paper")
+		}
+	}
 	mktUI := mygoshell.NewMarketplaceController()
 	app.Marketplace = mktUI
 	app.Commands = []input.CommandEntry{
@@ -440,6 +478,8 @@ func main() {
 		}
 
 		if liveTarget != nil {
+			deskBridge := device.NewBridge(schema.TargetDesktopMacOS)
+			_ = device.RegisterDesktopMyGoAdapters(ctx, deskBridge)
 			liveDriver = grpcwire.NewSessionDriver(grpcwire.DriverConfig{
 				Target:       liveTarget,
 				TargetKind:   schema.TargetDesktopMacOS,
@@ -447,7 +487,7 @@ func main() {
 				Workbench:    wb,
 				Federation:   federation,
 				PluginHost:   host,
-				DeviceBridge: device.NewBridge(schema.TargetDesktopMacOS),
+				DeviceBridge: deskBridge,
 				DeviceID:     "desktop-macos-app",
 				DisplayName:  "Marlin Desktop",
 				OnWorkbench:  func(schema.UIWorkbenchSnapshot) { win.Invalidate() },

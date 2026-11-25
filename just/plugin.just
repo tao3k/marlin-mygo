@@ -22,6 +22,15 @@ show-memory:
 show-workflow:
     CGO_ENABLED=0 go run ./cmd/marlin-app -showcase -showcase-plugin workflow
 
+# Preview Marlin Mobile Companion (390x844 App Store 2.5.2 safe shell).
+show-mobile:
+    CGO_ENABLED=0 go run ./cmd/marlin-mobile
+
+# Build Rust marlin-mygo-host (if needed) and launch full live Rust Sidecar + Studio showcase.
+studio-live core="../..":
+    cargo build --manifest-path "{{core}}/Cargo.toml" --locked -p marlin-agent-app-server --features turso-host --bin marlin-mygo-host
+    CGO_ENABLED=0 go run ./cmd/marlin-app -sidecar "{{core}}/target/debug/marlin-mygo-host" -real-session -showcase -showcase-plugin agenda
+
 # === Live Hot-Reload Dev Watch ===
 
 # Watch & hot-reload Org Agenda (React 19) inside Marlin Studio.
@@ -98,6 +107,10 @@ stress-ui: stress-go stress-react
 soak-ui ops="10000":
     MARLIN_CHAOS_OPS={{ops}} CGO_ENABLED=0 go test -v -count=1 -run "TestFluentMonkeyChaosClickStormOnStudioShell|TestFluentRapidHoverAndResizeContinuity" ./runtime/mygoshell
     MARLIN_CHAOS_OPS=4000 bun test examples/plugins/react_chaos_monkey.test.tsx
+
+# Render deterministic PNG visual frame snapshots (desktop dark/light/narrow/modal + mobile) & verify contrast invariants.
+visual-check out="./dist/visual-snapshots":
+    MARLIN_VISUAL_OUT="{{out}}" CGO_ENABLED=0 go test -v -count=1 -run "TestVisualFrameSnapshotsAndContrastInvariants" ./runtime/mygoshell
 
 # === Explicit Security + Performance Certification (doctor -perf) ===
 

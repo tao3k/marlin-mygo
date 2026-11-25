@@ -35,6 +35,13 @@ proto-gen-ts:
 proto-compat core="../..":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool compat-check -core {{core}}
 
+# Generate or verify deterministic proto/wire-lock.toml SHA-256 contract lockfile.
+proto-sync core="../..":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool wire-sync -core {{core}}
+
+proto-sync-check:
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool wire-sync -check
+
 # Build Rust marlin-mygo-host and run real cross-process TLS 1.3 + Sidecar + WASM Reactor E2E.
 e2e-rust core="../..":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core {{core}}

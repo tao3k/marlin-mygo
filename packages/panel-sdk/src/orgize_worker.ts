@@ -85,6 +85,34 @@ function parseDateISO(dateISO: string): OrgizeDateParts {
  * Wraps a `tao3k/orgize-wasm` Worker (`new Worker(new URL("orgize/worker", import.meta.url), { type: "module" })`)
  * into typed Promise helpers with request correlation and clean disposal.
  */
+/**
+ * Spawns a module Web Worker for `tao3k/orgize-wasm` when running in a browser
+ * WebView and returns a typed `OrgizeWorkerClient` (plus registers it on
+ * `globalThis.__MARLIN_ORGIZE_WORKER__` for plugin Scratchpad drawers).
+ */
+export function mountOrgizeWorker(
+  workerUrl: string | URL,
+  sessionId = "marlin-panel",
+): OrgizeWorkerClient {
+  if (typeof Worker !== "function") {
+    throw new Error("Web Worker API is unavailable in this environment");
+  }
+  const worker = new Worker(workerUrl, { type: "module" }) as unknown as OrgizeWorkerPort;
+  (globalThis as Record<string, unknown>).__MARLIN_ORGIZE_WORKER__ = worker;
+  return createOrgizeWorkerClient(worker, sessionId);
+}
+
+/**
+ * Resolves a pre-mounted `tao3k/orgize-wasm` Worker port from global scope if present.
+ */
+export function resolveGlobalOrgizeWorker(
+  sessionId = "marlin-panel",
+): OrgizeWorkerClient | null {
+  const port = (globalThis as { __MARLIN_ORGIZE_WORKER__?: OrgizeWorkerPort }).__MARLIN_ORGIZE_WORKER__;
+  if (!port) return null;
+  return createOrgizeWorkerClient(port, sessionId);
+}
+
 export function createOrgizeWorkerClient(
   port: OrgizeWorkerPort,
   sessionId = "marlin-panel",

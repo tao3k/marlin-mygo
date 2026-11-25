@@ -8,9 +8,11 @@ package mygoshell
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -44,6 +46,32 @@ type WebViewRuntime struct {
 	pageOwners   map[*mygo.Page]schema.PluginID
 	contentRules []*mygo.ContentRules
 	rulesOnce    sync.Once
+	themeSeq     atomic.Uint64
+}
+
+// BroadcastTheme delivers updated `--marlin-*` CSS theme tokens via scoped
+// EmitPage events to all active untrusted WebView pages (zero eval, CSP-safe).
+func (r *WebViewRuntime) BroadcastTheme(mt schema.UITheme) {
+	payload, err := json.Marshal(ThemeTokensMap(mt))
+	if err != nil {
+		return
+	}
+	r.mu.RLock()
+	pages := make(map[*mygo.Page]schema.PluginID, len(r.pageOwners))
+	for p, id := range r.pageOwners {
+		pages[p] = id
+	}
+	r.mu.RUnlock()
+	evID := fmt.Sprintf("theme-%d", r.themeSeq.Add(1))
+	for page, pid := range pages {
+		_ = PanelEvent.EmitPage(page, pluginhost.ScopedEvent{
+			EventID:              evID,
+			PluginID:             pid,
+			ActivationGeneration: 1,
+			Topic:                "theme.live",
+			Payload:              payload,
+		})
+	}
 }
 
 // NewWebViewRuntime wires a WebViewProtocolHandler using mygo.CallerPage(ctx)

@@ -42,7 +42,8 @@ jobs:
           CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool descriptor
           CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen
           CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen-ts
-          git diff --exit-code -- gen/ packages/panel-sdk/src/generated/
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool wire-sync -check
+          git diff --exit-code -- gen/ packages/panel-sdk/src/generated/ proto/wire-lock.toml
 
   formal-security-quint:
     name: Quint Formal Adversarial Security Gate
