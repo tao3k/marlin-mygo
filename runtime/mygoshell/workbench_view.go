@@ -53,6 +53,12 @@ type WorkbenchApp struct {
 	OnSendPrompt     func(prompt string)
 	OnCancelTurn     func()
 
+	// Thin projection of Rust AppServer durable sessions rendered in the left sidebar.
+	Sessions        []SessionSummaryView
+	ActiveSessionID string
+	OnSelectSession func(sessionID string)
+	OnNewSession    func()
+
 	// Optional studio brand heading displayed at the top of the sidebar.
 	BrandTitle    string
 	BrandSubtitle string
@@ -433,6 +439,9 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	if c.Shortcut(ui.Cmd, ui.KeyB) {
 		a.ToggleSidebar()
 	}
+	if a.Transcript != nil && c.Shortcut(ui.Cmd, ui.KeyF) {
+		a.Transcript.OpenSearch()
+	}
 	if a.OnCycleTheme != nil && c.Shortcut(ui.Cmd, ui.KeyT) {
 		a.OnCycleTheme()
 	}
@@ -525,6 +534,7 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 						}
 					})
 				}
+				a.renderSessionSidebar(c, dt)
 				a.renderTargetSidebar(c, t)
 				if a.OnAddRemoteTarget != nil {
 					if ApplePillButton(c, "open-add-remote", "+ Remote Target", BtnTinted, dt, nil, true).Clicked() {
@@ -760,6 +770,43 @@ func whichKeyGroupName(k string) string {
 	}
 }
 
+func (a *WorkbenchApp) renderSessionSidebar(c *ui.Context, dt DerivedTheme) {
+	if len(a.Sessions) == 0 && a.OnNewSession == nil {
+		return
+	}
+	ui.Column(c).Gap(5).AlignItems(ui.Stretch).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Text(c, "SESSIONS").FontSize(10.5).FontWeight(700).LetterSpacing(0.4).TextColor(toColor(dt.InkMuted))
+			ui.Spacer(c)
+			if a.OnNewSession != nil {
+				if ApplePillButton(c, "sidebar-new-session", "+ New", BtnTinted, dt, nil, true).Clicked() {
+					a.OnNewSession()
+				}
+			}
+		})
+		limit := min(len(a.Sessions), 8)
+		for i := 0; i < limit; i++ {
+			sess := a.Sessions[i]
+			active := sess.SessionID == a.ActiveSessionID
+			v := BtnGlass
+			if active {
+				v = BtnTinted
+			}
+			title := sess.Title
+			if title == "" {
+				title = sess.SessionID
+			}
+			label := fmt.Sprintf("%s (%d)", title, sess.TurnCount)
+			if ApplePillButton(c, "sidebar-sess-"+sess.SessionID, label, v, dt, nil, true).Clicked() {
+				a.ActiveSessionID = sess.SessionID
+				if a.OnSelectSession != nil {
+					a.OnSelectSession(sess.SessionID)
+				}
+			}
+		}
+	})
+}
+
 func (a *WorkbenchApp) renderTargetSidebar(c *ui.Context, t *ui.Theme) {
 	if a.Federation != nil {
 		fed := a.Federation.Snapshot()
@@ -893,6 +940,23 @@ func (a *WorkbenchApp) OpenKeymapInspector() {
 // IsKeymapInspectorOpen reports whether the Tier-0 Keymap Inspector modal is visible.
 func (a *WorkbenchApp) IsKeymapInspectorOpen() bool { return a.keymapOpen }
 
+// OpenMarketplace opens the Tier-0 Official Marketplace drawer above all slots.
+func (a *WorkbenchApp) OpenMarketplace() {
+	if a.Marketplace == nil {
+		return
+	}
+	a.marketplaceOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.keymapOpen = false
+	a.activityOpen = false
+	a.authOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
 // DismissTopOverlay handles global ESC keyboard accessibility: closes the
 // active non-gate Tier-0 modal or cancels an in-progress Hydra chord / Which-Key HUD.
 // Security invariant: Approval Gates (gateOpen) are intentionally NOT bypassed by ESC.
@@ -927,6 +991,9 @@ func (a *WorkbenchApp) DismissTopOverlay() bool {
 		return true
 	case a.addRemoteOpen:
 		a.addRemoteOpen = false
+		return true
+	case a.Transcript != nil && a.Transcript.IsSearchOpen():
+		a.Transcript.CloseSearch()
 		return true
 	}
 	a.mu.Lock()

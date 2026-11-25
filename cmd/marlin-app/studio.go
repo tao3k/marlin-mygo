@@ -23,6 +23,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/marketplace"
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/shell"
@@ -128,6 +129,40 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			stopLiveSession = wireLiveSession(ctx, cfg, conn.provider, wb, federation, host, app, transcript, win, fireHook, publishProjection)
 		} else {
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
+		}
+		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
+			switch cmd.ActionID {
+			case "studio.open-auth":
+				app.OpenAuth()
+			case "studio.open-keymap-inspector":
+				app.OpenKeymapInspector()
+			case "studio.open-notifications":
+				app.OpenActivityCenter()
+			case "studio.open-marketplace":
+				app.OpenMarketplace()
+			case "studio.cycle-theme":
+				if app.OnCycleTheme != nil {
+					app.OnCycleTheme()
+				}
+			case "prompt:plan":
+				transcript.SetComposerText("Draft a step-by-step architecture plan for: ")
+			case "prompt:review":
+				transcript.SetComposerText("Review the active workspace diff for bugs and security issues.")
+			}
+			win.Invalidate()
+		}
+		transcript.OnSubmitTurn = func(sub composer.TurnSubmission) {
+			if len(sub.Attachments) > 0 {
+				refs := make([]composer.AttachmentRef, 0, len(sub.Attachments))
+				for _, att := range sub.Attachments {
+					refs = append(refs, att.Ref)
+				}
+				transcript.AppendUserWithAttachments(sub.Prompt, refs)
+			}
+			if app.OnSendPrompt != nil && strings.TrimSpace(sub.Prompt) != "" {
+				app.OnSendPrompt(sub.Prompt)
+			}
+			win.Invalidate()
 		}
 		if app.Notifications != nil {
 			app.Notifications.OnChanged = win.Invalidate

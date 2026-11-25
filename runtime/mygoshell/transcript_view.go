@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/viewport"
 )
 
@@ -90,6 +91,7 @@ type TranscriptEntry struct {
 	ToolCard     *ToolCallCardView
 	HumanGate    *HumanGateCardView
 	Cancellation *CancellationReceiptView
+	Attachments  []composer.AttachmentRef
 
 	headerLabel   string
 	outcomeBadge  string
@@ -246,8 +248,23 @@ type TranscriptController struct {
 	deepThink     bool
 	modelLabel    string
 	lastCopiedKey string
-	OnCopyCode    func(code string)
-	OnDeepThink   func(enabled bool)
+	Composer      *composer.State
+
+	// Thin Backend-Delegated Callbacks (Rust owns search index, context mentions, and CAS upload).
+	OnCopyCode       func(code string)
+	OnDeepThink      func(enabled bool)
+	OnSubmitTurn     func(sub composer.TurnSubmission)
+	OnSlashCommand   func(cmd composer.SlashCommand)
+	OnQueryMentions  func(query string) []composer.ContextMention
+	OnPickAttachment func()
+	OnSearchSession  func(query string) []SessionSearchHit
+
+	// Thin Cmd+F Session Search UI state (hits supplied exclusively by OnSearchSession).
+	searchOpen      bool
+	searchQuery     string
+	searchLastQuery string
+	searchHits      []SessionSearchHit
+	searchHitIdx    int
 
 	// Single-frame scratch buffers reused across 120Hz/240Hz Render calls (0 slice allocs/frame).
 	renderMu       sync.Mutex
@@ -270,7 +287,97 @@ func NewTranscriptController() *TranscriptController {
 		viewportH:     defaultTranscriptViewportH,
 		wrapCols:      defaultTranscriptWrapCols,
 		autoFollow:    true,
+		Composer:      composer.NewState(composer.DefaultAttachmentPolicy()),
 	}
+}
+
+// AttachFile validates, SHA-256 hashes, and stages one multimodal attachment
+// (image/PDF/audio/code/text) into the composer bar with fail-closed security checks.
+func (tc *TranscriptController) AttachFile(in composer.AttachmentInput) (composer.AttachmentRef, error) {
+	if tc.Composer == nil {
+		tc.Composer = composer.NewState(composer.DefaultAttachmentPolicy())
+	}
+	return tc.Composer.AddAttachment(in)
+}
+
+// AppendUserWithAttachments appends a user turn carrying multimodal attachment
+// metadata badges into the virtualized transcript in O(log N).
+func (tc *TranscriptController) AppendUserWithAttachments(text string, atts []composer.AttachmentRef) int {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	entry := TranscriptEntry{
+		ID:          fmt.Sprintf("user-%d", len(tc.entries)+1),
+		Role:        RoleUser,
+		Text:        text,
+		Attachments: append([]composer.AttachmentRef(nil), atts...),
+	}
+	return tc.appendLocked(entry)
+}
+
+// OpenSearch opens the thin Cmd+F backend-delegated session search bar.
+func (tc *TranscriptController) OpenSearch() {
+	tc.mu.Lock()
+	tc.searchOpen = true
+	tc.mu.Unlock()
+}
+
+// CloseSearch dismisses the session search bar.
+func (tc *TranscriptController) CloseSearch() {
+	tc.mu.Lock()
+	tc.searchOpen = false
+	tc.mu.Unlock()
+}
+
+// IsSearchOpen reports whether the Cmd+F session search bar is visible.
+func (tc *TranscriptController) IsSearchOpen() bool {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.searchOpen
+}
+
+// SetSearchQuery programmatically updates the search bar query and refreshes
+// hits from OnSearchSession (jumping to the first hit via O(log N) JumpToRow).
+func (tc *TranscriptController) SetSearchQuery(query string) {
+	tc.mu.Lock()
+	tc.searchOpen = true
+	tc.searchQuery = query
+	tc.searchLastQuery = ""
+	searchFn := tc.OnSearchSession
+	tc.mu.Unlock()
+	if searchFn != nil {
+		tc.runSearchQuery(query, searchFn)
+	}
+}
+
+func (tc *TranscriptController) runSearchQuery(query string, searchFn func(string) []SessionSearchHit) {
+	q := strings.TrimSpace(query)
+	var hits []SessionSearchHit
+	if q != "" && searchFn != nil {
+		hits = searchFn(q)
+	}
+	tc.mu.Lock()
+	tc.searchLastQuery = query
+	tc.searchHits = hits
+	tc.searchHitIdx = 0
+	tc.mu.Unlock()
+	if len(hits) > 0 {
+		tc.JumpToRow(hits[0].Row)
+	}
+}
+
+// StepSearchHit advances (+1) or rewinds (-1) through backend search hits and
+// jumps directly to the targeted row via JumpToRow.
+func (tc *TranscriptController) StepSearchHit(delta int) {
+	tc.mu.Lock()
+	n := len(tc.searchHits)
+	if n == 0 {
+		tc.mu.Unlock()
+		return
+	}
+	tc.searchHitIdx = (tc.searchHitIdx + delta%n + n) % n
+	row := tc.searchHits[tc.searchHitIdx].Row
+	tc.mu.Unlock()
+	tc.JumpToRow(row)
 }
 
 // SetMaxSeenEvents configures the bounded FIFO deduplication ring capacity for
@@ -750,6 +857,17 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	modelLbl := tc.modelLabel
 	lastCopied := tc.lastCopiedKey
 	draft := tc.composerText
+	searchOpen := tc.searchOpen
+	searchQuery := tc.searchQuery
+	searchLastQ := tc.searchLastQuery
+	searchHits := append([]SessionSearchHit(nil), tc.searchHits...)
+	searchHitIdx := tc.searchHitIdx
+	searchFn := tc.OnSearchSession
+	mentionFn := tc.OnQueryMentions
+	pickAttFn := tc.OnPickAttachment
+	submitTurnFn := tc.OnSubmitTurn
+	slashFn := tc.OnSlashCommand
+	compState := tc.Composer
 	tc.renderEntries = tc.renderEntries[:0]
 	tc.renderIndices = tc.renderIndices[:0]
 	if first >= 0 && last >= first && last < totalRows {
@@ -759,10 +877,39 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		}
 	}
 	tc.mu.RUnlock()
+
+	var compSnap composer.ComposerSnapshot
+	if compState != nil {
+		compSnap = compState.Snapshot()
+		if modelLbl == "" && compSnap.ActiveModel.Label != "" {
+			modelLbl = compSnap.ActiveModel.Label
+		}
+	}
 	if modelLbl == "" {
 		modelLbl = "Marlin Core"
 	}
 
+	var (
+		toggleRow       = -1
+		submitPrompt    string
+		submittedTurn   *composer.TurnSubmission
+		cancelClicked   bool
+		jumpLatest      bool
+		toggleThink     bool
+		cycleModel      bool
+		openSearchNow   bool
+		closeSearchNow  bool
+		stepSearchDelta int
+		removeAttID     string
+		removeMentionK  string
+		pickedSlash     *composer.SlashCommand
+		pickedMention   *composer.ContextMention
+		pickAttClicked  bool
+		copiedKey       string
+		copiedCode      string
+	)
+
+	dt := derivedThemeFromUITheme(t)
 	visible := tc.renderEntries
 	visibleIndices := tc.renderIndices
 	if tc.cachedStatsStr == "" || tc.statsRows != totalRows || tc.statsVisible != len(visible) || tc.statsHeight != totalH {
@@ -772,18 +919,6 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		tc.cachedStatsStr = fmt.Sprintf("rows:%d visible:%d height:%dpx", totalRows, len(visible), totalH)
 	}
 	statsLine := tc.cachedStatsStr
-
-	var (
-		toggleRow     = -1
-		submitPrompt  string
-		cancelClicked bool
-		jumpLatest    bool
-		toggleThink   bool
-		copiedKey     string
-		copiedCode    string
-	)
-
-	dt := derivedThemeFromUITheme(t)
 
 	root := ui.Column(c.Key("transcript-root")).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
 		Background(toColor(dt.Surface)).Border(1, glassBorderColor(dt))
@@ -795,12 +930,25 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
 			ui.Text(c, statsLine).FontSize(11).TextColor(toColor(dt.InkMuted))
 			ui.Spacer(c)
+			if searchFn != nil || searchOpen {
+				if ApplePillButton(c, "transcript-find", "Find", BtnGlass, dt, svgIconSearch, true).Clicked() {
+					openSearchNow = true
+				}
+			}
 			if inFlight {
 				AppleBadgePill(c, "STREAMING", dt.Warning, dt)
 			} else {
 				AppleBadgePill(c, "IDLE", dt.Accent, dt)
 			}
 		})
+
+		if searchOpen {
+			RenderSessionSearchBar(c, dt, &searchQuery, searchHits, searchHitIdx,
+				func() { stepSearchDelta = -1 },
+				func() { stepSearchDelta = 1 },
+				func() { closeSearchNow = true },
+			)
+		}
 
 		if len(visible) == 0 {
 			ui.Text(c, "No turns yet. Send a message below to stream from Rust AppServer.").
@@ -826,6 +974,13 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 								})
 								if entry.Text != "" {
 									ui.Text(c, entry.Text).FontSize(13).LineHeight(1.4).TextColor(toColor(dt.Ink))
+								}
+								if len(entry.Attachments) > 0 {
+									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+										for _, att := range entry.Attachments {
+											AttachmentCardChip(c, dt, att, false, nil)
+										}
+									})
 								}
 							})
 						})
@@ -956,13 +1111,60 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			Background(toColor(dt.SurfaceElevated)).
 			Border(1, glassBorderColor(dt)).
 			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).Children(func() {
+			// Inline `/` Slash Command or `@` Context Mention autocomplete popup.
+			if compState != nil {
+				if slashMatches := compState.MatchSlashCommands(draft); len(slashMatches) > 0 {
+					RenderSlashCommandPopup(c, dt, slashMatches, func(cmd composer.SlashCommand) {
+						cp := cmd
+						pickedSlash = &cp
+					})
+				} else if mq, hasMention := composer.ActiveMentionQuery(draft); hasMention && mentionFn != nil {
+					if cands := mentionFn(mq); len(cands) > 0 {
+						RenderMentionPopup(c, dt, cands, func(m composer.ContextMention) {
+							cp := m
+							pickedMention = &cp
+						})
+					}
+				}
+			}
+
+			// Structured `@` context mention chips + multimodal attachment strip above input.
+			if len(compSnap.Mentions) > 0 {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					for _, m := range compSnap.Mentions {
+						ContextMentionChip(c, dt, m, func(key string) { removeMentionK = key })
+					}
+				})
+			}
+			if len(compSnap.Attachments) > 0 {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					for _, att := range compSnap.Attachments {
+						AttachmentCardChip(c, dt, att, true, func(id string) { removeAttID = id })
+					}
+				})
+			}
+			if compSnap.LastError != "" {
+				ui.Text(c, compSnap.LastError).FontSize(11).FontWeight(600).TextColor(toColor(dt.Danger))
+			}
+
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.TextInputBase(c.Key("transcript-composer"), &draft).
-					Placeholder("Message Marlin agent...").
+					Placeholder("Message Marlin agent... (/ commands · @ context · attach image/PDF/code)").
 					FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(4, 2)
 			})
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				AppleBadgePill(c, modelLbl, dt.InkMuted, dt)
+				if pickAttFn != nil || len(compSnap.Attachments) > 0 {
+					if ApplePillButton(c, "transcript-attach", "Attach", BtnGlass, dt, svgIconPaperclip, true).Clicked() {
+						pickAttClicked = true
+					}
+				}
+				if compState != nil && len(compSnap.Models) > 1 {
+					if ApplePillButton(c, "transcript-model", modelLbl, BtnGlass, dt, nil, true).Clicked() {
+						cycleModel = true
+					}
+				} else {
+					AppleBadgePill(c, modelLbl, dt.InkMuted, dt)
+				}
 				thinkVar := BtnGlass
 				if deepThink {
 					thinkVar = BtnTinted
@@ -977,10 +1179,18 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 					}
 				}
 				if AppleCircleIconButton(c, "transcript-send", "Send", svgIconArrowUp, 30, dt).Clicked() {
-					trimmed := strings.TrimSpace(draft)
-					if trimmed != "" {
-						submitPrompt = trimmed
-						draft = ""
+					if compState != nil {
+						if sub, ok := compState.BuildAndResetSubmission(draft); ok {
+							submittedTurn = &sub
+							submitPrompt = sub.Prompt
+							draft = ""
+						}
+					} else {
+						trimmed := strings.TrimSpace(draft)
+						if trimmed != "" {
+							submitPrompt = trimmed
+							draft = ""
+						}
 					}
 				}
 			})
@@ -989,6 +1199,14 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 
 	tc.mu.Lock()
 	tc.composerText = draft
+	if openSearchNow {
+		tc.searchOpen = true
+	}
+	if closeSearchNow {
+		tc.searchOpen = false
+	}
+	searchChanged := searchOpen && searchQuery != searchLastQ
+	tc.searchQuery = searchQuery
 	if jumpLatest {
 		tc.autoFollow = true
 		tc.scrollToBottomLocked()
@@ -999,8 +1217,49 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	copyCB := tc.OnCopyCode
 	tc.mu.Unlock()
 
+	if searchChanged && searchFn != nil {
+		tc.runSearchQuery(searchQuery, searchFn)
+	}
+	if stepSearchDelta != 0 {
+		tc.StepSearchHit(stepSearchDelta)
+	}
+	if removeAttID != "" && compState != nil {
+		compState.RemoveAttachment(removeAttID)
+	}
+	if removeMentionK != "" && compState != nil {
+		compState.RemoveMention(removeMentionK)
+	}
+	if pickedMention != nil && compState != nil {
+		compState.AddMention(*pickedMention)
+		tc.SetComposerText(composer.StripTrailingMentionToken(draft))
+	}
+	if pickedSlash != nil {
+		tc.SetComposerText("")
+		if pickedSlash.ActionID == "studio.open-search" {
+			tc.OpenSearch()
+		} else if slashFn != nil {
+			slashFn(*pickedSlash)
+		}
+	}
+	if pickAttClicked && pickAttFn != nil {
+		pickAttFn()
+	}
+	if cycleModel && compState != nil {
+		m := compState.CycleModel()
+		if m.Label != "" {
+			tc.SetModelLabel(m.Label)
+		}
+	}
 	if toggleThink {
-		tc.SetDeepThink(!deepThink)
+		next := !deepThink
+		tc.SetDeepThink(next)
+		if compState != nil {
+			if next {
+				compState.SetEffort(composer.EffortDeep)
+			} else {
+				compState.SetEffort(composer.EffortBalanced)
+			}
+		}
 	}
 	if copiedKey != "" && copyCB != nil {
 		copyCB(copiedCode)
@@ -1008,7 +1267,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	if toggleRow >= 0 {
 		tc.ToggleFold(toggleRow)
 	}
-	if submitPrompt != "" && onSend != nil {
+	if submittedTurn != nil && submitTurnFn != nil {
+		submitTurnFn(*submittedTurn)
+	} else if submitPrompt != "" && onSend != nil {
 		onSend(submitPrompt)
 	}
 	if cancelClicked && onCancel != nil {
