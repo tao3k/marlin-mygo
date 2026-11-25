@@ -238,17 +238,25 @@ func main() {
 			TargetKind: schema.TargetMobileIOS, Address: "tailnet:50051", Phase: transport.PhaseReady,
 		}})
 		federation.ProbeAll(ctx, time.Second)
-		federation.UpdateMetrics("remote-linux", 1, 2, 1)
+		if !*showcase {
+			federation.UpdateMetrics("remote-linux", 1, 2, 1)
+		}
 
+		activeTheme := schema.DefaultUITheme()
+		profileLabel := "desktop-dev"
+		if *showcase {
+			activeTheme = mygoshell.StudioDarkPalette()
+			profileLabel = "studio-showcase"
+		}
 		if err := wb.AdmitSnapshot(schema.UIWorkbenchSnapshot{
 			Generation:   1,
-			ProfileName:  "desktop-dev",
+			ProfileName:  profileLabel,
 			SessionLabel: *sessionID,
-			Theme:        schema.DefaultUITheme(),
+			Theme:        activeTheme,
 			FrameTree: schema.UIElement{
 				Kind: schema.ElemRows,
 				Children: []schema.UIElement{
-					{Kind: schema.ElemSlot, SlotID: "workbench.main"},
+					{Kind: schema.ElemSlot, SlotID: "workbench.main", Flex: 1},
 					{Kind: schema.ElemSlot, SlotID: "workbench.inspector"},
 				},
 			},
@@ -276,8 +284,13 @@ func main() {
 
 	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
 	app.Federation = federation
+	app.BrandTitle = "Marlin Studio"
+	app.BrandSubtitle = "MyGo GPU · React 19 + WASI"
 	transcript := mygoshell.NewTranscriptController()
 	app.Transcript = transcript
+	if *showcase {
+		app.TranscriptHidden = true
+	}
 	mktUI := mygoshell.NewMarketplaceController()
 	app.Marketplace = mktUI
 	app.Commands = []input.CommandEntry{
@@ -303,8 +316,8 @@ func main() {
 		winTitle := "Marlin MyGo Modular Engine"
 		winW, winH := 1120, 720
 		if *showcase {
-			winTitle = "Marlin MyGo Showcase — React 19 AI Workflows + Go WASI GPU"
-			winW, winH = 1240, 820
+			winTitle = "Marlin Studio — React 19 AI Workflows + Go WASI GPU"
+			winW, winH = 1340, 860
 		}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:     winTitle,
@@ -326,35 +339,30 @@ func main() {
 			showcaseDisp.startTickLoop(ctx)
 
 			initialMain := resolveShowcasePluginID(*showcasePlugin)
-			var activeMainMu sync.Mutex
-			activeMainID := string(initialMain)
+			switcher := mygoshell.NewQuickPluginSwitcher(mygoshell.QuickPluginSwitcherConfig{
+				Context:   ctx,
+				Slots:     slots,
+				SlotID:    "workbench.main",
+				InitialID: string(initialMain),
+				Activate: func(actCtx context.Context, id schema.PluginID) error {
+					_, err := lazySess.InstallOrUpgrade(actCtx, id)
+					return err
+				},
+				OnSync:       syncMarketplace,
+				OnInvalidate: win.Invalidate,
+				OnError: func(pluginID string, err error) {
+					log.Printf("[showcase] switch to %s failed: %v", pluginID, err)
+				},
+			})
 			app.QuickPlugins = []mygoshell.QuickPluginEntry{
 				{PluginID: "tao3k.org-agenda-planner", Label: "Org Agenda (React 19)"},
 				{PluginID: "tao3k.ai-memory-inbox", Label: "AI Memory Inbox (React 19)"},
 				{PluginID: "tao3k.ai-workflow-cockpit", Label: "AI Workflow Cockpit (React 19)"},
 			}
-			app.ActiveQuickPluginID = func() string {
-				activeMainMu.Lock()
-				defer activeMainMu.Unlock()
-				return activeMainID
-			}
-			app.OnQuickPluginSelect = func(pluginID string) {
-				activeMainMu.Lock()
-				activeMainID = pluginID
-				activeMainMu.Unlock()
-				go func() {
-					if _, err := lazySess.InstallOrUpgrade(ctx, schema.PluginID(pluginID)); err != nil {
-						log.Printf("[showcase] switch to %s failed: %v", pluginID, err)
-						return
-					}
-					syncMarketplace()
-					win.Invalidate()
-				}()
-			}
+			app.ActiveQuickPluginID = switcher.ActiveID
+			app.OnQuickPluginSelect = switcher.Select
+			switcher.Select(string(initialMain))
 			go func() {
-				if _, err := lazySess.InstallOrUpgrade(ctx, initialMain); err != nil {
-					log.Printf("[showcase] mount main %s failed: %v", initialMain, err)
-				}
 				if _, err := lazySess.InstallOrUpgrade(ctx, "tao3k.focus-clock-reactor"); err != nil {
 					log.Printf("[showcase] mount inspector focus-clock failed: %v", err)
 				}
@@ -575,29 +583,31 @@ func main() {
 			}
 		}
 
-		app.OnTogglePlugin = func() {
-			if mounted.Load() {
-				_ = host.Deactivate("tao3k.org-kanban")
-				mounted.Store(false)
-			} else {
-				_, err := host.Activate(ctx, pluginhost.ScopedScope{
-					PluginID:             "tao3k.org-kanban",
-					ContributionID:       "kanban_panel",
-					ActivationGeneration: 1,
-					Runtime:              schema.RuntimeWebViewUntrusted,
-					SlotID:               "workbench.main",
-					EntryPath:            "index.html",
-					ReadScopes:           []string{"org.tasks", "session.summary"},
-					DeclaredActions:      []string{"org.task.move-state"},
-					Assets:               os.DirFS("examples/plugins/ts-org-kanban"),
-				})
-				if err != nil {
-					log.Printf("hot-plug failed: %v", err)
-					return
+		if !*showcase {
+			app.OnTogglePlugin = func() {
+				if mounted.Load() {
+					_ = host.Deactivate("tao3k.org-kanban")
+					mounted.Store(false)
+				} else {
+					_, err := host.Activate(ctx, pluginhost.ScopedScope{
+						PluginID:             "tao3k.org-kanban",
+						ContributionID:       "kanban_panel",
+						ActivationGeneration: 1,
+						Runtime:              schema.RuntimeWebViewUntrusted,
+						SlotID:               "workbench.main",
+						EntryPath:            "index.html",
+						ReadScopes:           []string{"org.tasks", "session.summary"},
+						DeclaredActions:      []string{"org.task.move-state"},
+						Assets:               os.DirFS("examples/plugins/ts-org-kanban"),
+					})
+					if err != nil {
+						log.Printf("hot-plug failed: %v", err)
+						return
+					}
+					mounted.Store(true)
 				}
-				mounted.Store(true)
+				win.Invalidate()
 			}
-			win.Invalidate()
 		}
 		win.Invalidate()
 	})

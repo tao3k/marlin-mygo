@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   createOrgizeWorkerClient,
@@ -132,6 +132,165 @@ const FILTER_DEFS: Array<{ key: AgendaFilter; label: string }> = [
   { key: "done", label: "Done" },
 ];
 
+const VISIBLE_CARD_WINDOW = 40;
+
+interface CaptureSubmitPayload {
+  kind: OrgizeAgentCaptureKindDto;
+  targetKind: OrgizeAgentCaptureTargetKindDto;
+  title: string;
+  tagsCsv: string;
+  timeWindow: string;
+}
+
+const CaptureFormBar = memo(function CaptureFormBar({
+  pending,
+  onSubmitCapture,
+}: {
+  pending: boolean;
+  onSubmitCapture: (payload: CaptureSubmitPayload) => Promise<boolean>;
+}) {
+  const [kind, setKind] = useState<OrgizeAgentCaptureKindDto>("task");
+  const [targetKind, setTargetKind] = useState<OrgizeAgentCaptureTargetKindDto>("inbox");
+  const [titleInput, setTitleInput] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
+  const [winInput, setWinInput] = useState("");
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!titleInput.trim()) return;
+    const ok = await onSubmitCapture({
+      kind,
+      targetKind,
+      title: titleInput,
+      tagsCsv: tagsInput,
+      timeWindow: winInput,
+    });
+    if (ok) {
+      setTitleInput("");
+      setTagsInput("");
+      setWinInput("");
+    }
+  }
+
+  return (
+    <form className="capture-bar" onSubmit={(e) => void handleSubmit(e)}>
+      <select value={kind} onChange={(e) => setKind(e.target.value as OrgizeAgentCaptureKindDto)} aria-label="Capture Kind">
+        <option value="task">Task</option>
+        <option value="note">Note</option>
+        <option value="idea">Idea</option>
+        <option value="decision">Decision</option>
+      </select>
+      <select value={targetKind} onChange={(e) => setTargetKind(e.target.value as OrgizeAgentCaptureTargetKindDto)} aria-label="Capture Target">
+        <option value="inbox">Inbox</option>
+        <option value="datetree">Datetree</option>
+      </select>
+      <input
+        type="text"
+        value={titleInput}
+        onChange={(e) => setTitleInput(e.target.value)}
+        placeholder="Capture title (routed to orgize capturePlan)"
+      />
+      <input
+        type="text"
+        value={tagsInput}
+        onChange={(e) => setTagsInput(e.target.value)}
+        placeholder="tags: deep,arch"
+      />
+      <input
+        type="text"
+        value={winInput}
+        onChange={(e) => setWinInput(e.target.value)}
+        placeholder="14:00-15:00"
+      />
+      <button className="primary" type="submit" disabled={pending}>
+        Capture
+      </button>
+    </form>
+  );
+});
+
+const AgendaCardRow = memo(function AgendaCardRow({
+  card,
+  onClockIn,
+  onToggleDone,
+}: {
+  card: OrgizeAgendaViewCardDto;
+  onClockIn: (card: OrgizeAgendaViewCardDto) => void;
+  onToggleDone: (card: OrgizeAgendaViewCardDto) => void;
+}) {
+  const isDone = card.todoState === "done";
+  const timeStr = card.time ? ` · ${card.time}${card.endTime ? `-${card.endTime}` : ""}` : "";
+  const tagStr = card.effectiveTags.length > 0 ? ` · :${card.effectiveTags.join(":")}:` : "";
+  return (
+    <div className={`item ${card.urgency.total >= 80 ? "urgent" : ""} ${isDone ? "done" : ""}`}>
+      <div>
+        <div>
+          {card.todo ? `[${card.todo}] ` : ""}
+          {card.title}
+          <span className="badge">U:{card.urgency.total}</span>
+          {card.blockers.length > 0 && (
+            <span className="badge blocked">Blocked ({card.blockers.length})</span>
+          )}
+        </div>
+        <div className="meta">
+          {card.displayDate}
+          {timeStr}
+          {tagStr}
+        </div>
+      </div>
+      <div className="pills" style={{ marginBottom: 0 }}>
+        <button type="button" onClick={() => onClockIn(card)}>
+          Clock In
+        </button>
+        <button type="button" onClick={() => onToggleDone(card)}>
+          {isDone ? "Reopen" : "Done"}
+        </button>
+      </div>
+    </div>
+  );
+});
+
+const FocusClockCard = memo(function FocusClockCard({
+  alarm,
+  onToggleStart,
+  onStartBreak,
+  onReset,
+}: {
+  alarm: FocusAlarmState;
+  onToggleStart: () => void;
+  onStartBreak: () => void;
+  onReset: () => void;
+}) {
+  const pct =
+    alarm.durationSec > 0
+      ? Math.min(100, Math.round(((alarm.durationSec - alarm.remainingSec) * 100) / alarm.durationSec))
+      : 0;
+  return (
+    <div className="card">
+      <h3>Focus Alarm &amp; Org Clock</h3>
+      <div className="subtitle">
+        {alarm.label} · {alarm.completedBlocks} completed
+      </div>
+      <div className="clock-display">{formatClock(alarm.remainingSec)}</div>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="pills">
+        <button className="primary" type="button" onClick={onToggleStart}>
+          {alarm.status === "running" ? "Pause" : "Start"}
+        </button>
+        <button type="button" onClick={onStartBreak}>
+          5m Break
+        </button>
+        <button type="button" onClick={onReset}>
+          Reset
+        </button>
+      </div>
+      <div className="subtitle">Status: {alarm.status}</div>
+    </div>
+  );
+});
+
 export function OrgAgendaPlannerApp() {
   const agendaProj = useMarlinProjection("org.agenda", INITIAL_AGENDA, parseAgendaDTO);
   const clockProj = useMarlinProjection("org.clock", INITIAL_CLOCK, parseClockDTO);
@@ -145,11 +304,7 @@ export function OrgAgendaPlannerApp() {
   const aiPlanAct = useMarlinAction("agent.workflow.plan-day");
 
   const [filter, setFilter] = useState<AgendaFilter>("all");
-  const [kind, setKind] = useState<OrgizeAgentCaptureKindDto>("task");
-  const [targetKind, setTargetKind] = useState<OrgizeAgentCaptureTargetKindDto>("inbox");
-  const [titleInput, setTitleInput] = useState("");
-  const [tagsInput, setTagsInput] = useState("");
-  const [winInput, setWinInput] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(VISIBLE_CARD_WINDOW);
   const [scratchOpen, setScratchOpen] = useState(false);
   const [scratchInput, setScratchInput] = useState("");
   const [receiptMsg, setReceiptMsg] = useState("React 19 + tao3k/orgize DTOs ready.");
@@ -164,7 +319,12 @@ export function OrgAgendaPlannerApp() {
   });
 
   const cards = agendaProj.data.cards;
+  const setAgendaLocal = agendaProj.setLocal;
   const visibleCards = useMemo(() => selectAgendaCards(cards, TODAY_ISO, filter), [cards, filter]);
+  const renderedCards = useMemo(
+    () => (visibleCards.length > visibleLimit ? visibleCards.slice(0, visibleLimit) : visibleCards),
+    [visibleCards, visibleLimit],
+  );
   const conflicts = useMemo(() => detectTimeBlockOverlaps(cards, TODAY_ISO), [cards]);
   const clockSummary = useMemo(() => summarizeClockRollup(clockProj.data), [clockProj.data]);
   const todayBlocks = useMemo(
@@ -175,94 +335,131 @@ export function OrgAgendaPlannerApp() {
     [cards],
   );
 
+  const submitCapture = captureAct.submit;
+  const submitToggle = toggleAct.submit;
+  const submitClockIn = clockInAct.submit;
+  const submitClockOut = clockOutAct.submit;
+  const submitAlarm = alarmAct.submit;
+
   useEffect(() => {
     if (alarm.status !== "running") return;
     const timer = setInterval(() => {
       setAlarm((prev) => {
         const next = tickFocusAlarm(prev, 1);
         if (prev.status === "running" && next.status === "ringing") {
-          void clockOutAct.submit({ title: next.cardTitle, completedBlocks: next.completedBlocks });
-          void alarmAct.submit({ label: next.label, completedBlocks: next.completedBlocks });
+          void submitClockOut({ title: next.cardTitle, completedBlocks: next.completedBlocks });
+          void submitAlarm({ label: next.label, completedBlocks: next.completedBlocks });
           setReceiptMsg(`Focus alarm ringing: clocked out "${next.cardTitle}"!`);
         }
         return next;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [alarm.status, alarmAct, clockOutAct]);
+  }, [alarm.status, submitAlarm, submitClockOut]);
 
-  async function handleCapture(e: FormEvent) {
-    e.preventDefault();
-    if (!titleInput.trim()) return;
-    const req = buildCaptureRequest(
-      { kind, targetKind, title: titleInput, tagsCsv: tagsInput, timeWindow: winInput },
-      TODAY_ISO,
-    );
-    const rcpt = await captureAct.submit(req);
-    if (rcpt.admitted) {
-      const [startTime, endTime] = winInput.split("-").map((s) => s.trim());
-      const created: OrgizeAgendaViewCardDto = {
-        source: SAMPLE_SOURCE,
-        sortedPosition: 0,
-        kind: req.kind,
-        displayDate: TODAY_ISO,
-        targetDate: TODAY_ISO,
-        time: parseHHMM(startTime) !== undefined ? startTime : null,
-        endTime: parseHHMM(endTime) !== undefined ? endTime : null,
-        title: req.title,
-        todo: req.kind === "task" ? "TODO" : null,
-        todoState: req.kind === "task" ? "todo" : null,
-        effectiveTags: req.tags ?? [],
-        blockers: [],
-        urgency: { total: 78, ingredients: [] },
-        receipts: [{ kind: "capturePlan", message: `Target: ${req.target?.kind ?? "inbox"}` }],
-      };
-      agendaProj.setLocal((prev) => ({
-        ...prev,
-        totalCandidates: prev.cards.length + 1,
-        cards: [created, ...prev.cards],
-      }));
-      setTitleInput("");
-      setTagsInput("");
-      setWinInput("");
-      setReceiptMsg(`Captured "${req.title}" via orgize capturePlan (receipt: ${rcpt.receiptId || "admitted"})`);
-    } else {
+  const handleCaptureSubmit = useCallback(
+    async (payload: CaptureSubmitPayload): Promise<boolean> => {
+      const req = buildCaptureRequest(payload, TODAY_ISO);
+      const rcpt = await submitCapture(req);
+      if (rcpt.admitted) {
+        const [startTime, endTime] = payload.timeWindow.split("-").map((s) => s.trim());
+        const created: OrgizeAgendaViewCardDto = {
+          source: SAMPLE_SOURCE,
+          sortedPosition: 0,
+          kind: req.kind,
+          displayDate: TODAY_ISO,
+          targetDate: TODAY_ISO,
+          time: parseHHMM(startTime) !== undefined ? startTime : null,
+          endTime: parseHHMM(endTime) !== undefined ? endTime : null,
+          title: req.title,
+          todo: req.kind === "task" ? "TODO" : null,
+          todoState: req.kind === "task" ? "todo" : null,
+          effectiveTags: req.tags ?? [],
+          blockers: [],
+          urgency: { total: 78, ingredients: [] },
+          receipts: [{ kind: "capturePlan", message: `Target: ${req.target?.kind ?? "inbox"}` }],
+        };
+        setAgendaLocal((prev) => ({
+          ...prev,
+          totalCandidates: prev.cards.length + 1,
+          cards: [created, ...prev.cards],
+        }));
+        setReceiptMsg(`Captured "${req.title}" via orgize capturePlan (receipt: ${rcpt.receiptId || "admitted"})`);
+        return true;
+      }
       setReceiptMsg(`Capture denied: ${rcpt.denial ?? "rejected"}`);
-    }
-  }
+      return false;
+    },
+    [setAgendaLocal, submitCapture],
+  );
 
-  async function handleToggleDone(card: OrgizeAgendaViewCardDto) {
-    const nextDone = card.todoState !== "done";
-    const rcpt = await toggleAct.submit({
-      title: card.title,
-      source: card.source,
-      nextState: nextDone ? "done" : "todo",
-    });
-    if (rcpt.admitted) {
-      agendaProj.setLocal((prev) => ({
-        ...prev,
-        cards: prev.cards.map((c) =>
-          c === card ? { ...c, todo: nextDone ? "DONE" : "TODO", todoState: nextDone ? "done" : "todo" } : c,
-        ),
-      }));
-      setReceiptMsg(`Marked "${card.title}" -> ${nextDone ? "DONE" : "TODO"}`);
-    }
-  }
+  const handleToggleDone = useCallback(
+    (card: OrgizeAgendaViewCardDto) => {
+      const nextDone = card.todoState !== "done";
+      void submitToggle({
+        title: card.title,
+        source: card.source,
+        nextState: nextDone ? "done" : "todo",
+      }).then((rcpt) => {
+        if (rcpt.admitted) {
+          setAgendaLocal((prev) => ({
+            ...prev,
+            cards: prev.cards.map((c) =>
+              c === card ? { ...c, todo: nextDone ? "DONE" : "TODO", todoState: nextDone ? "done" : "todo" } : c,
+            ),
+          }));
+          setReceiptMsg(`Marked "${card.title}" -> ${nextDone ? "DONE" : "TODO"}`);
+        }
+      });
+    },
+    [setAgendaLocal, submitToggle],
+  );
 
-  async function handleClockIn(card: OrgizeAgendaViewCardDto) {
-    const rcpt = await clockInAct.submit({ title: card.title, source: card.source, durationSec: 25 * 60 });
-    if (rcpt.admitted) {
-      setAlarm((prev) => ({
-        ...prev,
-        cardTitle: card.title,
-        label: `Clocked: ${card.title}`,
-        durationSec: 25 * 60,
-        remainingSec: 25 * 60,
-        status: "running",
-      }));
-      setReceiptMsg(`Clocked in on "${card.title}" (synced to GPU Focus Clock reactor)`);
-    }
-  }
+  const handleClockIn = useCallback(
+    (card: OrgizeAgendaViewCardDto) => {
+      void submitClockIn({ title: card.title, source: card.source, durationSec: 25 * 60 }).then((rcpt) => {
+        if (rcpt.admitted) {
+          setAlarm((prev) => ({
+            ...prev,
+            cardTitle: card.title,
+            label: `Clocked: ${card.title}`,
+            durationSec: 25 * 60,
+            remainingSec: 25 * 60,
+            status: "running",
+          }));
+          setReceiptMsg(`Clocked in on "${card.title}" (synced to GPU Focus Clock reactor)`);
+        }
+      });
+    },
+    [submitClockIn],
+  );
+
+  const handleToggleAlarmStart = useCallback(() => {
+    setAlarm((prev) => ({
+      ...prev,
+      status: prev.status === "running" ? "paused" : "running",
+    }));
+  }, []);
+
+  const handleStartBreak = useCallback(() => {
+    setAlarm((prev) => ({
+      ...prev,
+      label: "Short Break",
+      durationSec: 5 * 60,
+      remainingSec: 5 * 60,
+      status: "running",
+    }));
+  }, []);
+
+  const handleResetAlarm = useCallback(() => {
+    setAlarm((prev) => ({
+      ...prev,
+      label: "Deep Work Block",
+      durationSec: 25 * 60,
+      remainingSec: 25 * 60,
+      status: "idle",
+    }));
+  }, []);
 
   async function handleAIPlanDay() {
     const rcpt = await aiPlanAct.submit({
@@ -355,51 +552,22 @@ export function OrgAgendaPlannerApp() {
         </div>
       )}
 
-      <form className="capture-bar" onSubmit={(e) => void handleCapture(e)}>
-        <select value={kind} onChange={(e) => setKind(e.target.value as OrgizeAgentCaptureKindDto)} aria-label="Capture Kind">
-          <option value="task">Task</option>
-          <option value="note">Note</option>
-          <option value="idea">Idea</option>
-          <option value="decision">Decision</option>
-        </select>
-        <select value={targetKind} onChange={(e) => setTargetKind(e.target.value as OrgizeAgentCaptureTargetKindDto)} aria-label="Capture Target">
-          <option value="inbox">Inbox</option>
-          <option value="datetree">Datetree</option>
-        </select>
-        <input
-          type="text"
-          value={titleInput}
-          onChange={(e) => setTitleInput(e.target.value)}
-          placeholder="Capture title (routed to orgize capturePlan)"
-        />
-        <input
-          type="text"
-          value={tagsInput}
-          onChange={(e) => setTagsInput(e.target.value)}
-          placeholder="tags: deep,arch"
-        />
-        <input
-          type="text"
-          value={winInput}
-          onChange={(e) => setWinInput(e.target.value)}
-          placeholder="14:00-15:00"
-        />
-        <button className="primary" type="submit" disabled={captureAct.pending}>
-          Capture
-        </button>
-      </form>
+      <CaptureFormBar pending={captureAct.pending} onSubmitCapture={handleCaptureSubmit} />
 
       <div className="grid">
         <section>
           <div className="card">
             <h3>Orgize Agenda Queue ({visibleCards.length})</h3>
-            <div className="pills">
+            <div className="segmented">
               {FILTER_DEFS.map((d) => (
                 <button
                   key={d.key}
                   type="button"
                   className={filter === d.key ? "active" : ""}
-                  onClick={() => setFilter(d.key)}
+                  onClick={() => {
+                    setFilter(d.key);
+                    setVisibleLimit(VISIBLE_CARD_WINDOW);
+                  }}
                 >
                   {d.key === "all" ? `All (${cards.length})` : d.label}
                 </button>
@@ -412,95 +580,34 @@ export function OrgAgendaPlannerApp() {
               </div>
             ))}
 
-            {visibleCards.map((card, idx) => {
-              const isDone = card.todoState === "done";
-              const timeStr = card.time ? ` · ${card.time}${card.endTime ? `-${card.endTime}` : ""}` : "";
-              const tagStr = card.effectiveTags.length > 0 ? ` · :${card.effectiveTags.join(":")}:` : "";
-              return (
-                <div
-                  key={`${card.title}-${idx}`}
-                  className={`item ${card.urgency.total >= 80 ? "urgent" : ""} ${isDone ? "done" : ""}`}
+            {renderedCards.map((card, idx) => (
+              <AgendaCardRow
+                key={`${card.title}-${idx}`}
+                card={card}
+                onClockIn={handleClockIn}
+                onToggleDone={handleToggleDone}
+              />
+            ))}
+            {visibleCards.length > renderedCards.length && (
+              <div className="pills" style={{ marginTop: 10, marginBottom: 0 }}>
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit((n) => n + VISIBLE_CARD_WINDOW)}
                 >
-                  <div>
-                    <div>
-                      {card.todo ? `[${card.todo}] ` : ""}
-                      {card.title}
-                      <span className="badge">U:{card.urgency.total}</span>
-                      {card.blockers.length > 0 && (
-                        <span className="badge blocked">Blocked ({card.blockers.length})</span>
-                      )}
-                    </div>
-                    <div className="meta">
-                      {card.displayDate}
-                      {timeStr}
-                      {tagStr}
-                    </div>
-                  </div>
-                  <div className="pills" style={{ marginBottom: 0 }}>
-                    <button type="button" onClick={() => void handleClockIn(card)}>
-                      Clock In
-                    </button>
-                    <button type="button" onClick={() => void handleToggleDone(card)}>
-                      {isDone ? "Reopen" : "Done"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+                  Show more ({visibleCards.length - renderedCards.length} remaining)
+                </button>
+              </div>
+            )}
           </div>
         </section>
 
         <aside>
-          <div className="card">
-            <h3>Focus Alarm &amp; Org Clock</h3>
-            <div className="subtitle">
-              {alarm.label} · {alarm.completedBlocks} completed
-            </div>
-            <div className="clock-display">{formatClock(alarm.remainingSec)}</div>
-            <div className="pills">
-              <button
-                className="primary"
-                type="button"
-                onClick={() =>
-                  setAlarm((prev) => ({
-                    ...prev,
-                    status: prev.status === "running" ? "paused" : "running",
-                  }))
-                }
-              >
-                {alarm.status === "running" ? "Pause" : "Start"}
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setAlarm((prev) => ({
-                    ...prev,
-                    label: "Short Break",
-                    durationSec: 5 * 60,
-                    remainingSec: 5 * 60,
-                    status: "running",
-                  }))
-                }
-              >
-                5m Break
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setAlarm((prev) => ({
-                    ...prev,
-                    label: "Deep Work Block",
-                    durationSec: 25 * 60,
-                    remainingSec: 25 * 60,
-                    status: "idle",
-                  }))
-                }
-              >
-                Reset
-              </button>
-            </div>
-            <div className="subtitle">Status: {alarm.status}</div>
-          </div>
+          <FocusClockCard
+            alarm={alarm}
+            onToggleStart={handleToggleAlarmStart}
+            onStartBreak={handleStartBreak}
+            onReset={handleResetAlarm}
+          />
 
           <div className="card">
             <h3>Today&apos;s Time Blocks</h3>
@@ -521,7 +628,7 @@ export function OrgAgendaPlannerApp() {
   );
 }
 
-const rootEl = document.getElementById("root");
+const rootEl = typeof document !== "undefined" ? document.getElementById("root") : null;
 if (rootEl) {
   createRoot(rootEl).render(
     <MarlinPanelProvider pluginId="tao3k.org-agenda-planner">

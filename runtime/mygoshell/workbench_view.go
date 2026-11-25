@@ -47,9 +47,14 @@ type WorkbenchApp struct {
 	KeyTrie  *input.KeyTrie
 
 	// Optional live Fenwick-virtualized streaming transcript + interactive composer.
-	Transcript   *TranscriptController
-	OnSendPrompt func(prompt string)
-	OnCancelTurn func()
+	Transcript       *TranscriptController
+	TranscriptHidden bool
+	OnSendPrompt     func(prompt string)
+	OnCancelTurn     func()
+
+	// Optional studio brand heading displayed at the top of the sidebar.
+	BrandTitle    string
+	BrandSubtitle string
 
 	// Optional built-in Tier-0 Host GPU Marketplace control drawer (floats above WebViews).
 	Marketplace *MarketplaceController
@@ -63,15 +68,27 @@ type WorkbenchApp struct {
 	ActiveQuickPluginID func() string
 	OnQuickPluginSelect func(pluginID string)
 
-	mu              sync.Mutex
-	selectedID      string
-	paletteOpen     bool
-	paletteQuery    string
-	marketplaceOpen bool
-	rankedBuf       []input.RankedCommand
-	activeChord     []string
-	gateOpen        bool
-	pendingGate     *PendingGateView
+	mu                sync.Mutex
+	selectedID        string
+	paletteOpen       bool
+	paletteQuery      string
+	paletteRankValid  bool
+	paletteLastQuery  string
+	paletteLastCmdLen int
+	marketplaceOpen   bool
+	rankedBuf         []input.RankedCommand
+	activeChord       []string
+	gateOpen          bool
+	pendingGate       *PendingGateView
+	cachedThemeKey    schema.UITheme
+	cachedTheme       *ui.Theme
+	cachedTopTargetID string
+	cachedTopKind     schema.TargetKind
+	cachedTopPhase    string
+	cachedTopBadge    string
+	cachedSnapProfile string
+	cachedSnapGen     uint64
+	cachedSnapBadge   string
 }
 
 func NewWorkbenchApp(
@@ -147,6 +164,12 @@ func (a *WorkbenchApp) activeWorkbench() *shell.WorkbenchController {
 func (a *WorkbenchApp) View(c *ui.Context) {
 	if c.Shortcut(ui.Cmd, ui.KeyK) {
 		a.paletteOpen = !a.paletteOpen
+		if a.paletteOpen {
+			a.paletteQuery = ""
+			a.paletteRankValid = false
+			a.marketplaceOpen = false
+			a.gateOpen = false
+		}
 	}
 
 	if active, ok := a.Targets.Active(); ok {
@@ -163,31 +186,49 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	if hasSnap {
 		theme = snap.Theme
 	}
-	t := ApplyMarlinTheme(c, theme)
+	var t *ui.Theme
+	if a.cachedTheme != nil && a.cachedThemeKey == theme {
+		t = a.cachedTheme
+		c.SetTheme(t)
+	} else {
+		t = ApplyMarlinTheme(c, theme)
+		a.cachedThemeKey = theme
+		a.cachedTheme = t
+	}
 
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		// Left sidebar: unified multi-machine federated topology (Local + Remote + Mobile).
-		ui.Column(c).Width(240).Padding(10).Gap(8).
+		// Left sidebar: studio brand, AI workflow quick-switcher, and federated nodes.
+		ui.Column(c).Width(228).Padding(14).Gap(10).AlignItems(ui.Stretch).
 			Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
-			a.renderTargetSidebar(c, t)
+			if a.BrandTitle != "" {
+				ui.Column(c).Gap(2).Padding(0, 2, 6, 2).Children(func() {
+					ui.Text(c, a.BrandTitle).FontSize(15).Bold().TextColor(t.Text)
+					if a.BrandSubtitle != "" {
+						ui.Text(c, a.BrandSubtitle).FontSize(11).TextColor(t.TextMuted)
+					}
+				})
+			}
 			if len(a.QuickPlugins) > 0 && a.OnQuickPluginSelect != nil {
 				ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).Bold().TextColor(t.TextMuted)
 				activeID := ""
 				if a.ActiveQuickPluginID != nil {
 					activeID = a.ActiveQuickPluginID()
 				}
-				for _, qp := range a.QuickPlugins {
-					var clicked bool
-					if qp.PluginID == activeID {
-						clicked = ui.PrimaryButton(c.Key("qp-"+qp.PluginID), qp.Label).Clicked()
-					} else {
-						clicked = ui.Button(c.Key("qp-"+qp.PluginID), qp.Label).Clicked()
+				ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+					for _, qp := range a.QuickPlugins {
+						var clicked bool
+						if qp.PluginID == activeID {
+							clicked = ui.PrimaryButton(c.Key(qp.PluginID), qp.Label).Clicked()
+						} else {
+							clicked = ui.Button(c.Key(qp.PluginID), qp.Label).Clicked()
+						}
+						if clicked {
+							a.OnQuickPluginSelect(qp.PluginID)
+						}
 					}
-					if clicked {
-						a.OnQuickPluginSelect(qp.PluginID)
-					}
-				}
+				})
 			}
+			a.renderTargetSidebar(c, t)
 			if a.OnTogglePlugin != nil {
 				label := "Mount Plugin"
 				if a.PluginMountedFn != nil && a.PluginMountedFn() {
@@ -199,10 +240,10 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			}
 		})
 
-		// Right workspace: top chrome + Scheme UI IR frame tree + hot-pluggable slots.
-		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+		// Right workspace: crisp top chrome + Scheme UI IR frame tree + hot-pluggable slots.
+		ui.Column(c).Grow(1).MinWidth(0).AlignItems(ui.Stretch).Children(func() {
 			a.renderTopBar(c, t, snap)
-			ui.Column(c).Grow(1).MinWidth(0).Padding(12).Gap(10).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Padding(14).Gap(12).AlignItems(ui.Stretch).Children(func() {
 				rctx := shell.RenderContext{
 					Surface:  c,
 					Theme:    theme,
@@ -214,7 +255,7 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				} else if a.Transcript == nil {
 					ui.Text(c, "Waiting for marlin.ui.v1 workbench snapshot...").TextColor(t.TextMuted)
 				}
-				if a.Transcript != nil {
+				if a.Transcript != nil && !a.TranscriptHidden {
 					a.Transcript.Render(c, t, a.OnSendPrompt, a.OnCancelTurn)
 				}
 			})
@@ -304,10 +345,22 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 		if active, ok := a.Targets.Active(); ok {
 			meta := active.Meta()
 			ui.Text(c, meta.DisplayName).Bold()
-			ui.Textf(c, "[%s · %s]", meta.TargetKind, meta.Phase).FontSize(12).TextColor(t.TextMuted)
+			phaseStr := string(meta.Phase)
+			if a.cachedTopBadge == "" || a.cachedTopTargetID != meta.ID || a.cachedTopKind != meta.TargetKind || a.cachedTopPhase != phaseStr {
+				a.cachedTopTargetID = meta.ID
+				a.cachedTopKind = meta.TargetKind
+				a.cachedTopPhase = phaseStr
+				a.cachedTopBadge = fmt.Sprintf("[%s · %s]", meta.TargetKind, phaseStr)
+			}
+			ui.Text(c, a.cachedTopBadge).FontSize(12).TextColor(t.TextMuted)
 		}
 		if snap != nil {
-			ui.Textf(c, "profile:%s gen:%d", snap.ProfileName, snap.Generation).FontSize(12).TextColor(t.Accent)
+			if a.cachedSnapBadge == "" || a.cachedSnapProfile != snap.ProfileName || a.cachedSnapGen != snap.Generation {
+				a.cachedSnapProfile = snap.ProfileName
+				a.cachedSnapGen = snap.Generation
+				a.cachedSnapBadge = fmt.Sprintf("profile:%s gen:%d", snap.ProfileName, snap.Generation)
+			}
+			ui.Text(c, a.cachedSnapBadge).FontSize(12).TextColor(t.Accent)
 		}
 		a.mu.Lock()
 		chord := strings.Join(a.activeChord, " ")
@@ -316,6 +369,15 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			ui.Textf(c, "HYDRA: %s …", chord).FontSize(12).Bold().TextColor(t.Warning)
 		}
 		ui.Spacer(c)
+		if a.Transcript != nil && len(a.QuickPlugins) > 0 {
+			chatLabel := "Show Chat"
+			if !a.TranscriptHidden {
+				chatLabel = "Hide Chat"
+			}
+			if ui.Button(c.Key("toggle-chat"), chatLabel).Clicked() {
+				a.TranscriptHidden = !a.TranscriptHidden
+			}
+		}
 		if a.Marketplace != nil {
 			if ui.Button(c.Key("open-marketplace"), "Marketplace").Clicked() {
 				a.marketplaceOpen = true
@@ -323,6 +385,10 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 		}
 		if ui.Button(c.Key("open-palette"), "Cmd+K Commands").Clicked() {
 			a.paletteOpen = true
+			a.paletteQuery = ""
+			a.paletteRankValid = false
+			a.marketplaceOpen = false
+			a.gateOpen = false
 		}
 		if a.pendingGate != nil {
 			if ui.PrimaryButton(c.Key("open-gate"), "Review Gate").Clicked() {
@@ -337,7 +403,12 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		ui.Text(c, "Command Palette (marlin.ui.v1)").FontSize(16).Bold()
 		ui.TextInput(c, &a.paletteQuery).Placeholder("Type a Scheme command...").AutoFocus()
 		if len(a.Commands) > 0 {
-			a.rankedBuf = input.RankCommands(a.paletteQuery, a.Commands, a.rankedBuf[:0])
+			if !a.paletteRankValid || a.paletteLastQuery != a.paletteQuery || a.paletteLastCmdLen != len(a.Commands) {
+				a.rankedBuf = input.RankCommands(a.paletteQuery, a.Commands, a.rankedBuf[:0])
+				a.paletteLastQuery = a.paletteQuery
+				a.paletteLastCmdLen = len(a.Commands)
+				a.paletteRankValid = true
+			}
 			limit := min(len(a.rankedBuf), 8)
 			ui.Column(c).Gap(4).Children(func() {
 				for i := 0; i < limit; i++ {

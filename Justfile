@@ -5,6 +5,19 @@
 default:
     @just --list
 
+# Explicit, Tab-completable plugin subcommands: `just plugin show-agenda`, `just plugin bench-all`, etc.
+mod plugin 'just/plugin.just'
+
+# Quick top-level macOS/desktop studio launches (also under `just plugin show-*`):
+show-agenda:
+    @just plugin show-agenda
+
+show-memory:
+    @just plugin show-memory
+
+show-workflow:
+    @just plugin show-workflow
+
 # Validate every .proto schema and emit the canonical FileDescriptorSet via Go tool.
 proto-descriptor:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool descriptor
@@ -30,13 +43,9 @@ e2e-rust core="../..":
 model-gate:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate
 
-# Scaffold a new Marketplace plugin (runtime: react | ts | go-wasm | declarative).
+# Scaffold a new Marketplace plugin (or use explicit `just plugin new-react|new-go-wasm|new-ts|new-declarative`).
 init-plugin id runtime="react" slot="workbench.main" out="":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool init-plugin -id {{id}} -runtime {{runtime}} -slot {{slot}} -out "{{out}}"
-
-# One-command macOS/desktop live showcase: React 19 AI workflows + Go WASI GPU Focus Clock.
-showcase plugin="agenda":
-    CGO_ENABLED=0 go run ./cmd/marlin-app -showcase -showcase-plugin {{plugin}}
 
 # Run Pure-Go zero-cgo test suite across all 5 engine planes, plus race detector.
 test-go:

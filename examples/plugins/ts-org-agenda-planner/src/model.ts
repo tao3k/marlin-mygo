@@ -44,15 +44,28 @@ export interface FocusAlarmState {
   completedBlocks: number;
 }
 
-const HHMM_RE = /^(\d{2}):(\d{2})$/;
-
 export function parseHHMM(raw?: string | null): number | undefined {
   if (!raw) return undefined;
-  const m = HHMM_RE.exec(raw.trim());
-  if (!m) return undefined;
-  const hh = Number(m[1]);
-  const mm = Number(m[2]);
-  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return undefined;
+  let start = 0;
+  let end = raw.length;
+  while (start < end && raw.charCodeAt(start) <= 32) start++;
+  while (end > start && raw.charCodeAt(end - 1) <= 32) end--;
+  if (end - start !== 5 || raw.charCodeAt(start + 2) !== 58 /* ':' */) {
+    return undefined;
+  }
+  const h1 = raw.charCodeAt(start) - 48;
+  const h2 = raw.charCodeAt(start + 1) - 48;
+  const m1 = raw.charCodeAt(start + 3) - 48;
+  const m2 = raw.charCodeAt(start + 4) - 48;
+  if (
+    h1 < 0 || h1 > 9 || h2 < 0 || h2 > 9 ||
+    m1 < 0 || m1 > 9 || m2 < 0 || m2 > 9
+  ) {
+    return undefined;
+  }
+  const hh = h1 * 10 + h2;
+  const mm = m1 * 10 + m2;
+  if (hh > 23 || mm > 59) return undefined;
   return hh * 60 + mm;
 }
 
@@ -160,32 +173,60 @@ export function selectAgendaCards(
   todayISO: string,
   filter: AgendaFilter,
 ): OrgizeAgendaViewCardDto[] {
-  const filtered = cards.filter((card) => {
+  const keyed: Array<{
+    card: OrgizeAgendaViewCardDto;
+    doneRank: number;
+    urgency: number;
+    date: string;
+    timeMin: number;
+  }> = [];
+
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i]!;
     const isDone = card.todoState === "done";
+    let keep = true;
     switch (filter) {
       case "today":
-        return !isDone && card.displayDate === todayISO;
+        keep = !isDone && card.displayDate === todayISO;
+        break;
       case "overdue":
-        return !isDone && card.displayDate !== "" && card.displayDate < todayISO;
+        keep = !isDone && card.displayDate !== "" && card.displayDate < todayISO;
+        break;
       case "blocked":
-        return !isDone && card.blockers.length > 0;
+        keep = !isDone && card.blockers.length > 0;
+        break;
       case "urgent":
-        return !isDone && card.urgency.total >= 80;
+        keep = !isDone && card.urgency.total >= 80;
+        break;
       case "done":
-        return isDone;
+        keep = isDone;
+        break;
       default:
-        return true;
+        keep = true;
+        break;
     }
+    if (!keep) continue;
+    keyed.push({
+      card,
+      doneRank: isDone ? 1 : 0,
+      urgency: card.urgency.total,
+      date: card.displayDate,
+      timeMin: parseHHMM(card.time) ?? 9999,
+    });
+  }
+
+  keyed.sort((a, b) => {
+    if (a.doneRank !== b.doneRank) return a.doneRank - b.doneRank;
+    if (b.urgency !== a.urgency) return b.urgency - a.urgency;
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return a.timeMin - b.timeMin;
   });
 
-  return filtered.slice().sort((a, b) => {
-    const aDone = a.todoState === "done";
-    const bDone = b.todoState === "done";
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    if (b.urgency.total !== a.urgency.total) return b.urgency.total - a.urgency.total;
-    if (a.displayDate !== b.displayDate) return a.displayDate.localeCompare(b.displayDate);
-    return (parseHHMM(a.time) ?? 9999) - (parseHHMM(b.time) ?? 9999);
-  });
+  const out = new Array<OrgizeAgendaViewCardDto>(keyed.length);
+  for (let i = 0; i < keyed.length; i++) {
+    out[i] = keyed[i]!.card;
+  }
+  return out;
 }
 
 /**

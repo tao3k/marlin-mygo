@@ -216,7 +216,7 @@ export function AIWorkflowCockpitApp() {
   );
 }
 
-const el = document.getElementById("root");
+const el = typeof document !== "undefined" ? document.getElementById("root") : null;
 if (el) {
   createRoot(el).render(
     <MarlinPanelProvider pluginId="tao3k.ai-workflow-cockpit">

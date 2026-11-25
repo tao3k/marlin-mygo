@@ -137,12 +137,14 @@ keybindings across all three runtimes:
 | =examples/plugins/go-focus-clock-reactor=        | =tao3k.focus-clock-reactor=  | Go 1.27 WASI GPU     | 120Hz GPU focus countdown, next agenda card, quick log, binary sparkline |
 | =examples/plugins/declarative-daily-planner-pack=| =tao3k.daily-planner-pack=   | Declarative TOML     | Zero-code calm theme, agenda blocks, capture templates, Meow/Hydra keys |
 
-Launch the one-command interactive desktop showcase (mounts React 19 + Go WASI GPU side-by-side with live cross-runtime sync):
+Launch the explicit, Tab-completable macOS/desktop studio showcase (mounts React 19 + Go WASI GPU Dock with live cross-runtime sync):
 
 #+begin_src shell
-just showcase
-# Or build, certify, and sign all 9 canonical examples into a catalog:
-CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
+just plugin show-agenda      # Org Agenda & AI Daily Planner (React 19) + GPU Focus Clock
+just plugin show-memory      # AI Memory & Knowledge Triage Inbox (React 19)
+just plugin show-workflow    # Multi-Agent AI Workflow Cockpit (React 19)
+just plugin bench-all        # Run performance gates on all 5 flagship plugins
+just plugin build-all        # Build, certify & Ed25519-sign all 9 canonical plugins
 #+end_src
 
 * 8. Per-Plugin Performance Gate & LLM Self-Healing Loop

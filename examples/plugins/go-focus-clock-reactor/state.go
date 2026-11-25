@@ -208,31 +208,26 @@ func (s *FocusClockState) BuildUITree() schema.UIElement {
 	captureArgs := fmt.Sprintf(`{"kind":"note","title":%q,"target":{"kind":"datetree","insertPosition":"append"}}`, "Quick focus check-in: "+s.ActiveTitle)
 
 	return gouir.Panel(
-		"Focus Clock & Org Agenda (GPU Reactor)",
-		schema.ToneAccent,
+		"FOCUS CLOCK DOCK · GO 1.27 WASI GPU (0 MB WEBVIEW RAM)",
+		schema.ToneInfo,
 		gouir.Rows(
 			gouir.Text(
 				gouir.Span(FormatCountdown(s.RemainingSec)+"  ", schema.ToneAccent),
-				gouir.Span(statusLabel+"  ", statusTone),
-				gouir.Span(fmt.Sprintf("blocks:%d · clocked:%dm", s.CompletedBlocks, s.ClockedTotalSec/60), schema.ToneMuted),
-			),
-			gouir.Text(
-				gouir.Span("Active: ", schema.ToneMuted),
+				gouir.Span(statusLabel+"  ·  ", statusTone),
 				gouir.Span(s.ActiveTitle+" ", schema.ToneNormal),
-				gouir.Span("["+s.EffortStatus+"]", effortTone),
-			),
-			gouir.Text(
-				gouir.Span("Next: ", schema.ToneInfo),
-				gouir.Span(fmt.Sprintf("%s %s (U:%d)", s.NextAgendaTime, s.NextAgendaTitle, s.NextUrgency), schema.ToneNormal),
-			),
-			gouir.Text(
-				gouir.Span("Log: ", schema.ToneMuted),
-				gouir.Span(lastNote, schema.ToneNormal),
+				gouir.Span("["+s.EffortStatus+"]  ·  ", effortTone),
+				gouir.Span(fmt.Sprintf("%d blocks · %dm clocked", s.CompletedBlocks, s.ClockedTotalSec/60), schema.ToneMuted),
 			),
 			gouir.Columns(
-				gouir.ActionButton("Clock In 25m", "org.clock.in", clockInArgs, schema.ToneSuccess),
+				gouir.ActionButton("Clock In 25m", "org.clock.in", clockInArgs, schema.ToneAccent),
 				gouir.ActionButton("Clock Out", "org.clock.out", clockOutArgs, schema.ToneWarning),
 				gouir.ActionButton("Quick Note", "org.capture.plan", captureArgs, schema.ToneInfo),
+				gouir.Text(
+					gouir.Span("   Next: ", schema.ToneInfo),
+					gouir.Span(fmt.Sprintf("%s %s (U:%d)", s.NextAgendaTime, s.NextAgendaTitle, s.NextUrgency), schema.ToneNormal),
+					gouir.Span("   ·   Log: ", schema.ToneMuted),
+					gouir.Span(lastNote, schema.ToneMuted),
+				),
 			),
 		),
 	)

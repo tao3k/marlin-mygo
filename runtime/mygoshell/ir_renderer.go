@@ -24,7 +24,7 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 	t := c.Theme()
 	switch node.Kind {
 	case schema.ElemRows:
-		col := ui.Column(c).Grow(1).MinWidth(0).Gap(8)
+		col := ui.Column(c).Grow(1).MinWidth(0).Gap(10).AlignItems(ui.Stretch)
 		applyLayoutConstraints(col, node)
 		col.Children(func() {
 			for i := range node.Children {
@@ -33,7 +33,7 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 		})
 
 	case schema.ElemColumns:
-		row := ui.Row(c).Grow(1).MinWidth(0).Gap(10).AlignItems(ui.Stretch)
+		row := ui.Row(c).MinWidth(0).Gap(8).AlignItems(ui.Center)
 		applyLayoutConstraints(row, node)
 		row.Children(func() {
 			for i := range node.Children {
@@ -46,12 +46,12 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 		if node.Tone != "" && node.Tone != schema.ToneNormal {
 			border = ToneColor(rctx.Theme, node.Tone)
 		}
-		panel := ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(6).Radius(8).
+		panel := ui.Column(c).MinWidth(0).Padding(12, 14).Gap(6).Radius(10).
 			Background(t.Surface).Border(1, border)
 		applyLayoutConstraints(panel, node)
 		panel.Children(func() {
 			if node.Title != "" {
-				ui.Text(c, interpolateBindings(node.Title, rctx.Bindings)).Bold().FontSize(13).TextColor(ToneColor(rctx.Theme, node.Tone))
+				ui.Text(c, interpolateBindings(node.Title, rctx.Bindings)).Bold().FontSize(12).TextColor(ToneColor(rctx.Theme, node.Tone))
 			}
 			for i := range node.Children {
 				RenderUIElement(c, node.Children[i], slots, rctx)

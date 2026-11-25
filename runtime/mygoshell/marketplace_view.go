@@ -56,7 +56,7 @@ type MarketplaceItem struct {
 	AddedReadScopes      []string // non-empty when an upgrade expands read_scopes
 	AddedDeclaredActions []string // non-empty when an upgrade expands declared_actions
 
-	// Precomputed display labels to minimize per-frame allocations.
+	// Precomputed display labels & stable widget keys to eliminate per-frame allocations.
 	titleLine           string
 	trustBadge          string
 	permLine            string
@@ -69,6 +69,13 @@ type MarketplaceItem struct {
 	disableLabel        string
 	wakeLabel           string
 	sleepLabel          string
+	instKey             string
+	upgKey              string
+	confirmUpgKey       string
+	rbKey               string
+	disKey              string
+	wakeKey             string
+	sleepKey            string
 }
 
 func (it *MarketplaceItem) refreshLabels() {
@@ -125,7 +132,16 @@ func (it *MarketplaceItem) refreshLabels() {
 	it.disableLabel = "Disable " + it.PluginID
 	it.wakeLabel = "Wake " + it.PluginID
 	it.sleepLabel = "Sleep " + it.PluginID
+	it.instKey = "mkt-inst-" + it.PluginID
+	it.upgKey = "mkt-upg-" + it.PluginID
+	it.confirmUpgKey = "mkt-upg-confirm-" + it.PluginID
+	it.rbKey = "mkt-rb-" + it.PluginID
+	it.disKey = "mkt-dis-" + it.PluginID
+	it.wakeKey = "mkt-wake-" + it.PluginID
+	it.sleepKey = "mkt-sleep-" + it.PluginID
 }
+
+const maxVisibleMarketplaceCards = 12
 
 // MarketplaceController owns the built-in Tier-0 Host GPU Marketplace drawer
 // (painted above all Untrusted plugin WebViews so third-party plugins can never
@@ -141,18 +157,31 @@ type MarketplaceController struct {
 
 	mu                sync.RWMutex
 	items             []MarketplaceItem
+	itemsVer          uint64
 	query             string
 	runtimeFilter     schema.PanelRuntimeKind // empty = All
+	pageOffset        int
 	statusBanner      string
 	statusIsErr       bool
 	profilerLine      string
 	pendingEscalation map[string]bool
 
-	// Reused scratch slices to avoid per-frame allocations.
-	renderMu      sync.Mutex
-	renderItems   []MarketplaceItem
-	cmdEntriesBuf []input.CommandEntry
-	rankedBuf     []input.RankedCommand
+	// Reused scratch slices & query cache to avoid per-frame allocations at 120Hz.
+	renderMu       sync.Mutex
+	renderItems    []MarketplaceItem
+	renderItemsVer uint64
+	cmdEntriesBuf  []input.CommandEntry
+	filteredIdxBuf []int
+	rankedBuf      []input.RankedCommand
+	matchedBuf     []int
+	cacheValid     bool
+	cacheQuery     string
+	cacheRT        schema.PanelRuntimeKind
+	cacheItemsVer  uint64
+	cachedPageInfo string
+	pageInfoStart  int
+	pageInfoEnd    int
+	pageInfoTotal  int
 }
 
 func NewMarketplaceController() *MarketplaceController {
@@ -168,6 +197,8 @@ func (m *MarketplaceController) SetItems(items []MarketplaceItem) {
 		cp[i].refreshLabels()
 	}
 	m.items = cp
+	m.itemsVer++
+	m.pageOffset = 0
 	m.mu.Unlock()
 }
 
@@ -177,6 +208,7 @@ func (m *MarketplaceController) UpsertItem(item MarketplaceItem) {
 	item.refreshLabels()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.itemsVer++
 	for i := range m.items {
 		if m.items[i].PluginID == item.PluginID {
 			m.items[i] = item
@@ -205,6 +237,7 @@ func (m *MarketplaceController) MarkInstalled(pluginID, version string, gen uint
 				m.items[i].HealthState = "HEALTHY"
 			}
 			m.items[i].refreshLabels()
+			m.itemsVer++
 			return
 		}
 	}
@@ -227,6 +260,7 @@ func (m *MarketplaceController) MarkDormant(pluginID, version, policy string) {
 			m.items[i].ActiveGeneration = 0
 			m.items[i].HealthState = "DORMANT"
 			m.items[i].refreshLabels()
+			m.itemsVer++
 			return
 		}
 	}
@@ -242,6 +276,7 @@ func (m *MarketplaceController) MarkDisabled(pluginID string) {
 			m.items[i].ActiveGeneration = 0
 			m.items[i].HealthState = "IDLE"
 			m.items[i].refreshLabels()
+			m.itemsVer++
 			return
 		}
 	}
@@ -249,13 +284,19 @@ func (m *MarketplaceController) MarkDisabled(pluginID string) {
 
 func (m *MarketplaceController) SetQuery(q string) {
 	m.mu.Lock()
-	m.query = q
+	if m.query != q {
+		m.query = q
+		m.pageOffset = 0
+	}
 	m.mu.Unlock()
 }
 
 func (m *MarketplaceController) SetRuntimeFilter(rt schema.PanelRuntimeKind) {
 	m.mu.Lock()
-	m.runtimeFilter = rt
+	if m.runtimeFilter != rt {
+		m.runtimeFilter = rt
+		m.pageOffset = 0
+	}
 	m.mu.Unlock()
 }
 
@@ -294,9 +335,11 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 	m.mu.RLock()
 	query := m.query
 	rtFilter := m.runtimeFilter
+	pageOffset := m.pageOffset
 	statusMsg := m.statusBanner
 	statusErr := m.statusIsErr
 	profilerLine := m.profilerLine
+	itemsVer := m.itemsVer
 	var pendingEsc map[string]bool
 	if len(m.pendingEscalation) > 0 {
 		pendingEsc = make(map[string]bool, len(m.pendingEscalation))
@@ -304,45 +347,62 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 			pendingEsc[k] = v
 		}
 	}
-	m.renderItems = append(m.renderItems[:0], m.items...)
+	if m.renderItemsVer != itemsVer || len(m.renderItems) != len(m.items) {
+		m.renderItems = append(m.renderItems[:0], m.items...)
+		m.renderItemsVer = itemsVer
+	}
 	m.mu.RUnlock()
 
-	// Filter by runtime kind first, then rank with zero-alloc engine/input.FuzzyScore.
-	m.cmdEntriesBuf = m.cmdEntriesBuf[:0]
-	for i := range m.renderItems {
-		it := &m.renderItems[i]
-		if rtFilter != "" && it.Runtime != rtFilter {
-			continue
+	// Reuse cached fuzzy-filtered indices whenever (query, rtFilter, itemsVer) are unchanged.
+	if !m.cacheValid || m.cacheQuery != query || m.cacheRT != rtFilter || m.cacheItemsVer != itemsVer {
+		m.matchedBuf = m.matchedBuf[:0]
+		if strings.TrimSpace(query) == "" {
+			for i := range m.renderItems {
+				if rtFilter == "" || m.renderItems[i].Runtime == rtFilter {
+					m.matchedBuf = append(m.matchedBuf, i)
+				}
+			}
+		} else {
+			m.cmdEntriesBuf = m.cmdEntriesBuf[:0]
+			m.filteredIdxBuf = m.filteredIdxBuf[:0]
+			for i := range m.renderItems {
+				it := &m.renderItems[i]
+				if rtFilter != "" && it.Runtime != rtFilter {
+					continue
+				}
+				m.cmdEntriesBuf = append(m.cmdEntriesBuf, input.CommandEntry{
+					Name:        it.PluginID,
+					Description: it.Summary,
+				})
+				m.filteredIdxBuf = append(m.filteredIdxBuf, i)
+			}
+			m.rankedBuf = input.RankCommands(query, m.cmdEntriesBuf, m.rankedBuf[:0])
+			for _, r := range m.rankedBuf {
+				m.matchedBuf = append(m.matchedBuf, m.filteredIdxBuf[r.Index])
+			}
 		}
-		m.cmdEntriesBuf = append(m.cmdEntriesBuf, input.CommandEntry{
-			Name:        it.PluginID,
-			Description: it.Summary,
-		})
+		m.cacheQuery = query
+		m.cacheRT = rtFilter
+		m.cacheItemsVer = itemsVer
+		m.cacheValid = true
 	}
+	matched := m.matchedBuf
 
-	var matched []int
-	if strings.TrimSpace(query) == "" {
-		for i := range m.renderItems {
-			if rtFilter == "" || m.renderItems[i].Runtime == rtFilter {
-				matched = append(matched, i)
-			}
-		}
-	} else {
-		// Map filtered index back to m.renderItems index.
-		filteredIdx := make([]int, 0, len(m.cmdEntriesBuf))
-		for i := range m.renderItems {
-			if rtFilter == "" || m.renderItems[i].Runtime == rtFilter {
-				filteredIdx = append(filteredIdx, i)
-			}
-		}
-		m.rankedBuf = input.RankCommands(query, m.cmdEntriesBuf, m.rankedBuf[:0])
-		for _, r := range m.rankedBuf {
-			matched = append(matched, filteredIdx[r.Index])
-		}
+	// Bound visible cards per frame so 100+ plugin catalogs stay O(1) GPU memory and 120Hz-fluent.
+	if pageOffset < 0 {
+		pageOffset = 0
 	}
+	if len(matched) == 0 {
+		pageOffset = 0
+	} else if pageOffset >= len(matched) {
+		pageOffset = ((len(matched) - 1) / maxVisibleMarketplaceCards) * maxVisibleMarketplaceCards
+	}
+	visibleEnd := min(len(matched), pageOffset+maxVisibleMarketplaceCards)
+	visibleMatched := matched[pageOffset:visibleEnd]
 
 	var (
 		clickedFilter *schema.PanelRuntimeKind
+		nextPageOff   = pageOffset
 		doRefresh     bool
 		doClose       bool
 		doInstallID   string
@@ -415,7 +475,7 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 			ui.Text(c, "No matching Marketplace plugins found.").FontSize(12).TextColor(t.TextMuted)
 		} else {
 			ui.Column(c).Gap(8).Children(func() {
-				for _, idx := range matched {
+				for _, idx := range visibleMatched {
 					it := &m.renderItems[idx]
 					border := t.Border
 					if it.Installed {
@@ -442,48 +502,48 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 							ui.Text(c, it.healthBadge).FontSize(11).Bold().TextColor(t.Accent)
 							ui.Spacer(c)
 							if !it.Installed {
-								if ui.PrimaryButton(c.Key("mkt-inst-"+it.PluginID), it.installLabel).Clicked() {
+								if ui.PrimaryButton(c.Key(it.instKey), it.installLabel).Clicked() {
 									doInstallID = it.PluginID
 								}
 							} else if it.Dormant {
 								if m.OnWake != nil {
-									if ui.PrimaryButton(c.Key("mkt-wake-"+it.PluginID), it.wakeLabel).Clicked() {
+									if ui.PrimaryButton(c.Key(it.wakeKey), it.wakeLabel).Clicked() {
 										doWakeID = it.PluginID
 									}
 								}
 								if m.OnDisable != nil {
-									if ui.Button(c.Key("mkt-dis-"+it.PluginID), it.disableLabel).Clicked() {
+									if ui.Button(c.Key(it.disKey), it.disableLabel).Clicked() {
 										doDisableID = it.PluginID
 									}
 								}
 							} else {
 								if it.Version != "" && it.InstalledVersion != "" && it.Version != it.InstalledVersion && m.OnUpgrade != nil {
 									if it.escalationWarn != "" && !pendingEsc[it.PluginID] {
-										if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
+										if ui.PrimaryButton(c.Key(it.upgKey), it.upgradeLabel).Clicked() {
 											armEscalateID = it.PluginID
 										}
 									} else if it.escalationWarn != "" {
-										if ui.PrimaryButton(c.Key("mkt-upg-confirm-"+it.PluginID), it.confirmUpgradeLabel).Clicked() {
+										if ui.PrimaryButton(c.Key(it.confirmUpgKey), it.confirmUpgradeLabel).Clicked() {
 											doUpgradeID = it.PluginID
 										}
 									} else {
-										if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
+										if ui.PrimaryButton(c.Key(it.upgKey), it.upgradeLabel).Clicked() {
 											doUpgradeID = it.PluginID
 										}
 									}
 								}
 								if it.PreviousVersion != "" && m.OnRollback != nil {
-									if ui.Button(c.Key("mkt-rb-"+it.PluginID), it.rollbackLabel).Clicked() {
+									if ui.Button(c.Key(it.rbKey), it.rollbackLabel).Clicked() {
 										doRollbackID = it.PluginID
 									}
 								}
 								if m.OnSleep != nil {
-									if ui.Button(c.Key("mkt-sleep-"+it.PluginID), it.sleepLabel).Clicked() {
+									if ui.Button(c.Key(it.sleepKey), it.sleepLabel).Clicked() {
 										doSleepID = it.PluginID
 									}
 								}
 								if m.OnDisable != nil {
-									if ui.Button(c.Key("mkt-dis-"+it.PluginID), it.disableLabel).Clicked() {
+									if ui.Button(c.Key(it.disKey), it.disableLabel).Clicked() {
 										doDisableID = it.PluginID
 									}
 								}
@@ -492,14 +552,41 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 					})
 				}
 			})
+			if len(matched) > maxVisibleMarketplaceCards {
+				if m.cachedPageInfo == "" || m.pageInfoStart != pageOffset+1 || m.pageInfoEnd != visibleEnd || m.pageInfoTotal != len(matched) {
+					m.pageInfoStart = pageOffset + 1
+					m.pageInfoEnd = visibleEnd
+					m.pageInfoTotal = len(matched)
+					m.cachedPageInfo = fmt.Sprintf("Showing %d-%d of %d matching plugins", m.pageInfoStart, m.pageInfoEnd, m.pageInfoTotal)
+				}
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, m.cachedPageInfo).FontSize(11).TextColor(t.TextMuted)
+					ui.Spacer(c)
+					if pageOffset > 0 {
+						if ui.Button(c.Key("mkt-page-prev"), "Prev Page").Clicked() {
+							nextPageOff = max(0, pageOffset-maxVisibleMarketplaceCards)
+						}
+					}
+					if visibleEnd < len(matched) {
+						if ui.Button(c.Key("mkt-page-next"), "Next Page").Clicked() {
+							nextPageOff = visibleEnd
+						}
+					}
+				})
+			}
 		}
 	})
 
 	m.mu.Lock()
-	m.query = query
-	if clickedFilter != nil {
-		m.runtimeFilter = *clickedFilter
+	if m.query != query {
+		m.query = query
+		nextPageOff = 0
 	}
+	if clickedFilter != nil && m.runtimeFilter != *clickedFilter {
+		m.runtimeFilter = *clickedFilter
+		nextPageOff = 0
+	}
+	m.pageOffset = nextPageOff
 	m.mu.Unlock()
 
 	runAction := func(label string, fn func() error) {

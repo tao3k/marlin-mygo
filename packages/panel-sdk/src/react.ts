@@ -101,12 +101,15 @@ export function useMarlinProjection<T>(
     });
   }, [client, topic, parse]);
 
-  return {
-    data,
-    eventCount: meta.eventCount,
-    lastEventId: meta.lastEventId,
-    setLocal: setData,
-  };
+  return useMemo(
+    () => ({
+      data,
+      eventCount: meta.eventCount,
+      lastEventId: meta.lastEventId,
+      setLocal: setData,
+    }),
+    [data, meta.eventCount, meta.lastEventId],
+  );
 }
 
 export interface MarlinActionHandle<TArgs, TResult> {
@@ -158,12 +161,15 @@ export function useMarlinAction<TArgs = unknown, TResult = unknown>(
     [client, action],
   );
 
-  return {
-    submit,
-    pending: inflight || isPending,
-    lastReceipt,
-    error,
-  };
+  return useMemo(
+    () => ({
+      submit,
+      pending: inflight || isPending,
+      lastReceipt,
+      error,
+    }),
+    [submit, inflight, isPending, lastReceipt, error],
+  );
 }
 
 /**
