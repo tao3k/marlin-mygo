@@ -112,6 +112,36 @@ soak-ui ops="10000":
 visual-check out="./dist/visual-snapshots":
     MARLIN_VISUAL_OUT="{{out}}" CGO_ENABLED=0 go test -v -count=1 -run "TestVisualFrameSnapshotsAndContrastInvariants" ./runtime/mygoshell
 
+# Typecheck iOS Swift bridge against iphonesimulator SDK & run native macOS `swift test` (zero Simulator runtime required).
+test-swift:
+    swiftc -typecheck -warnings-as-errors -sdk "$(xcrun --show-sdk-path --sdk iphonesimulator)" -target arm64-apple-ios17.0-simulator runtime/device/nativebridge/ios/Sources/MarlinDeviceBridge/MarlinDeviceBridge.swift
+    swift test --package-path runtime/device/nativebridge/ios
+
+# Compile and run Android Kotlin bridge JVM unit & concurrency tests (zero Android Emulator required).
+test-kotlin:
+    #!/usr/bin/env sh
+    set -eu
+    mkdir -p runtime/device/nativebridge/android/build
+    if command -v kotlinc >/dev/null 2>&1; then
+      kotlinc -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeTest.kt
+    else
+      nix shell nixpkgs#kotlin -c kotlinc -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeTest.kt
+    fi
+    java -jar runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar
+
+# Compile Android SDK framework providers against real android.jar (zero Android Emulator required).
+test-android-sdk:
+    #!/usr/bin/env sh
+    set -eu
+    mkdir -p runtime/device/nativebridge/android/build
+    SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+    ANDROID_JAR="$(ls -d "${SDK_ROOT}"/platforms/android-*/android.jar | sort -V | tail -n 1)"
+    echo "Using Android SDK jar: ${ANDROID_JAR}"
+    kotlinc -Werror -cp "${ANDROID_JAR}" \
+      -d runtime/device/nativebridge/android/build/marlin-android-providers.jar \
+      runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt \
+      runtime/device/nativebridge/android/src/androidMain/kotlin/org/tao3k/marlin/device/AndroidSystemProviders.kt
+
 # === Explicit Security + Performance Certification (doctor -perf) ===
 
 # Run security + performance doctor on Org Agenda (React 19).

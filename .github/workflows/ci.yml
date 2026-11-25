@@ -22,51 +22,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: extractions/setup-just@v3
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install protoc and Go protobuf plugins
         run: |
           sudo apt-get update && sudo apt-get install -y protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
-
-      - name: Verify Protobuf lint, FileDescriptorSet, Go stubs, and TS wire types zero drift
-        run: |
-          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool descriptor
-          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen
-          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool gen-ts
-          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool wire-sync -check
-          git diff --exit-code -- gen/ packages/panel-sdk/src/generated/ proto/wire-lock.toml
+      - run: just ci proto-contract
 
   formal-security-quint:
     name: Quint Formal Adversarial Security Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: extractions/setup-just@v3
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - run: npm install -g @informalsystems/quint
+      - run: just ci formal-security
 
-      - name: Install Quint formal model checker
-        run: npm install -g @informalsystems/quint
-
-      - name: Run Pure-Go Quint model-gate (safe + 7 adversarial negative controls, offline TS backend)
-        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate -backend=typescript -samples=500
-
-  go-engine-race-and-fuzz:
-    name: Go Engine Tests, Race, Fuzz & Zero-CGO Build (${{ matrix.os }})
+  go-unit-and-build:
+    name: Go Unit, WASM & Zero-CGO Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -74,13 +60,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
+      - uses: extractions/setup-just@v3
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
       - uses: oven-sh/setup-bun@v2
-
       - name: Cache wazero persistent AOT compilation artifacts
         uses: actions/cache@v4
         with:
@@ -90,54 +74,80 @@ jobs:
           key: wazero-aot-${{ runner.os }}-${{ hashFiles('go.mod', 'sdk/go-ui-ir/**', 'examples/plugins/**/*.go') }}
           restore-keys: |
             wazero-aot-${{ runner.os }}-
+      - run: bun install --frozen-lockfile
+      - run: just ci go-unit-and-build
 
-      - name: Install build-time TS/React 19 dependencies (dev/bundle only; zero runtime Bun)
-        run: bun install --frozen-lockfile
-
-      - name: Run Pure-Go zero-cgo unit, property, and resident WASM tests
-        run: CGO_ENABLED=0 go test -v ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
-
-      - name: Run Go race detector on concurrent engine & security planes
-        run: go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device
-
-      - name: Run Go fuzz smoke tests on protocol, schema, manifest, drawlist, arena & input boundaries
-        run: |
-          CGO_ENABLED=0 go test -fuzz=FuzzValidateDotIdentifier -fuzztime=3s ./pkg/schema
-          CGO_ENABLED=0 go test -fuzz=FuzzParseSubmissionID -fuzztime=3s ./pkg/schema
-          CGO_ENABLED=0 go test -fuzz=FuzzDecodeDrawList -fuzztime=3s ./pkg/schema
-          CGO_ENABLED=0 go test -fuzz=FuzzParsePluginManifestTOML -fuzztime=3s ./pkg/schema
-          CGO_ENABLED=0 go test -fuzz=FuzzArenaCompileAndDiff -fuzztime=3s ./engine/arena
-          CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime=3s ./engine/input
-          CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime=3s ./runtime/pluginhost
-          CGO_ENABLED=0 go test -fuzz=FuzzDecodeAndAdmitWasmUITree -fuzztime=3s ./runtime/pluginhost
-          CGO_ENABLED=0 go test -fuzz=FuzzParsePluginProfileTOML -fuzztime=3s ./control/marketplace
-          CGO_ENABLED=0 go test -fuzz=FuzzParseTrustRingTOML -fuzztime=3s ./control/marketplace
-
-      - name: Run static analysis & verify zero-cgo desktop binary build
-        run: |
-          CGO_ENABLED=0 go vet ./...
-          CGO_ENABLED=0 go build ./cmd/marlin-app
-
-  ts-sdk-and-bench:
-    name: TypeScript Panel SDK & Strict Performance Gate
+  go-race-detector:
+    name: Go Race Detector (Concurrent Engine & Security Planes)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: extractions/setup-just@v3
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - run: just ci go-race
 
+  go-fuzz-smoke:
+    name: Go Fuzz Smoke Suite (10 Protocol & Boundary Targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci go-fuzz
+
+  ui-stress-and-visual:
+    name: MyGo GPU Chaos Monkey, UI Perf & Visual Contrast Regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci ui-stress-and-visual
+
+  ts-sdk-and-react-chaos:
+    name: TypeScript Panel SDK & React 19 Live DOM Chaos Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
       - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci ts-and-react-chaos
 
-      - name: Install build-time TS/React 19 dependencies
-        run: bun install --frozen-lockfile
+  perf-gate:
+    name: Go + TypeScript Strict Performance & Zero-Alloc SLO Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci perf-gate
 
-      - name: Run TypeScript Panel SDK and Example Plugin unit & perf tests
-        run: bun test packages/panel-sdk examples/plugins
+  ios-swift-bridge:
+    name: iOS Swift Native Bridge (iOS SDK Typecheck & macOS swift test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - run: just ci ios-swift-bridge
 
-      - name: Enforce Go + TypeScript performance gate (strict zero-alloc + tightened latency ceilings)
-        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=250ms -latency-scale=2.5
+  android-kotlin-bridge:
+    name: Android Kotlin Native Bridge (JVM Tests & Android SDK Compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - run: just ci android-kotlin-bridge
 
   reuse-spdx:
     name: REUSE SPDX License Compliance

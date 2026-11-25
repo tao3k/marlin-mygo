@@ -12,6 +12,7 @@
 .env
 .mygo/
 .build/
+.swiftpm/
 build/
 dist/
 node_modules/

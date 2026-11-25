@@ -5,8 +5,9 @@
 default:
     @just --list
 
-# Explicit, Tab-completable plugin subcommands: `just plugin show-agenda`, `just plugin bench-all`, etc.
+# Explicit, Tab-completable plugin and CI subcommands: `just plugin <TAB>`, `just ci <TAB>`.
 mod plugin 'just/plugin.just'
+mod ci 'just/ci.just'
 
 # Quick top-level macOS/desktop studio launches (also under `just plugin show-*`):
 show-agenda:
@@ -57,7 +58,15 @@ init-plugin id runtime="react" slot="workbench.main" out="":
 # Run Pure-Go zero-cgo test suite across all 5 engine planes, plus race detector.
 test-go:
     CGO_ENABLED=0 go test ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
-    go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device
+    go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device/...
+
+# Run iOS SDK Swift typecheck & native macOS swift test (no Simulator runtime needed).
+test-swift:
+    @just plugin test-swift
+
+# Run Android Kotlin bridge JVM unit & concurrency tests (no Android Emulator needed).
+test-kotlin:
+    @just plugin test-kotlin
 
 # Run short smoke fuzzing across protocol, schema, manifest, drawlist, arena, and input boundaries.
 fuzz-smoke time="2s":

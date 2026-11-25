@@ -4,7 +4,8 @@
 
 // Package nativebridge defines platform-neutral Go contracts and wire codecs
 // paired with `//mygo:native` Swift (iOS) and Kotlin (Android) OS adapters in
-// ios/MarlinDeviceBridge.swift and android/MarlinDeviceBridge.kt.
+// ios/Sources/MarlinDeviceBridge/MarlinDeviceBridge.swift and
+// android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt.
 package nativebridge
 
 import (

@@ -85,3 +85,36 @@ func TestNativeBridgeAdapterIntegratesWithDeviceBridgeAndGateReceipts(t *testing
 		t.Fatalf("expected native transport to receive notification, got %+v", tr.sentNotifications)
 	}
 }
+
+func TestNativeBridgeAdapterAndroidWireParityAndFullMethods(t *testing.T) {
+	ctx := context.Background()
+	tr := &stubNativeTransport{}
+	adapter := &Adapter{Transport: tr, Platform: "android"}
+
+	perm, err := adapter.PermissionState(ctx)
+	if err != nil || perm != device.PermissionGranted {
+		t.Fatalf("expected granted permission, got %q err=%v", perm, err)
+	}
+
+	shots, err := adapter.RecentScreenshots(ctx, 999)
+	if err != nil || len(shots) != 1 || shots[0].LocalID != "ph-1" || !shots[0].IsScreenshot {
+		t.Fatalf("expected bounded screenshot list, got %+v err=%v", shots, err)
+	}
+
+	ocr, err := adapter.ExtractTextOCR(ctx, "ph-1")
+	if err != nil || ocr != "Meeting at 14:00" {
+		t.Fatalf("expected OCR text, got %q err=%v", ocr, err)
+	}
+
+	if err := adapter.SendNotification(ctx, device.NotificationRequest{Title: "Marlin", Body: "Android Ping"}); err != nil {
+		t.Fatalf("SendNotification failed: %v", err)
+	}
+	if len(tr.sentNotifications) != 1 || tr.sentNotifications[0].Body != "Android Ping" {
+		t.Fatalf("expected android notification recorded, got %+v", tr.sentNotifications)
+	}
+
+	captures, err := adapter.DrainPendingCaptures(ctx)
+	if err != nil || len(captures) != 1 || captures[0].Text != "Draft Q4 roadmap" {
+		t.Fatalf("expected drained captures, got %+v err=%v", captures, err)
+	}
+}
