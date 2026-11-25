@@ -93,6 +93,8 @@ func main() {
 		err = runBuildExamples(os.Args[2:])
 	case "e2e-rust":
 		err = runE2ERust(os.Args[2:])
+	case "perf-gate":
+		err = runPerfGate(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -104,7 +106,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate> [flags]")
 }
 
 func runDescriptor(args []string) error {

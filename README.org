@@ -37,22 +37,25 @@ iOS/Android bridges).
   writes) are formally challenged in Quint with 7 adversarial negative controls,
   2,000-step Go adversarial state-machine property tests, and 8 Go fuzzers.
 
-* Measured Engine Benchmarks (Apple M2 Pro, Zero CGO)
+* Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro, Zero CGO)
 
-| Subsystem / Path | Measured Latency | Heap / Op | Allocs |
-|-----------------------------------------------------------+------------------+-----------+--------|
-| =engine/arena= incremental diff (1 leaf of 1,000 nodes)   | *163 ns*         | 0 B       | 0      |
-| =engine/arena= pure theme restyle (1,000 nodes)           | *14.4 ns*        | 0 B       | 0      |
-| =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT)     | *71.6 ns*        | 0 B       | 0      |
-| =engine/viewport= 100k-row fold/unfold height update      | *2.6 ns*         | 0 B       | 0      |
-| =engine/input= 3-key Meow/Hydra =KeyTrie= chord lookup    | *28.5 ns*        | 0 B       | 0      |
-| =engine/bus= lock-free fan-out (16 plugins, coalesced)    | *497 ns*         | 0 B       | 0      |
-| =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *25.2 µs*        | 191 B     | 4      |
-| =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *163.7 µs*       | 12.0 KB   | 13     |
-| =runtime/mygoshell= full headless workbench GPU frame     | *30.4 µs*        | 1.3 KB    | 20     |
-| =runtime/mygoshell= 100k-row virtualized transcript frame | *247 µs*         | 2.3 KB    | 39     |
-| =control/grpcwire= HTTP/2 loopback scoped panel action    | *72.4 µs*        | 10.8 KB   | 167    |
-| =@tao3k/marlin-panel-sdk= TS scoped event filter (Bun)    | *16.2 ns*        | —         | —      |
+All 14 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
+(strict =0 allocs/op= on all 7 Plane-1 engine core hot paths, tightened 240Hz / 2ms CPU budget):
+
+| Subsystem / Path | Measured | Strict Budget | Allocs |
+|-----------------------------------------------------------+----------+---------------+--------|
+| =engine/arena= incremental diff (1 leaf of 1,000 nodes)   | *158 ns* | <= 500 ns     | *0*    |
+| =engine/arena= pure theme restyle (1,000 nodes)           | *16.5 ns*| <= 50 ns      | *0*    |
+| =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT)     | *69.3 ns*| <= 200 ns     | *0*    |
+| =engine/viewport= 100k-row fold/unfold height update      | *3.1 ns* | <= 15 ns      | *0*    |
+| =engine/input= 3-key Meow/Hydra =KeyTrie= chord lookup    | *28.4 ns*| <= 75 ns      | *0*    |
+| =engine/bus= lock-free fan-out (16 plugins, coalesced)    | *480 ns* | <= 1.5 µs     | *0*    |
+| =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |
+| =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *112 µs* | <= 300 µs     | <= 18  |
+| =runtime/mygoshell= full headless workbench GPU frame     | *38.6 µs*| <= 90 µs      | <= 24  |
+| =runtime/mygoshell= 100k-row virtualized transcript frame | *124 µs* | <= 250 µs     | <= 48  |
+| =control/grpcwire= HTTP/2 loopback scoped panel action    | *61.6 µs*| <= 250 µs     | <= 220 |
+| =@tao3k/marlin-panel-sdk= TS event match / drop / theme   | *20/5/10ns*| <= 60/30/50ns | —    |
 
 * Layered Architecture (Strict Acyclic Planes)
 
@@ -101,8 +104,8 @@ CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool keygen -out ./tmp-keys/acme
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool pack -dir ./tmp-plugin -publisher acme.dev -key ./tmp-keys/acme.key -out ./acme-board.marlinpkg
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool verify -pkg ./acme-board.marlinpkg -publisher acme.dev -pub ./tmp-keys/acme.pub
 
-# Run complete Go + TypeScript benchmark suite
-just bench
+# Enforce strict Go + TypeScript latency, byte, and zero-allocation performance gate
+just perf-gate
 
 # Run 5-test real cross-process Rust <-> Go E2E suite (TLS 1.3, WASI Reactor, Turso crash-restart, SIGKILL self-healing)
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core /path/to/marlin-agent-core

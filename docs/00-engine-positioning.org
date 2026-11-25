@@ -72,11 +72,25 @@ Dependency direction is strictly downward:
 | =engine/scheduler= | P0/P1/P2 priority ring queues with strict monotonic frame budget & latency histogram | Enqueue/Drain =O(1)= per task | Control input & Approval Gates (P0) are never starved by background plugins (P2) |
 | =runtime/wazeroir= | SHA-256 keyed =wazero.CompiledModule= AOT cache + bounded linear memory pages | Cold compile once; cached instantiate sub-ms | Enforces =CGO_ENABLED=0= and hard per-plugin memory ceiling |
 
-* 4. Performance SLO Budgets (Desktop 120Hz = 8.33ms/frame)
+* 4. Tightened Performance SLO Budgets & Automated Perf-Gate (=DefaultCPUWorkBudget = 2ms=, 240Hz Ready)
 
-- UI IR 1,000-node incremental diff (1 streaming leaf update): *< 25 µs*
-- Lock-free plugin bus fan-out (16 active plugins): *< 5 µs / event*
-- Multi-key chord lookup (=KeyTrie=): *< 100 ns*
-- 1,000-command =Cmd+K= fuzzy search: *< 150 µs*
-- 100,000-row virtual scroll =FindRowAtY= + fold height update: *< 500 ns*
-- Headless full-workbench frame build (=mygo/ui.NewTester=): *< 1 ms*
+All ceilings below are hard-enforced by =marlin-mygo-tool perf-gate= (local
+strict =1.0x= via =just perf-gate= and CI via =-latency-scale=4.0=; heap
+allocation and byte budgets are *never* relaxed in CI):
+
+| Subsystem / Benchmark | Strict Latency Budget | Hard Max Allocs | Hard Max Bytes |
+|-------------------------------------------------------+-----------------------+-----------------+----------------|
+| =engine/arena= 1,000-node incremental diff (1 leaf)   | *<= 500 ns*           | *0*             | *0 B*          |
+| =engine/arena= 1,000-node pure theme restyle          | *<= 50 ns*            | *0*             | *0 B*          |
+| =engine/arena= 1,000-node full compile                | *<= 450 µs*           | <= 24           | <= 640 KB      |
+| =engine/bus= lock-free fan-out (16 plugins coalesced) | *<= 1.5 µs*           | *0*             | *0 B*          |
+| =engine/input= 3-key Meow/Hydra =KeyTrie= lookup      | *<= 75 ns*            | *0*             | *0 B*          |
+| =engine/input= 1,000-command =Cmd+K= fuzzy ranking    | *<= 130 µs*           | *0*             | *0 B*          |
+| =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT) | *<= 200 ns*           | *0*             | *0 B*          |
+| =engine/viewport= 100k-row fold/unfold height update  | *<= 15 ns*            | *0*             | *0 B*          |
+| =runtime/wazeroir= resident WASM =DrawList= (64 cmds) | *<= 75 µs*            | <= 6            | <= 512 B       |
+| =runtime/wazeroir= resident WASM JSON UI-IR render    | *<= 300 µs*           | <= 18           | <= 20 KB       |
+| =runtime/mygoshell= headless workbench GPU frame      | *<= 90 µs*            | <= 24           | <= 2.5 KB      |
+| =runtime/mygoshell= 100k-row virtualized live frame   | *<= 250 µs*           | <= 48           | <= 4.5 KB      |
+| =control/grpcwire= loopback HTTP/2 scoped action      | *<= 250 µs*           | <= 220          | <= 20 KB       |
+| =@tao3k/marlin-panel-sdk= event match / drop / theme  | *<= 60 / 30 / 50 ns*  | —               | —              |

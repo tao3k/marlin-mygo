@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
 /**
- * TypeScript Panel SDK microbenchmark (run via `bun bench/ts/panel_bench.ts`).
- * Measures scoped event dispatch filtering throughput and theme token parsing
- * inside the Untrusted WebView plugin boundary.
+ * TypeScript Panel SDK microbenchmark & hard performance gate
+ * (run via `bun bench/ts/panel_bench.ts`).
+ * Enforces strict latency ceilings on scoped event filtering and theme token
+ * parsing inside the Untrusted WebView plugin boundary.
  */
 
 import {
@@ -15,8 +16,15 @@ import {
   type MyGoEventBridge,
 } from "../../packages/panel-sdk/src/index";
 
-function runBench(name: string, iterations: number, fn: () => void) {
-  // Warmup
+const latencyScale = Math.max(
+  1.0,
+  Number.parseFloat(process.env.MARLIN_PERF_LATENCY_SCALE ?? "1.0") || 1.0,
+);
+
+const failures: string[] = [];
+
+function runBench(name: string, iterations: number, maxNsPerOp: number, fn: () => void) {
+  // Warmup JIT
   for (let i = 0; i < Math.min(iterations / 10, 5000); i++) fn();
 
   const start = Bun.nanoseconds();
@@ -24,9 +32,15 @@ function runBench(name: string, iterations: number, fn: () => void) {
   const elapsedNs = Bun.nanoseconds() - start;
   const nsPerOp = elapsedNs / iterations;
   const opsPerSec = Math.round(1e9 / nsPerOp);
+  const budgetNs = maxNsPerOp * latencyScale;
+  const ok = nsPerOp <= budgetNs;
+  const status = ok ? "PASS" : "FAIL";
   console.log(
-    `${name.padEnd(46)} ${iterations.toString().padStart(8)} iters  ${nsPerOp.toFixed(1).padStart(7)} ns/op  ${opsPerSec.toLocaleString().padStart(12)} ops/s`,
+    `${name.padEnd(46)} ${iterations.toString().padStart(8)} iters  ${nsPerOp.toFixed(1).padStart(7)} ns/op  budget<=${budgetNs.toFixed(1).padStart(7)} ns  ${opsPerSec.toLocaleString().padStart(12)} ops/s  [${status}]`,
   );
+  if (!ok) {
+    failures.push(`${name}: ${nsPerOp.toFixed(1)} ns/op > budget ${budgetNs.toFixed(1)} ns/op`);
+  }
 }
 
 let dispatch: ((ev: unknown) => void) | undefined;
@@ -74,18 +88,22 @@ const cssVars = {
   "--marlin-muted": "#73797e",
 };
 
-runBench("TS PanelSDK ScopedEvent (matching)", 500_000, () => {
+runBench("TS PanelSDK ScopedEvent (matching)", 500_000, 60, () => {
   dispatch?.(matchingEvent);
 });
 
-runBench("TS PanelSDK ScopedEvent (foreign-dropped)", 500_000, () => {
+runBench("TS PanelSDK ScopedEvent (foreign-dropped)", 500_000, 30, () => {
   dispatch?.(foreignEvent);
 });
 
-runBench("TS PanelSDK parseThemeTokens (8 tokens)", 200_000, () => {
+runBench("TS PanelSDK parseThemeTokens (8 tokens)", 200_000, 50, () => {
   parseThemeTokens(cssVars);
 });
 
 if (delivered === 0) {
   throw new Error("benchmark sanity check failed: no events delivered");
+}
+if (failures.length > 0) {
+  console.error("TypeScript performance gate FAILED:\n  - " + failures.join("\n  - "));
+  process.exit(1);
 }

@@ -54,10 +54,14 @@ fuzz-smoke time="2s":
 test-ts:
     bun test packages/panel-sdk
 
-# Run full Go + TypeScript Frontend Engine benchmark suite.
+# Run full Go + TypeScript benchmark suite and enforce strict latency + zero-alloc perf-gate.
 bench:
     CGO_ENABLED=0 go test -bench=. -benchmem -benchtime=500ms ./bench/...
     bun bench/ts/panel_bench.ts
+
+# Enforce tightened latency, byte, and zero-allocation SLO ceilings across Go + TS.
+perf-gate scale="1.0":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=300ms -latency-scale={{scale}}
 
 # Run full repository validation gate.
 check: proto-descriptor model-gate test-ts test-go

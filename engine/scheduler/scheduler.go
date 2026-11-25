@@ -22,6 +22,15 @@ const (
 	PriorityBackground Priority = 2 // Offscreen / background Marketplace plugins
 )
 
+// Tightened frame-budget presets. DefaultCPUWorkBudget caps Go-side CPU work
+// at 2ms so 120Hz (8.33ms) and 240Hz (4.16ms) displays retain ample GPU headroom.
+const (
+	DefaultCPUWorkBudget = 2 * time.Millisecond
+	Budget240Hz          = 4166 * time.Microsecond
+	Budget120Hz          = 8333 * time.Microsecond
+	Budget60Hz           = 16666 * time.Microsecond
+)
+
 type Task struct {
 	Label    string
 	Priority Priority

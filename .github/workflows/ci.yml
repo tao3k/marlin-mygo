@@ -99,7 +99,7 @@ jobs:
           CGO_ENABLED=0 go build ./cmd/marlin-app
 
   ts-sdk-and-bench:
-    name: TypeScript Panel SDK & Engine Benchmark Smoke
+    name: TypeScript Panel SDK & Strict Performance Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,10 +113,8 @@ jobs:
       - name: Run TypeScript Panel SDK unit tests
         run: bun test packages/panel-sdk
 
-      - name: Run Go + TypeScript Frontend Engine benchmark smoke gate
-        run: |
-          CGO_ENABLED=0 go test -bench=. -benchmem -benchtime=200ms ./bench/...
-          bun bench/ts/panel_bench.ts
+      - name: Enforce Go + TypeScript performance gate (strict zero-alloc + tightened latency ceilings)
+        run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=250ms -latency-scale=4.0
 
   reuse-spdx:
     name: REUSE SPDX License Compliance
