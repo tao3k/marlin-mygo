@@ -64,13 +64,13 @@ Plane 5 [Verification]  spec/quint/             Quint formal adversarial securit
                         bench/                  Go + TS E2E Engine Benchmark Harness
 Plane 4 [Ecosystem]     packages/panel-sdk/     @tao3k/marlin-panel-sdk (TS Untrusted WebView + generated wire types)
                         sdk/go-ui-ir/           Go WASM-IR & DrawList SDK (GOOS=wasip1 reactor + emit_action)
-                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, gen-ts, model-gate, init-plugin, keygen, pack, verify, catalog, e2e-rust)
+                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, gen-ts, model-gate, init-plugin, keygen, pack, verify, catalog, serve-catalog, dev-plugin, e2e-rust, perf-gate)
 Plane 3 [Control Plane] control/transport/      TargetRegistry + FederationSupervisor + SidecarSupervisor (ephemeral token)
                         control/grpcwire/       HTTP/2 6-service adapters + TLS 1.3/mTLS + SessionDriver + TurnStreamController + ResilientSidecarTarget (SIGKILL auto-heal)
-                        control/marketplace/    Deterministic .marlinpkg + signed catalog.json Ed25519 verification & hot-install
+                        control/marketplace/    Deterministic .marlinpkg + signed HTTP/CAS RegistryClient + DevReloader (transactional hot-reload & rollback)
 Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy (atomic Revoke) + CallerPage protocol + fuzz/prop tests
                         runtime/wazeroir/       SHA-256 AOT-cached wazero + bidirectional Resident Reactor & DrawList
-                        runtime/mygoshell/      MyGo GPU workbench, Fenwick 100k-row live transcript (tool/gate/cancellation cards), UI-IR + BoundedSchema forms + WebView host
+                        runtime/mygoshell/      MyGo GPU workbench, Tier-0 built-in Marketplace drawer, Fenwick 100k-row live transcript, UI-IR + BoundedSchema forms + WebView host
                         runtime/device/         device.* protocol bridge + platform.* adapters (iOS/Android/Desktop) + one-shot receipts
                         platform/ios/           platform.ios Swift device capability adapter (Photos/Vision/Speech/Share)
 Plane 1 [Engine Core]   engine/arena/           Flat BFS UI IR Arena + non-commutative dual Merkle incremental Diff
@@ -110,8 +110,15 @@ just perf-gate
 # Run 5-test real cross-process Rust <-> Go E2E suite (TLS 1.3, WASI Reactor, Turso crash-restart, SIGKILL self-healing)
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core /path/to/marlin-agent-core
 
-# Launch zero-cgo GPU workbench (standalone showcase OR auto-healing Rust sidecar with Turso persistence)
+# Host signed example Marketplace catalog locally & run plugin author hot-reload dev loop
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
+just serve-catalog ./dist/marketplace 127.0.0.1:8787
+just dev-plugin ./examples/plugins/go-graph-inspector-reactor
+
+# Launch zero-cgo GPU workbench (standalone, signed Marketplace catalog, live dev-plugin, OR auto-healing Rust sidecar)
 CGO_ENABLED=0 go run ./cmd/marlin-app
+CGO_ENABLED=0 go run ./cmd/marlin-app -catalog-url http://127.0.0.1:8787 -catalog-pub ./dist/marketplace/publisher.pub
+CGO_ENABLED=0 go run ./cmd/marlin-app -dev-plugin ./examples/plugins/go-graph-inspector-reactor
 CGO_ENABLED=0 go run ./cmd/marlin-app -sidecar /path/to/marlin-mygo-host -real-session -turso ./session.turso
 #+end_src
 

@@ -63,6 +63,14 @@ bench:
 perf-gate scale="1.0":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=300ms -latency-scale={{scale}}
 
+# Serve a signed Marketplace catalog directory over local HTTP.
+serve-catalog dir="./dist/marketplace" addr="127.0.0.1:8787":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool serve-catalog -dir "{{dir}}" -addr "{{addr}}"
+
+# Watch a plugin directory with transactional hot-reload & automatic rollback.
+dev-plugin dir="./examples/plugins/go-graph-inspector-reactor":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir "{{dir}}"
+
 # Run full repository validation gate.
 check: proto-descriptor model-gate test-ts test-go
     CGO_ENABLED=0 go vet ./...

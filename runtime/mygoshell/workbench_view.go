@@ -44,20 +44,24 @@ type WorkbenchApp struct {
 	OnSendPrompt func(prompt string)
 	OnCancelTurn func()
 
+	// Optional built-in Tier-0 Host GPU Marketplace control drawer (floats above WebViews).
+	Marketplace *MarketplaceController
+
 	// Optional callbacks invoked by top-level chrome controls.
 	OnGateDecision  func(gateID string, approve bool)
 	OnCommandInvoke func(commandName string)
 	OnTogglePlugin  func()
 	PluginMountedFn func() bool
 
-	mu           sync.Mutex
-	selectedID   string
-	paletteOpen  bool
-	paletteQuery string
-	rankedBuf    []input.RankedCommand
-	activeChord  []string
-	gateOpen     bool
-	pendingGate  *PendingGateView
+	mu              sync.Mutex
+	selectedID      string
+	paletteOpen     bool
+	paletteQuery    string
+	marketplaceOpen bool
+	rankedBuf       []input.RankedCommand
+	activeChord     []string
+	gateOpen        bool
+	pendingGate     *PendingGateView
 }
 
 func NewWorkbenchApp(
@@ -278,6 +282,11 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			ui.Textf(c, "HYDRA: %s …", chord).FontSize(12).Bold().TextColor(t.Warning)
 		}
 		ui.Spacer(c)
+		if a.Marketplace != nil {
+			if ui.Button(c.Key("open-marketplace"), "Marketplace").Clicked() {
+				a.marketplaceOpen = true
+			}
+		}
 		if ui.Button(c.Key("open-palette"), "Cmd+K Commands").Clicked() {
 			a.paletteOpen = true
 		}
@@ -314,6 +323,14 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 			}
 		})
 	})
+
+	if a.Marketplace != nil {
+		ui.Modal(c, &a.marketplaceOpen, func() {
+			a.Marketplace.Render(c, t, func() {
+				a.marketplaceOpen = false
+			})
+		})
+	}
 
 	ui.Modal(c, &a.gateOpen, func() {
 		a.mu.Lock()

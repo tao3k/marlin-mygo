@@ -237,6 +237,28 @@ func (h *Host) Deactivate(id schema.PluginID) error {
 	return entry.inst.Close()
 }
 
+// ActiveScope returns the currently mounted ScopedScope for one active plugin.
+func (h *Host) ActiveScope(id schema.PluginID) (ScopedScope, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	entry, ok := h.active[id]
+	if !ok {
+		return ScopedScope{}, false
+	}
+	return entry.inst.Scope(), true
+}
+
+// ActiveScopes returns a snapshot of all currently active plugin scopes.
+func (h *Host) ActiveScopes() []ScopedScope {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]ScopedScope, 0, len(h.active))
+	for _, entry := range h.active {
+		out = append(out, entry.inst.Scope())
+	}
+	return out
+}
+
 // RouteEvent verifies generation and read_scopes before delivering a host event to one plugin.
 func (h *Host) RouteEvent(ev ScopedEvent) error {
 	h.mu.RLock()

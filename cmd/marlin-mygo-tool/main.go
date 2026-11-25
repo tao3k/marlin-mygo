@@ -95,6 +95,10 @@ func main() {
 		err = runE2ERust(os.Args[2:])
 	case "perf-gate":
 		err = runPerfGate(os.Args[2:])
+	case "serve-catalog":
+		err = runServeCatalog(os.Args[2:])
+	case "dev-plugin":
+		err = runDevPlugin(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -106,7 +110,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin> [flags]")
 }
 
 func runDescriptor(args []string) error {

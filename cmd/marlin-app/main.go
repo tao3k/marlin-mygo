@@ -14,11 +14,14 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +31,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
+	"github.com/tao3k/marlin-mygo/control/marketplace"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
@@ -67,6 +71,11 @@ func main() {
 	certFile := flag.String("cert", "", "optional mTLS client certificate PEM file")
 	keyFile := flag.String("key", "", "optional mTLS client private key PEM file")
 	sessionID := flag.String("session", "gui-session", "Marlin session ID")
+	catalogURL := flag.String("catalog-url", "", "optional HTTP/HTTPS signed Marketplace catalog URL (e.g. http://127.0.0.1:8787)")
+	catalogDir := flag.String("catalog-dir", "", "optional local directory containing signed catalog.json and .marlinpkg archives")
+	catalogPub := flag.String("catalog-pub", "", "optional hex Ed25519 public key file verifying the Marketplace catalog")
+	catalogPublisher := flag.String("catalog-publisher", "tao3k.official", "trusted Marketplace publisher identifier")
+	devPluginDir := flag.String("dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -242,8 +251,11 @@ func main() {
 	app.Federation = federation
 	transcript := mygoshell.NewTranscriptController()
 	app.Transcript = transcript
+	mktUI := mygoshell.NewMarketplaceController()
+	app.Marketplace = mktUI
 	app.Commands = []input.CommandEntry{
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
+		{Name: "workbench.open-marketplace", Description: "Open Tier-0 built-in Marketplace drawer"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}
@@ -269,6 +281,43 @@ func main() {
 			Content:   ui.View(app.View),
 		})
 		wvRuntime.AttachWindow(win)
+
+		wireMarketplaceUI(ctx, mktUI, host, win, *catalogURL, *catalogDir, *catalogPub, *catalogPublisher)
+
+		if strings.TrimSpace(*devPluginDir) != "" {
+			reloader, err := marketplace.NewDevReloader(marketplace.DevReloaderConfig{
+				PluginDir: *devPluginDir,
+				Host:      host,
+				Target:    schema.TargetDesktopMacOS,
+			})
+			if err != nil {
+				log.Printf("dev-plugin init failed: %v", err)
+			} else {
+				go func() {
+					_ = reloader.Watch(ctx, 300*time.Millisecond, func(res marketplace.ReloadResult, reloadErr error) {
+						if reloadErr != nil {
+							mktUI.SetStatus(fmt.Sprintf("dev-plugin reload failed (active gen:%d): %v", res.ActiveGeneration, reloadErr), true)
+						} else {
+							mktUI.UpsertItem(mygoshell.MarketplaceItem{
+								PluginID:          string(res.PluginID),
+								Version:           res.Version,
+								PublisherID:       "dev.local",
+								Summary:           "Live dev-plugin hot-reload session",
+								SlotID:            string(res.SlotID),
+								Runtime:           res.Runtime,
+								SignatureVerified: true,
+								Installed:         true,
+								InstalledVersion:  res.Version,
+								ActiveGeneration:  res.ActiveGeneration,
+								HealthState:       "HOT_RELOADING",
+							})
+							mktUI.SetStatus(fmt.Sprintf("Hot-reloaded %s v%s gen:%d (%s)", res.PluginID, res.Version, res.ActiveGeneration, res.Elapsed.Round(time.Millisecond)), false)
+						}
+						win.Invalidate()
+					})
+				}()
+			}
+		}
 
 		if liveTarget != nil {
 			liveDriver = grpcwire.NewSessionDriver(grpcwire.DriverConfig{
@@ -432,5 +481,213 @@ func main() {
 	}
 	if liveDriver != nil {
 		liveDriver.Stop()
+	}
+}
+
+func wireMarketplaceUI(
+	ctx context.Context,
+	mktUI *mygoshell.MarketplaceController,
+	host *pluginhost.Host,
+	win *mygo.Window,
+	catalogURL, catalogDir, catalogPubFile, publisherID string,
+) {
+	if (strings.TrimSpace(catalogURL) != "" || strings.TrimSpace(catalogDir) != "") && strings.TrimSpace(catalogPubFile) != "" {
+		rawHex, err := os.ReadFile(catalogPubFile)
+		if err != nil {
+			mktUI.SetStatus(fmt.Sprintf("read -catalog-pub failed: %v", err), true)
+			return
+		}
+		pubBytes, err := hex.DecodeString(strings.TrimSpace(string(rawHex)))
+		if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+			mktUI.SetStatus("invalid Ed25519 public key in -catalog-pub", true)
+			return
+		}
+		pub := ed25519.PublicKey(pubBytes)
+		trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{
+			schema.PublisherID(publisherID): pub,
+		})
+		regClient, err := marketplace.NewRegistryClient(marketplace.RegistryConfig{
+			BaseURL:       catalogURL,
+			LocalDir:      catalogDir,
+			CacheDir:      filepath.Join(os.TempDir(), "marlin-mygo-cas"),
+			CatalogPubKey: pub,
+		})
+		if err != nil {
+			mktUI.SetStatus(fmt.Sprintf("marketplace registry init failed: %v", err), true)
+			return
+		}
+		mgr := marketplace.NewManager(trust)
+		var genSeq atomic.Uint64
+		var histMu sync.Mutex
+		prevBundles := make(map[string][]byte)
+		curBundles := make(map[string][]byte)
+		curVersions := make(map[string]string)
+
+		refresh := func() error {
+			idx, err := regClient.RefreshCatalog(ctx)
+			if err != nil {
+				return err
+			}
+			items := make([]mygoshell.MarketplaceItem, 0, len(idx.Entries))
+			histMu.Lock()
+			for _, e := range idx.Entries {
+				rt := schema.RuntimeDeclarative
+				if len(e.Runtimes) > 0 {
+					rt = e.Runtimes[0]
+				}
+				it := mygoshell.MarketplaceItem{
+					PluginID:          string(e.PluginID),
+					Version:           e.Version,
+					PublisherID:       string(e.PublisherID),
+					Summary:           e.Summary,
+					SlotID:            string(e.SlotID),
+					Runtime:           rt,
+					SignatureVerified: true,
+					PackageBytes:      e.PackageBytes,
+				}
+				if active, ok := host.ActiveScope(e.PluginID); ok {
+					it.Installed = true
+					it.ActiveGeneration = active.ActivationGeneration
+					it.InstalledVersion = curVersions[string(e.PluginID)]
+					it.ReadScopes = active.ReadScopes
+					it.DeclaredActions = active.DeclaredActions
+					it.HealthState = "HEALTHY"
+				}
+				items = append(items, it)
+			}
+			histMu.Unlock()
+			mktUI.SetItems(items)
+			win.Invalidate()
+			return nil
+		}
+
+		install := func(pluginID string) error {
+			entry, ok := regClient.LookupEntry(schema.PluginID(pluginID))
+			if !ok {
+				return marketplace.ErrPackageNotFound
+			}
+			raw, err := regClient.FetchPackage(ctx, entry)
+			if err != nil {
+				return err
+			}
+			gen := genSeq.Add(1)
+			panel, err := mgr.InstallBundle(ctx, raw, host, schema.TargetDesktopMacOS, gen)
+			if err != nil {
+				return err
+			}
+			histMu.Lock()
+			if old, ok := curBundles[pluginID]; ok {
+				prevBundles[pluginID] = old
+			}
+			curBundles[pluginID] = raw
+			curVersions[pluginID] = panel.Manifest.Version
+			histMu.Unlock()
+			mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+			win.Invalidate()
+			return nil
+		}
+
+		mktUI.OnRefresh = refresh
+		mktUI.OnInstall = install
+		mktUI.OnUpgrade = install
+		mktUI.OnRollback = func(pluginID string) error {
+			histMu.Lock()
+			prev, ok := prevBundles[pluginID]
+			histMu.Unlock()
+			if !ok || len(prev) == 0 {
+				return fmt.Errorf("no previous version cached for %s", pluginID)
+			}
+			gen := genSeq.Add(1)
+			panel, err := mgr.InstallBundle(ctx, prev, host, schema.TargetDesktopMacOS, gen)
+			if err != nil {
+				return err
+			}
+			histMu.Lock()
+			curBundles[pluginID] = prev
+			curVersions[pluginID] = panel.Manifest.Version
+			histMu.Unlock()
+			mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+			win.Invalidate()
+			return nil
+		}
+		mktUI.OnDisable = func(pluginID string) error {
+			if err := host.Deactivate(schema.PluginID(pluginID)); err != nil {
+				return err
+			}
+			mktUI.MarkDisabled(pluginID)
+			win.Invalidate()
+			return nil
+		}
+		if err := refresh(); err != nil {
+			mktUI.SetStatus(fmt.Sprintf("initial catalog refresh failed: %v", err), true)
+		}
+		return
+	}
+
+	// Standalone showcase items for immediate desktop Marketplace exploration.
+	mktUI.SetItems([]mygoshell.MarketplaceItem{
+		{
+			PluginID:          "tao3k.org-kanban",
+			Version:           "0.2.0",
+			PublisherID:       "tao3k.official",
+			Summary:           "Org-mode Kanban board panel (TypeScript Untrusted WebView)",
+			SlotID:            "workbench.main",
+			Runtime:           schema.RuntimeWebViewUntrusted,
+			ReadScopes:        []string{"org.tasks", "session.summary"},
+			DeclaredActions:   []string{"org.task.move-state"},
+			SignatureVerified: true,
+		},
+		{
+			PluginID:          "tao3k.graph-inspector",
+			Version:           "0.2.0",
+			PublisherID:       "tao3k.official",
+			Summary:           "Resident Go 1.27 WASI Reactor with 22us binary DrawList GPU rendering",
+			SlotID:            "workbench.inspector",
+			Runtime:           schema.RuntimeWasmUIIR,
+			ReadScopes:        []string{"graph.nodes", "graph.edges"},
+			DeclaredActions:   []string{"graph.node.inspect"},
+			SignatureVerified: true,
+		},
+		{
+			PluginID:          "tao3k.ios-personal-capture",
+			Version:           "0.2.0",
+			PublisherID:       "tao3k.official",
+			Summary:           "App Store-safe Declarative theme & mobile capture overlay pack",
+			SlotID:            "workbench.inspector",
+			Runtime:           schema.RuntimeDeclarative,
+			SignatureVerified: true,
+		},
+	})
+	var genSeq atomic.Uint64
+	mktUI.OnInstall = func(pluginID string) error {
+		if pluginID == "tao3k.org-kanban" {
+			gen := genSeq.Add(1)
+			_, err := host.Activate(ctx, pluginhost.ScopedScope{
+				PluginID:             "tao3k.org-kanban",
+				ContributionID:       "kanban_panel",
+				ActivationGeneration: gen,
+				Runtime:              schema.RuntimeWebViewUntrusted,
+				SlotID:               "workbench.main",
+				EntryPath:            "index.html",
+				ReadScopes:           []string{"org.tasks", "session.summary"},
+				DeclaredActions:      []string{"org.task.move-state"},
+				Assets:               os.DirFS("examples/plugins/ts-org-kanban"),
+			})
+			if err != nil {
+				return err
+			}
+			mktUI.MarkInstalled(pluginID, "0.2.0", gen, "HEALTHY")
+			win.Invalidate()
+			return nil
+		}
+		return fmt.Errorf("pass -catalog-url/-catalog-dir + -catalog-pub (or run `marlin-mygo-tool build-examples`) to install %s", pluginID)
+	}
+	mktUI.OnDisable = func(pluginID string) error {
+		if err := host.Deactivate(schema.PluginID(pluginID)); err != nil {
+			return err
+		}
+		mktUI.MarkDisabled(pluginID)
+		win.Invalidate()
+		return nil
 	}
 }

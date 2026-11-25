@@ -1,0 +1,310 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+package mygoshell_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/egoist/mygo/ui"
+
+	"github.com/tao3k/marlin-mygo/control/marketplace"
+	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/shell"
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
+	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
+)
+
+type mktTestTarget struct{ meta transport.TargetMeta }
+
+func (t mktTestTarget) Meta() transport.TargetMeta { return t.meta }
+func (t mktTestTarget) Ping(context.Context) error { return nil }
+func (t mktTestTarget) Close() error               { return nil }
+
+type mktTestDispatcher struct{}
+
+func (mktTestDispatcher) SubmitScopedPanelAction(context.Context, pluginhost.ScopedActionRequest) (pluginhost.ScopedActionReceipt, error) {
+	return pluginhost.ScopedActionReceipt{Admitted: true, ReceiptID: "rcpt-mkt"}, nil
+}
+
+func buildSignedDeclarativePkg(t *testing.T, priv ed25519.PrivateKey, pluginID, version, accent string) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := `
+id = "` + pluginID + `"
+version = "` + version + `"
+contract_major = 1
+requires_features = ["ui-slot-v1"]
+
+[contributions.theme_pack]
+kind = "theme-pack"
+
+[contributions.theme_pack.panel]
+runtime = "declarative"
+slot_id = "workbench.inspector"
+cardinality = "single"
+entry_path = "theme.toml"
+read_scopes = ["theme.live"]
+declared_actions = ["theme.apply"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "marlin-plugin.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.toml"), []byte("[theme]\naccent = \""+accent+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var rev [20]byte
+	pkg, _, err := marketplace.PackBundle(dir, "tao3k.official", rev, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkg
+}
+
+func publishRepoCatalog(t *testing.T, repoDir string, pub ed25519.PublicKey, priv ed25519.PrivateKey, pkgs map[string][]byte) {
+	t.Helper()
+	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{"tao3k.official": pub})
+	var paths []string
+	for name, data := range pkgs {
+		p := filepath.Join(repoDir, name)
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+	}
+	var rev [20]byte
+	catJSON, catSig, _, err := marketplace.BuildSignedCatalog(paths, "tao3k.official", rev, trust, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "catalog.json"), catJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "catalog.json.sig"), []byte(hex.EncodeToString(catSig)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuiltInMyGoGPUMarketplaceInstallUpgradeRollbackDisableEndToEnd(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{"tao3k.official": pub})
+	repoDir := t.TempDir()
+
+	pkgV1 := buildSignedDeclarativePkg(t, priv, "tao3k.theme-demo", "0.1.0", "#c678dd")
+	pkgV2 := buildSignedDeclarativePkg(t, priv, "tao3k.theme-demo", "0.2.0", "#51afef")
+	publishRepoCatalog(t, repoDir, pub, priv, map[string][]byte{
+		"tao3k.theme-demo-0.1.0.marlinpkg": pkgV1,
+	})
+
+	srv := httptest.NewServer(marketplace.ServeCatalogHandler(repoDir))
+	defer srv.Close()
+
+	regClient, err := marketplace.NewRegistryClient(marketplace.RegistryConfig{
+		BaseURL:       srv.URL,
+		CacheDir:      filepath.Join(t.TempDir(), "cas"),
+		CatalogPubKey: pub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := marketplace.NewManager(trust)
+
+	slots := shell.NewSlotRegistry()
+	fb := mygoshell.NewUIElementRenderer("host.inspector", true, slots, func() schema.UIElement {
+		return schema.UIElement{
+			Kind:  schema.ElemPanel,
+			Title: "Host Inspector Fallback",
+			Tone:  schema.ToneInfo,
+		}
+	})
+	_ = slots.Declare(schema.SlotDeclaration{
+		SlotID: "workbench.inspector", Cardinality: schema.SlotSingle,
+		FallbackRenderer: "host.inspector", AllowUntrustedPlugin: true,
+	}, fb)
+
+	pHost := pluginhost.NewHost(slots, mktTestDispatcher{})
+	pHost.RegisterRuntime(&pluginhost.DeclarativeRuntimeFactory{})
+
+	wb := shell.NewWorkbenchController(slots)
+	_ = wb.AdmitSnapshot(schema.UIWorkbenchSnapshot{
+		Generation: 1, ProfileName: "desktop-dev", Theme: schema.DefaultUITheme(),
+		FrameTree: schema.UIElement{
+			Kind:     schema.ElemRows,
+			Children: []schema.UIElement{{Kind: schema.ElemSlot, SlotID: "workbench.inspector"}},
+		},
+	})
+
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(mktTestTarget{meta: transport.TargetMeta{
+		ID: "local-mac", DisplayName: "Local Mac", Mode: transport.ModeLocalSidecar,
+		TargetKind: schema.TargetDesktopMacOS, Phase: transport.PhaseReady,
+	}})
+
+	ctx := context.Background()
+	mktUI := mygoshell.NewMarketplaceController()
+	var genSeq atomic.Uint64
+	installedHistory := make(map[string][]byte) // stores previous version bytes for rollback
+
+	syncCatalogToUI := func() error {
+		idx, err := regClient.RefreshCatalog(ctx)
+		if err != nil {
+			return err
+		}
+		var items []mygoshell.MarketplaceItem
+		for _, e := range idx.Entries {
+			rt := schema.RuntimeDeclarative
+			if len(e.Runtimes) > 0 {
+				rt = e.Runtimes[0]
+			}
+			item := mygoshell.MarketplaceItem{
+				PluginID:          string(e.PluginID),
+				Version:           e.Version,
+				PublisherID:       string(e.PublisherID),
+				Summary:           e.Summary,
+				SlotID:            string(e.SlotID),
+				Runtime:           rt,
+				ReadScopes:        []string{"theme.live"},
+				DeclaredActions:   []string{"theme.apply"},
+				SignatureVerified: true,
+				PackageBytes:      e.PackageBytes,
+			}
+			if active, ok := pHost.ActiveScope(e.PluginID); ok {
+				item.Installed = true
+				item.ActiveGeneration = active.ActivationGeneration
+				if len(installedHistory[string(e.PluginID)]) > 0 {
+					item.InstalledVersion = "0.1.0"
+				}
+				item.HealthState = "HEALTHY"
+			}
+			items = append(items, item)
+		}
+		mktUI.SetItems(items)
+		return nil
+	}
+
+	installOrUpgrade := func(pluginID string) error {
+		entry, ok := regClient.LookupEntry(schema.PluginID(pluginID))
+		if !ok {
+			return marketplace.ErrPackageNotFound
+		}
+		raw, err := regClient.FetchPackage(ctx, entry)
+		if err != nil {
+			return err
+		}
+		gen := genSeq.Add(1)
+		panel, err := mgr.InstallBundle(ctx, raw, pHost, schema.TargetDesktopMacOS, gen)
+		if err != nil {
+			return err
+		}
+		if entry.Version == "0.1.0" {
+			installedHistory[pluginID] = raw
+		}
+		mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+		return nil
+	}
+
+	mktUI.OnRefresh = syncCatalogToUI
+	mktUI.OnInstall = installOrUpgrade
+	mktUI.OnUpgrade = installOrUpgrade
+	mktUI.OnRollback = func(pluginID string) error {
+		prev := installedHistory[pluginID]
+		gen := genSeq.Add(1)
+		panel, err := mgr.InstallBundle(ctx, prev, pHost, schema.TargetDesktopMacOS, gen)
+		if err != nil {
+			return err
+		}
+		mktUI.MarkInstalled(pluginID, panel.Manifest.Version, gen, "HEALTHY")
+		return nil
+	}
+	mktUI.OnDisable = func(pluginID string) error {
+		if err := pHost.Deactivate(schema.PluginID(pluginID)); err != nil {
+			return err
+		}
+		mktUI.MarkDisabled(pluginID)
+		return nil
+	}
+
+	if err := syncCatalogToUI(); err != nil {
+		t.Fatal(err)
+	}
+
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Marketplace = mktUI
+
+	tt := ui.NewTester(app.View, 1200, 800)
+	if !tt.HasText("Marketplace") {
+		t.Fatalf("expected Marketplace button in top bar, got %q", tt.Texts())
+	}
+
+	// 1. Open Tier-0 Marketplace GPU drawer via top bar button.
+	if err := tt.Click("Marketplace"); err != nil {
+		t.Fatalf("clicking Marketplace button failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("MARLIN MARKETPLACE (HOST TIER-0)") || !tt.HasText("VERIFIED · tao3k.official") || !tt.HasText("scopes:[theme.live]  actions:[theme.apply]") {
+		t.Fatalf("expected verified Tier-0 Marketplace catalog card, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 2. Click Install -> mounts signed v0.1.0 at gen:1!
+	if err := tt.Click("Install tao3k.theme-demo"); err != nil {
+		t.Fatalf("clicking Install failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("ACTIVE v0.1.0 · gen:1 · HEALTHY") {
+		t.Fatalf("expected ACTIVE v0.1.0 gen:1 after Install, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 3. Publish v0.2.0 to remote HTTP registry, click Refresh Catalog, then click Upgrade -> gen:2!
+	publishRepoCatalog(t, repoDir, pub, priv, map[string][]byte{
+		"tao3k.theme-demo-0.2.0.marlinpkg": pkgV2,
+	})
+	if err := tt.Click("Refresh Catalog"); err != nil {
+		t.Fatalf("clicking Refresh Catalog failed: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("Upgrade tao3k.theme-demo"); err != nil {
+		t.Fatalf("clicking Upgrade failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("ACTIVE v0.2.0 · gen:2 · HEALTHY") || !tt.HasText("Rollback tao3k.theme-demo") {
+		t.Fatalf("expected ACTIVE v0.2.0 gen:2 and Rollback button after Upgrade, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 4. Click Rollback -> restores v0.1.0 at monotonic gen:3!
+	if err := tt.Click("Rollback tao3k.theme-demo"); err != nil {
+		t.Fatalf("clicking Rollback failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("ACTIVE v0.1.0 · gen:3 · HEALTHY") {
+		t.Fatalf("expected ACTIVE v0.1.0 gen:3 after Rollback, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 5. Click Disable -> unmounts plugin and restores host.inspector fallback!
+	if err := tt.Click("Disable tao3k.theme-demo"); err != nil {
+		t.Fatalf("clicking Disable failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("NOT INSTALLED") {
+		t.Fatalf("expected NOT INSTALLED after Disable, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if _, active := pHost.ActiveScope("tao3k.theme-demo"); active {
+		t.Fatalf("expected plugin deactivated from pluginhost.Host")
+	}
+	if resolved := slots.Resolve("workbench.inspector"); len(resolved) != 1 || resolved[0].ID() != "host.inspector" {
+		t.Fatalf("expected host.inspector fallback restored after Disable, got %+v", resolved)
+	}
+}
