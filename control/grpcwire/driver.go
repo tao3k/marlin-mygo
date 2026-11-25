@@ -208,10 +208,31 @@ func (d *SessionDriver) ApproveGateOnce(
 	callID string,
 	idempotencyKey string,
 ) (*gatev1.GateDecisionReceipt, error) {
+	return d.submitGateDecision(ctx, gateID, callID, gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_APPROVE_ONCE, idempotencyKey)
+}
+
+// RejectGate submits a fail-closed rejection decision to Rust ApprovalGateService
+// and clears the local pending gate badge upon claim.
+func (d *SessionDriver) RejectGate(
+	ctx context.Context,
+	gateID string,
+	callID string,
+	idempotencyKey string,
+) (*gatev1.GateDecisionReceipt, error) {
+	return d.submitGateDecision(ctx, gateID, callID, gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_REJECT, idempotencyKey)
+}
+
+func (d *SessionDriver) submitGateDecision(
+	ctx context.Context,
+	gateID string,
+	callID string,
+	decision gatev1.ToolReviewDecision,
+	idempotencyKey string,
+) (*gatev1.GateDecisionReceipt, error) {
 	resp, err := d.cfg.Target.Gate().SubmitToolReviewDecision(ctx, &gatev1.SubmitToolReviewDecisionRequest{
 		GateId:         gateID,
 		CallId:         callID,
-		Decision:       gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_APPROVE_ONCE,
+		Decision:       decision,
 		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {

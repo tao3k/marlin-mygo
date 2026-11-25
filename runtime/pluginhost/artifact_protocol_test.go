@@ -125,6 +125,31 @@ func TestArtifactProtocolHandlerEnforcesPerPluginGrantIsolation(t *testing.T) {
 	wg.Wait()
 }
 
+func TestArtifactProtocolIngestAndGrantEndToEnd(t *testing.T) {
+	h := NewArtifactProtocolHandler(ArtifactCallerFromContext, NewArtifactCAS(1024, 4096))
+	pid := schema.PluginID("tao3k.diff-viewer")
+	body := []byte("--- a/main.go\n+++ b/main.go\n+ok\n")
+
+	entry, uri, err := h.IngestAndGrant(pid, "", "text/x-diff", body)
+	if err != nil || uri == "" {
+		t.Fatalf("IngestAndGrant failed: uri=%q err=%v", uri, err)
+	}
+	// Re-ingesting with exact digest succeeds; tampered digest fails closed.
+	if _, _, err := h.IngestAndGrant(pid, entry.SHA256Hex, "text/x-diff", body); err != nil {
+		t.Fatalf("IngestAndGrant verified failed: %v", err)
+	}
+	if _, _, err := h.IngestAndGrant(pid, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "text/x-diff", body); !errors.Is(err, ErrArtifactDigestBad) {
+		t.Fatalf("expected ErrArtifactDigestBad on forged digest, got %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, uri, nil).WithContext(WithArtifactCaller(context.Background(), pid))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatalf("expected 200 and exact diff body, got code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func FuzzArtifactProtocolHTTP(f *testing.F) {
 	cas := NewArtifactCAS(1024, 4096)
 	entry, _ := cas.Put("text/plain", []byte("bounded log line"))

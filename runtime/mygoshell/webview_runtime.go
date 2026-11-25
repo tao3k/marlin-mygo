@@ -106,6 +106,17 @@ func (r *WebViewRuntime) GrantArtifact(pluginID schema.PluginID, digestHex strin
 	return r.artifacts.Grant(pluginID, digestHex)
 }
 
+// IngestArtifactForPlugin verifies and stores bytes in the bounded SHA-256 CAS,
+// grants access exclusively to pluginID, and returns the marlin-artifact:// URI.
+func (r *WebViewRuntime) IngestArtifactForPlugin(
+	pluginID schema.PluginID,
+	expectedDigestHex string,
+	mimeType string,
+	data []byte,
+) (pluginhost.ArtifactEntry, string, error) {
+	return r.artifacts.IngestAndGrant(pluginID, expectedDigestHex, mimeType, data)
+}
+
 // RegisterProtocol installs marlin-plugin:// and marlin-artifact:// before App.Run / NewWindow.
 func (r *WebViewRuntime) RegisterProtocol() error {
 	if err := mygo.Protocol.Handle(pluginhost.PluginScheme, r.protocol); err != nil {

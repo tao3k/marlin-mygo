@@ -303,46 +303,50 @@ func main() {
 	studioSettingsState := mygoshell.NewSchemaFormState(studioSettingsSchema, nil)
 	app.SettingsSchema = &studioSettingsSchema
 	app.SettingsState = studioSettingsState
-	app.Projection = mygoshell.NewProjectionController(mygoshell.ProjectionSnapshot{
-		GraphNodes: []mygoshell.GraphNodeReceiptView{
-			{
-				NodeID:      "node-admit",
-				Kind:        "readiness-gate",
-				Phase:       "succeeded",
-				DurationMS:  4,
-				ReceiptID:   "rcpt-graph-admit-001",
-				GatewayNote: "no-live-llm gateway denial receipt preserved",
-				Summary:     "Rust native ABI readiness gate verified",
+	initialProjection := mygoshell.ProjectionSnapshot{}
+	if liveTarget == nil {
+		initialProjection = mygoshell.ProjectionSnapshot{
+			GraphNodes: []mygoshell.GraphNodeReceiptView{
+				{
+					NodeID:      "node-admit",
+					Kind:        "readiness-gate",
+					Phase:       "succeeded",
+					DurationMS:  4,
+					ReceiptID:   "rcpt-graph-admit-001",
+					GatewayNote: "no-live-llm gateway denial receipt preserved",
+					Summary:     "Rust native ABI readiness gate verified",
+				},
+				{
+					NodeID:     "node-org-plan",
+					Kind:       "org-agenda",
+					Phase:      "succeeded",
+					DurationMS: 11,
+					ReceiptID:  "rcpt-graph-plan-002",
+					Summary:    "Projected daily org agenda & time blocks",
+				},
 			},
-			{
-				NodeID:     "node-org-plan",
-				Kind:       "org-agenda",
-				Phase:      "succeeded",
-				DurationMS: 11,
-				ReceiptID:  "rcpt-graph-plan-002",
-				Summary:    "Projected daily org agenda & time blocks",
+			DiffFiles: []mygoshell.WorkspaceDiffFileView{
+				{
+					Path:      "runtime/pluginhost/artifact_protocol.go",
+					Status:    "modified",
+					Additions: 24,
+					Deletions: 2,
+					HunkLines: []string{"+marlin-artifact://<sha256> content-addressed CAS enabled"},
+				},
 			},
-		},
-		DiffFiles: []mygoshell.WorkspaceDiffFileView{
-			{
-				Path:      "runtime/pluginhost/artifact_protocol.go",
-				Status:    "modified",
-				Additions: 24,
-				Deletions: 2,
-				HunkLines: []string{"+marlin-artifact://<sha256> content-addressed CAS enabled"},
+			Processes: []mygoshell.ManagedProcessView{
+				{
+					ProcessID: "proc-marlin-host",
+					Command:   "marlin-mygo-host",
+					State:     "running",
+					ExitCode:  0,
+					UptimeSec: 60,
+					TailLines: []string{"marlin.projection.v1 read-only surface active (secrets hidden)"},
+				},
 			},
-		},
-		Processes: []mygoshell.ManagedProcessView{
-			{
-				ProcessID: "proc-marlin-host",
-				Command:   "marlin-mygo-host",
-				State:     "running",
-				ExitCode:  0,
-				UptimeSec: 60,
-				TailLines: []string{"marlin.projection.v1 read-only surface active (secrets hidden)"},
-			},
-		},
-	})
+		}
+	}
+	app.Projection = mygoshell.NewProjectionController(initialProjection)
 	app.OnAddRemoteTarget = func(targetID, displayName, endpoint, bearerToken string) error {
 		id := strings.TrimSpace(targetID)
 		addr := strings.TrimSpace(endpoint)
@@ -575,9 +579,21 @@ func main() {
 			if _, err := liveDriver.Start(ctx); err != nil {
 				log.Printf("live SessionDriver start failed: %v", err)
 			}
+			projBridge := grpcwire.NewProjectionStreamBridge(grpcwire.ProjectionBridgeConfig{
+				Target:     liveTarget,
+				ProjectID:  "default",
+				SessionID:  *sessionID,
+				Controller: app.Projection,
+				OnUpdate:   func(mygoshell.ProjectionSnapshot) { win.Invalidate() },
+			})
+			if err := projBridge.Start(ctx); err != nil {
+				log.Printf("live ProjectionStreamBridge start failed: %v", err)
+			}
 			app.OnGateDecision = func(gateID string, approve bool) {
 				if approve {
-					_, _ = liveDriver.ApproveGateOnce(ctx, gateID, "call-"+gateID, "ui-"+gateID)
+					_, _ = liveDriver.ApproveGateOnce(ctx, gateID, "call-"+gateID, "ui-approve-"+gateID)
+				} else {
+					_, _ = liveDriver.RejectGate(ctx, gateID, "call-"+gateID, "ui-reject-"+gateID)
 				}
 				win.Invalidate()
 			}
@@ -619,6 +635,42 @@ func main() {
 					_, outcome, watchErr := turnCtrl.WatchTurn(ctx, turnRef, "", func(upd grpcwire.TurnStreamUpdate) {
 						if upd.TextDelta != "" {
 							transcript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+							win.Invalidate()
+						}
+						if tc := upd.ToolCall; tc != nil {
+							card := mygoshell.ToolCallCardView{
+								CallID:    tc.GetCallId(),
+								ToolName:  tc.GetToolName(),
+								Phase:     tc.GetPhase().String(),
+								GateID:    tc.GetGateId(),
+								ReceiptID: tc.GetReceipt().GetReceiptId(),
+							}
+							if c := tc.GetCard(); c != nil {
+								card.Kind = c.GetKind().String()
+								card.Title = c.GetTitle()
+								card.Summary = c.GetSummary()
+							}
+							if d := tc.GetDenial(); d != nil {
+								card.DenialMessage = d.GetMessage()
+							}
+							transcript.UpsertToolCall(card, false)
+							win.Invalidate()
+						}
+						if hg := upd.HumanGate; hg != nil {
+							transcript.UpsertHumanGate(mygoshell.HumanGateCardView{
+								GateID:    hg.GetGateId(),
+								CallID:    hg.GetCallId(),
+								Prompt:    hg.GetPrompt(),
+								Resolved:  hg.GetResolved(),
+								ReceiptID: hg.GetReceipt().GetReceiptId(),
+							})
+							if !hg.GetResolved() {
+								app.SetPendingGate(mygoshell.PendingGateView{
+									GateID:   hg.GetGateId(),
+									ToolName: hg.GetCallId(),
+									Prompt:   hg.GetPrompt(),
+								}, true)
+							}
 							win.Invalidate()
 						}
 						if upd.HasOutcome {

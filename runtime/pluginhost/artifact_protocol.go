@@ -279,6 +279,37 @@ func ArtifactURL(digestHex string) (string, error) {
 	return ArtifactScheme + "://" + norm + "/", nil
 }
 
+// IngestAndGrant verifies (when expectedDigestHex is set) and stores bytes in
+// the handler's bounded SHA-256 CAS, grants access strictly to pluginID, and
+// returns the canonical marlin-artifact://<sha256-hex>/ URI.
+func (h *ArtifactProtocolHandler) IngestAndGrant(
+	pluginID schema.PluginID,
+	expectedDigestHex string,
+	mimeType string,
+	data []byte,
+) (ArtifactEntry, string, error) {
+	var (
+		entry ArtifactEntry
+		err   error
+	)
+	if strings.TrimSpace(expectedDigestHex) != "" {
+		entry, err = h.cas.PutVerified(expectedDigestHex, mimeType, data)
+	} else {
+		entry, err = h.cas.Put(mimeType, data)
+	}
+	if err != nil {
+		return ArtifactEntry{}, "", err
+	}
+	if err := h.Grant(pluginID, entry.SHA256Hex); err != nil {
+		return ArtifactEntry{}, "", err
+	}
+	uri, err := ArtifactURL(entry.SHA256Hex)
+	if err != nil {
+		return ArtifactEntry{}, "", err
+	}
+	return entry, uri, nil
+}
+
 // NewContextWithArtifactCaller attaches a plugin caller ID in tests/harnesses.
 type artifactCallerKey struct{}
 
