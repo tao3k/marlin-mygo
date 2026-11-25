@@ -251,13 +251,17 @@ type TranscriptController struct {
 	Composer      *composer.State
 
 	// Thin Backend-Delegated Callbacks (Rust owns search index, context mentions, and CAS upload).
-	OnCopyCode       func(code string)
-	OnDeepThink      func(enabled bool)
-	OnSubmitTurn     func(sub composer.TurnSubmission)
-	OnSlashCommand   func(cmd composer.SlashCommand)
-	OnQueryMentions  func(query string) []composer.ContextMention
-	OnPickAttachment func()
-	OnSearchSession  func(query string) []SessionSearchHit
+	OnCopyCode        func(code string)
+	OnDeepThink       func(enabled bool)
+	OnSubmitTurn      func(sub composer.TurnSubmission)
+	OnSlashCommand    func(cmd composer.SlashCommand)
+	OnQueryMentions   func(query string) []composer.ContextMention
+	OnPickAttachment  func()
+	OnPasteAttachment func()
+	OnSearchSession   func(query string) []SessionSearchHit
+
+	// Thin Cmd+F Find-in-Session state & Attachment Preview Lightbox state.
+	previewAtt      *composer.AttachmentRef
 
 	// Thin Cmd+F Session Search UI state (hits supplied exclusively by OnSearchSession).
 	searchOpen      bool
@@ -319,6 +323,38 @@ func (tc *TranscriptController) OpenSearch() {
 	tc.mu.Lock()
 	tc.searchOpen = true
 	tc.mu.Unlock()
+}
+
+// OpenAttachmentPreview opens the Tier-0 read-only Attachment Preview Lightbox.
+func (tc *TranscriptController) OpenAttachmentPreview(att composer.AttachmentRef) {
+	cp := att
+	tc.mu.Lock()
+	tc.previewAtt = &cp
+	tc.mu.Unlock()
+}
+
+// CloseAttachmentPreview dismisses the Attachment Preview Lightbox.
+func (tc *TranscriptController) CloseAttachmentPreview() {
+	tc.mu.Lock()
+	tc.previewAtt = nil
+	tc.mu.Unlock()
+}
+
+// IsAttachmentPreviewOpen reports whether the Attachment Preview Lightbox is visible.
+func (tc *TranscriptController) IsAttachmentPreviewOpen() bool {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.previewAtt != nil
+}
+
+// PreviewedAttachment returns the currently previewed attachment if open.
+func (tc *TranscriptController) PreviewedAttachment() (composer.AttachmentRef, bool) {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	if tc.previewAtt == nil {
+		return composer.AttachmentRef{}, false
+	}
+	return *tc.previewAtt, true
 }
 
 // CloseSearch dismisses the session search bar.
@@ -865,9 +901,15 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	searchFn := tc.OnSearchSession
 	mentionFn := tc.OnQueryMentions
 	pickAttFn := tc.OnPickAttachment
+	pasteAttFn := tc.OnPasteAttachment
 	submitTurnFn := tc.OnSubmitTurn
 	slashFn := tc.OnSlashCommand
 	compState := tc.Composer
+	var activePreview *composer.AttachmentRef
+	if tc.previewAtt != nil {
+		cp := *tc.previewAtt
+		activePreview = &cp
+	}
 	tc.renderEntries = tc.renderEntries[:0]
 	tc.renderIndices = tc.renderIndices[:0]
 	if first >= 0 && last >= first && last < totalRows {
@@ -903,10 +945,13 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		removeAttID     string
 		removeMentionK  string
 		pickedSlash     *composer.SlashCommand
-		pickedMention   *composer.ContextMention
-		pickAttClicked  bool
-		copiedKey       string
-		copiedCode      string
+		pickedMention    *composer.ContextMention
+		pickAttClicked   bool
+		pasteAttClicked  bool
+		openPreviewAtt   *composer.AttachmentRef
+		closePreviewNow  bool
+		copiedKey        string
+		copiedCode       string
 	)
 
 	dt := derivedThemeFromUITheme(t)
@@ -978,7 +1023,10 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 								if len(entry.Attachments) > 0 {
 									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 										for _, att := range entry.Attachments {
-											AttachmentCardChip(c, dt, att, false, nil)
+											AttachmentCardChip(c, dt, att, false, func(ref composer.AttachmentRef) {
+												cp := ref
+												openPreviewAtt = &cp
+											}, nil)
 										}
 									})
 								}
@@ -1139,7 +1187,10 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			if len(compSnap.Attachments) > 0 {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					for _, att := range compSnap.Attachments {
-						AttachmentCardChip(c, dt, att, true, func(id string) { removeAttID = id })
+						AttachmentCardChip(c, dt, att, true, func(ref composer.AttachmentRef) {
+							cp := ref
+							openPreviewAtt = &cp
+						}, func(id string) { removeAttID = id })
 					}
 				})
 			}
@@ -1156,6 +1207,11 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				if pickAttFn != nil || len(compSnap.Attachments) > 0 {
 					if ApplePillButton(c, "transcript-attach", "Attach", BtnGlass, dt, svgIconPaperclip, true).Clicked() {
 						pickAttClicked = true
+					}
+				}
+				if pasteAttFn != nil {
+					if ApplePillButton(c, "transcript-paste", "Paste", BtnGlass, dt, svgIconClipboard, true).Clicked() {
+						pasteAttClicked = true
 					}
 				}
 				if compState != nil && len(compSnap.Models) > 1 {
@@ -1197,8 +1253,23 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		})
 	})
 
+	if activePreview != nil {
+		RenderAttachmentPreviewModal(c, dt, *activePreview, func(snippet string) {
+			copiedKey = "preview-" + activePreview.ID
+			copiedCode = snippet
+		}, func() {
+			closePreviewNow = true
+		})
+	}
+
 	tc.mu.Lock()
 	tc.composerText = draft
+	if openPreviewAtt != nil {
+		tc.previewAtt = openPreviewAtt
+	}
+	if closePreviewNow {
+		tc.previewAtt = nil
+	}
 	if openSearchNow {
 		tc.searchOpen = true
 	}
@@ -1243,6 +1314,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	if pickAttClicked && pickAttFn != nil {
 		pickAttFn()
+	}
+	if pasteAttClicked && pasteAttFn != nil {
+		pasteAttFn()
 	}
 	if cycleModel && compState != nil {
 		m := compState.CycleModel()

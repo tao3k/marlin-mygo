@@ -89,11 +89,19 @@ func TestMultimodalComposer_AttachmentsSlashMentionsModelAndSubmit(t *testing.T)
 
 	var submitted []composer.TurnSubmission
 	var slashPicked []composer.SlashCommand
+	var pastedClicks int
+	var copiedSnippets []string
 	tc.OnSubmitTurn = func(sub composer.TurnSubmission) {
 		submitted = append(submitted, sub)
 	}
 	tc.OnSlashCommand = func(cmd composer.SlashCommand) {
 		slashPicked = append(slashPicked, cmd)
+	}
+	tc.OnPasteAttachment = func() {
+		pastedClicks++
+	}
+	tc.OnCopyCode = func(code string) {
+		copiedSnippets = append(copiedSnippets, code)
 	}
 	tc.OnQueryMentions = func(query string) []composer.ContextMention {
 		if strings.Contains("client.go", strings.ToLower(query)) {
@@ -121,6 +129,34 @@ func TestMultimodalComposer_AttachmentsSlashMentionsModelAndSubmit(t *testing.T)
 		if !tt.HasText(want) {
 			t.Fatalf("expected multimodal composer to render %q, got %q", want, strings.Join(tt.Texts(), " | "))
 		}
+	}
+
+	// 1b. Click Paste button and verify OnPasteAttachment fires; click attachment chip to open Lightbox Preview!
+	if err := tt.Click("Paste"); err != nil {
+		t.Fatalf("click Paste attachment button failed: %v", err)
+	}
+	if pastedClicks != 1 {
+		t.Fatalf("expected 1 Paste click, got %d", pastedClicks)
+	}
+	if err := tt.Click("Inspect client.go"); err != nil {
+		t.Fatalf("click Inspect client.go failed: %v", err)
+	}
+	tt.Frame()
+	if !tc.IsAttachmentPreviewOpen() || !tt.HasText("MAGIC VERIFIED · FAIL-CLOSED") || !tt.HasText("1 | package grpcwire") {
+		t.Fatalf("expected Attachment Preview Lightbox with numbered Go code, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Copy Snippet"); err != nil {
+		t.Fatalf("click Copy Snippet in Lightbox failed: %v", err)
+	}
+	if len(copiedSnippets) != 1 || !strings.Contains(copiedSnippets[0], "func Ping()") {
+		t.Fatalf("expected Copy Snippet to copy Go preview, got %+v", copiedSnippets)
+	}
+	if err := tt.Click("Close Preview"); err != nil {
+		t.Fatalf("click Close Preview failed: %v", err)
+	}
+	tt.Frame()
+	if tc.IsAttachmentPreviewOpen() {
+		t.Fatal("expected Attachment Preview Lightbox closed")
 	}
 
 	// 2. Test inline `/` Slash Command popup and click `/auth`.
@@ -179,7 +215,7 @@ func TestMultimodalComposer_AttachmentsSlashMentionsModelAndSubmit(t *testing.T)
 		t.Fatalf("expected composer attachments & mentions reset after Send, got %+v", snap)
 	}
 
-	// 5. Render User Bubble with read-only multimodal attachment chips in the transcript.
+	// 5. Render User Bubble with read-only multimodal attachment chips & verify clicking User Bubble chip opens Image Lightbox + ESC closes it.
 	refs := make([]composer.AttachmentRef, 0, len(sub.Attachments))
 	for _, s := range sub.Attachments {
 		refs = append(refs, s.Ref)
@@ -189,6 +225,14 @@ func TestMultimodalComposer_AttachmentsSlashMentionsModelAndSubmit(t *testing.T)
 	if !tt.HasText("Analyze these artifacts") || !tt.HasText("architecture.png") || !tt.HasText("rfc-design.pdf") {
 		t.Fatalf("expected User Bubble to render prompt text and read-only attachment chips, got %q", strings.Join(tt.Texts(), " | "))
 	}
+	if err := tt.Click("Inspect architecture.png"); err != nil {
+		t.Fatalf("click Inspect architecture.png in User Bubble failed: %v", err)
+	}
+	tt.Frame()
+	if !tc.IsAttachmentPreviewOpen() || !tt.HasText("Verified Raster Image · 320 x 180 px") {
+		t.Fatalf("expected Image Lightbox from User Bubble click, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	tc.CloseAttachmentPreview()
 }
 
 func TestSessionSearchBarAndMultiSessionSidebar(t *testing.T) {

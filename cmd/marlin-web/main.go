@@ -19,6 +19,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/control/auth"
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -137,7 +138,36 @@ func main() {
 		Projection:     proj,
 		Auth:           webAuth,
 	})
-	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, and theme tokens on Web deploy.")
+	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, multimodal composer, and theme tokens on Web deploy.")
+	_, _ = adaptive.Desktop.Transcript.AttachFile(composer.AttachmentInput{
+		Filename: "adaptive_shell.go",
+		Data:     []byte("package mygoshell\n// Shared Desktop, iOS, Android, and Web WASM shell\n"),
+	})
+	adaptive.Desktop.Transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
+		switch cmd.ActionID {
+		case "studio.open-auth":
+			adaptive.Desktop.OpenAuth()
+		case "studio.open-keymap-inspector":
+			adaptive.Desktop.OpenKeymapInspector()
+		case "studio.open-notifications":
+			adaptive.Desktop.OpenActivityCenter()
+		case "studio.open-marketplace":
+			adaptive.Desktop.OpenMarketplace()
+		case "studio.cycle-theme":
+			adaptive.CycleTheme()
+		}
+	}
+	adaptive.Desktop.Transcript.OnSubmitTurn = func(sub composer.TurnSubmission) {
+		refs := make([]composer.AttachmentRef, 0, len(sub.Attachments))
+		for _, att := range sub.Attachments {
+			refs = append(refs, att.Ref)
+		}
+		adaptive.Desktop.Transcript.AppendUserWithAttachments(sub.Prompt, refs)
+	}
+	adaptive.Desktop.ActiveSessionID = "web-session-1"
+	adaptive.Desktop.Sessions = []mygoshell.SessionSummaryView{
+		{SessionID: "web-session-1", Title: "Web Adaptive Session", TurnCount: 1},
+	}
 	_, _ = adaptive.Windows.OpenTabInFocused(shell.PaneBuffer{
 		BufferID: "builtin:projection",
 		Title:    "Projection",

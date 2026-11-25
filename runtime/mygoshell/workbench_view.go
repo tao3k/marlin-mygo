@@ -992,6 +992,9 @@ func (a *WorkbenchApp) DismissTopOverlay() bool {
 	case a.addRemoteOpen:
 		a.addRemoteOpen = false
 		return true
+	case a.Transcript != nil && a.Transcript.IsAttachmentPreviewOpen():
+		a.Transcript.CloseAttachmentPreview()
+		return true
 	case a.Transcript != nil && a.Transcript.IsSearchOpen():
 		a.Transcript.CloseSearch()
 		return true

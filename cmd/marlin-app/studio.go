@@ -130,6 +130,35 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		} else {
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
 		}
+		transcript.OnPickAttachment = func() {
+			go func() {
+				paths, err := composer.PickFilesNative(ctx, composer.NativePickerOptions{
+					Title:         "Attach image, PDF, audio, or code to Marlin",
+					AllowMultiple: true,
+				})
+				if err != nil {
+					log.Printf("native file picker error: %v", err)
+					return
+				}
+				if len(paths) > 0 {
+					_, _ = composer.StageLocalFiles(transcript.Composer, paths)
+					win.Invalidate()
+				}
+			}()
+		}
+		transcript.OnPasteAttachment = func() {
+			go func() {
+				in, ok, err := composer.ReadClipboardAttachment(ctx)
+				if err != nil {
+					log.Printf("clipboard attachment read error: %v", err)
+					return
+				}
+				if ok {
+					_, _ = transcript.AttachFile(in)
+					win.Invalidate()
+				}
+			}()
+		}
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
 			case "studio.open-auth":
@@ -152,17 +181,33 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			win.Invalidate()
 		}
 		transcript.OnSubmitTurn = func(sub composer.TurnSubmission) {
-			if len(sub.Attachments) > 0 {
-				refs := make([]composer.AttachmentRef, 0, len(sub.Attachments))
-				for _, att := range sub.Attachments {
-					refs = append(refs, att.Ref)
-				}
+			refs := make([]composer.AttachmentRef, 0, len(sub.Attachments))
+			for _, att := range sub.Attachments {
+				refs = append(refs, att.Ref)
+			}
+			if len(refs) > 0 {
 				transcript.AppendUserWithAttachments(sub.Prompt, refs)
 			}
-			if app.OnSendPrompt != nil && strings.TrimSpace(sub.Prompt) != "" {
-				app.OnSendPrompt(sub.Prompt)
+			wirePrompt := grpcwire.FormatTurnSubmissionPrompt(sub, refs)
+			if app.OnSendPrompt != nil && strings.TrimSpace(wirePrompt) != "" {
+				app.OnSendPrompt(wirePrompt)
 			}
 			win.Invalidate()
+		}
+		if len(app.Sessions) == 0 {
+			app.ActiveSessionID = cfg.sessionID
+			app.Sessions = []mygoshell.SessionSummaryView{
+				{SessionID: cfg.sessionID, Title: "Active Session", TurnCount: 1},
+			}
+			app.OnNewSession = func() {
+				newID := fmt.Sprintf("session-%d", len(app.Sessions)+1)
+				app.Sessions = append(app.Sessions, mygoshell.SessionSummaryView{
+					SessionID: newID,
+					Title:     fmt.Sprintf("Session #%d", len(app.Sessions)+1),
+				})
+				app.ActiveSessionID = newID
+				win.Invalidate()
+			}
 		}
 		if app.Notifications != nil {
 			app.Notifications.OnChanged = win.Invalidate

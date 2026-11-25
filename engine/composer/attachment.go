@@ -21,6 +21,7 @@ import (
 	_ "image/png"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -214,7 +215,7 @@ func ValidateAndStageAttachment(in AttachmentInput, policy AttachmentPolicy) (St
 			return StagedAttachment{}, ErrAttachmentInvalidUTF8
 		}
 		lineCount = bytes.Count(in.Data, []byte{'\n'}) + 1
-		preview = buildTextPreview(string(in.Data), 140)
+		preview = buildTextPreview(string(in.Data), 1200)
 	}
 
 	sum := sha256.Sum256(in.Data)
@@ -244,16 +245,13 @@ func ValidateAndStageAttachment(in AttachmentInput, policy AttachmentPolicy) (St
 func SanitizeFilename(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
-		return ""
+		return "attachment"
 	}
 	s = strings.ReplaceAll(s, "\\", "/")
 	s = filepath.Base(s)
-	if s == "." || s == ".." || s == "/" {
-		return ""
-	}
 	var b strings.Builder
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+		if unicode.IsControl(r) || r == '/' || r == '\\' {
 			continue
 		}
 		if b.Len()+utf8.RuneLen(r) > 120 {
@@ -261,7 +259,15 @@ func SanitizeFilename(raw string) string {
 		}
 		b.WriteRune(r)
 	}
-	return strings.TrimSpace(b.String())
+	out := b.String()
+	for strings.Contains(out, "..") {
+		out = strings.ReplaceAll(out, "..", ".")
+	}
+	out = strings.Trim(out, " .")
+	if out == "" {
+		return "attachment"
+	}
+	return out
 }
 
 func normalizeMIME(raw string) string {
@@ -446,12 +452,11 @@ func verifyAudioMagic(mime string, data []byte) bool {
 }
 
 func buildTextPreview(text string, maxRunes int) string {
-	trimmed := strings.TrimSpace(text)
+	trimmed := strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	trimmed = strings.ReplaceAll(trimmed, "\r", "\n")
 	if trimmed == "" {
 		return ""
 	}
-	trimmed = strings.ReplaceAll(trimmed, "\r", "")
-	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
 	runes := []rune(trimmed)
 	if len(runes) > maxRunes {
 		return string(runes[:maxRunes-1]) + "…"
