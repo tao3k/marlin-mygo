@@ -193,13 +193,20 @@ func TestMultimodalComposer_AttachmentsSlashMentionsModelAndSubmit(t *testing.T)
 		t.Fatalf("expected @file:client.go mention chip rendered above input, got %q", strings.Join(tt.Texts(), " | "))
 	}
 
-	// 4. Cycle Model selector pill (`Marlin Core` -> `Marlin Fast`) and submit full multimodal turn.
+	// 4. Open interactive Model & Reasoning Effort picker (`Marlin Core`), select `Marlin Fast`, and submit full multimodal turn.
 	if err := tt.Click("Marlin Core"); err != nil {
 		t.Fatalf("click model selector pill 'Marlin Core' failed: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("Marlin Fast") {
-		t.Fatalf("expected model selector to cycle to 'Marlin Fast', got %q", strings.Join(tt.Texts(), " | "))
+	if !tc.IsModelPickerOpen() || !tt.HasText("MODEL & REASONING EFFORT") || !tt.HasText("VISION") {
+		t.Fatalf("expected interactive Model & Reasoning Effort picker popover, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Marlin Fast"); err != nil {
+		t.Fatalf("click 'Marlin Fast' inside Model Picker failed: %v", err)
+	}
+	tt.Frame()
+	if tc.IsModelPickerOpen() || !tt.HasText("Marlin Fast") {
+		t.Fatalf("expected Model Picker closed with 'Marlin Fast' selected, got %q", strings.Join(tt.Texts(), " | "))
 	}
 
 	if err := tt.Click("Send"); err != nil {
@@ -401,5 +408,89 @@ func TestAttachmentThumbCacheDragDropAndMobileSheetLightbox(t *testing.T) {
 	tt.Frame()
 	if len(mobSubmitted) != 1 || len(mobSubmitted[0].Attachments) != 2 {
 		t.Fatalf("expected mobile submit with 2 multimodal attachments, got %+v", mobSubmitted)
+	}
+}
+
+func TestVoiceRecordingBarModelPickerEffortAndESCDismiss(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	tc := mygoshell.NewTranscriptController()
+	var startVoiceCount, stopVoiceCount, cancelVoiceCount int
+	var selectedModel composer.ModelOption
+	tc.OnStartVoice = func() { startVoiceCount++ }
+	tc.OnStopVoice = func() { stopVoiceCount++ }
+	tc.OnCancelVoice = func() { cancelVoiceCount++ }
+	tc.OnModelChanged = func(m composer.ModelOption) { selectedModel = m }
+	app.Transcript = tc
+
+	tt := ui.NewTester(app.View, 1180, 760)
+	tt.Frame()
+
+	// 1. Click Voice button -> starts live recording bar with REC badge and timer.
+	if err := tt.Click("Voice"); err != nil {
+		t.Fatalf("click Voice failed: %v", err)
+	}
+	tc.Voice.PushLevel(0.75)
+	tt.Frame()
+	if startVoiceCount != 1 || !tt.HasText("REC") || !tt.HasText("Attach Voice") {
+		t.Fatalf("expected active REC voice recording bar, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Cancel voice -> returns to idle cleanly.
+	if err := tt.Click("Cancel Voice"); err != nil {
+		t.Fatalf("click Cancel Voice failed: %v", err)
+	}
+	tt.Frame()
+	if cancelVoiceCount != 1 || tc.Voice.Snapshot().Phase != composer.VoiceIdle {
+		t.Fatalf("expected cancelled voice idle, got count=%d phase=%s", cancelVoiceCount, tc.Voice.Snapshot().Phase)
+	}
+
+	// Record again -> click Attach Voice -> CompleteVoiceAudio stages verified WAV chip!
+	if err := tt.Click("Voice"); err != nil {
+		t.Fatalf("click Voice (2nd) failed: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("Attach Voice"); err != nil {
+		t.Fatalf("click Attach Voice failed: %v", err)
+	}
+	tt.Frame()
+	if stopVoiceCount != 1 || tc.Voice.Snapshot().Phase != composer.VoiceProcessing {
+		t.Fatalf("expected VoiceProcessing after Attach Voice, got stop=%d phase=%s", stopVoiceCount, tc.Voice.Snapshot().Phase)
+	}
+	if _, err := tc.CompleteVoiceAudio("dictation.wav", makeTestWAV()); err != nil {
+		t.Fatalf("CompleteVoiceAudio failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("dictation.wav") || !tt.HasText("AUDIO") {
+		t.Fatalf("expected dictation.wav AUDIO chip in composer, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 2. Open Model & Reasoning Effort picker -> switch Reasoning Effort to Deep + select Marlin Pro + ESC guard.
+	if err := tt.Click("Marlin Core"); err != nil {
+		t.Fatalf("click Marlin Core to open Model Picker failed: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("Deep"); err != nil {
+		t.Fatalf("click Deep effort failed: %v", err)
+	}
+	tt.Frame()
+	if !tc.DeepThinkEnabled() || tc.Composer.Snapshot().ReasoningEffort != composer.EffortDeep {
+		t.Fatalf("expected Deep effort synced with DeepThinkEnabled, got think=%v eff=%s", tc.DeepThinkEnabled(), tc.Composer.Snapshot().ReasoningEffort)
+	}
+	if err := tt.Click("Marlin Pro"); err != nil {
+		t.Fatalf("click Marlin Pro failed: %v", err)
+	}
+	tt.Frame()
+	if selectedModel.ID != "marlin-pro" || tc.IsModelPickerOpen() {
+		t.Fatalf("expected Marlin Pro selected and picker closed, got model=%+v open=%v", selectedModel, tc.IsModelPickerOpen())
+	}
+
+	// Verify global ESC DismissTopOverlay closes open Model Picker.
+	tc.OpenModelPicker()
+	if !app.DismissTopOverlay() || tc.IsModelPickerOpen() {
+		t.Fatal("expected DismissTopOverlay to close Model Picker")
 	}
 }

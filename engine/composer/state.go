@@ -21,11 +21,13 @@ const (
 
 // ModelOption describes one backend-advertised model selectable in the composer.
 type ModelOption struct {
-	ID              string
-	Label           string
-	SupportsVision  bool
-	SupportsAudio   bool
-	SupportsThink   bool
+	ID             string
+	Label          string
+	Provider       string
+	ContextLabel   string
+	SupportsVision bool
+	SupportsAudio  bool
+	SupportsThink  bool
 }
 
 // SlashCommand describes one inline `/` command available in the composer popup.
@@ -91,9 +93,9 @@ func NewState(policy AttachmentPolicy) *State {
 		policy: p,
 		effort: EffortBalanced,
 		models: []ModelOption{
-			{ID: "marlin-core", Label: "Marlin Core", SupportsVision: true, SupportsAudio: true, SupportsThink: true},
-			{ID: "marlin-fast", Label: "Marlin Fast", SupportsVision: true, SupportsThink: false},
-			{ID: "marlin-pro", Label: "Marlin Pro", SupportsVision: true, SupportsAudio: true, SupportsThink: true},
+			{ID: "marlin-core", Label: "Marlin Core", Provider: "Marlin", ContextLabel: "200K", SupportsVision: true, SupportsAudio: true, SupportsThink: true},
+			{ID: "marlin-fast", Label: "Marlin Fast", Provider: "Marlin", ContextLabel: "128K", SupportsVision: true, SupportsThink: false},
+			{ID: "marlin-pro", Label: "Marlin Pro", Provider: "Marlin", ContextLabel: "1M", SupportsVision: true, SupportsAudio: true, SupportsThink: true},
 		},
 		slashCommands: DefaultSlashCommands(),
 	}
@@ -259,6 +261,36 @@ func (s *State) CycleModel() ModelOption {
 	}
 	s.activeModel = (s.activeModel + 1) % len(s.models)
 	return s.models[s.activeModel]
+}
+
+// SetActiveModel directly activates a backend-advertised model by ID.
+func (s *State) SetActiveModel(modelID string) (ModelOption, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, m := range s.models {
+		if m.ID == modelID {
+			s.activeModel = i
+			return m, true
+		}
+	}
+	return ModelOption{}, false
+}
+
+// MatchModels filters backend-advertised models by ID, Label, or Provider substring.
+func (s *State) MatchModels(query string) []ModelOption {
+	q := strings.ToLower(strings.TrimSpace(query))
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ModelOption, 0, len(s.models))
+	for _, m := range s.models {
+		if q == "" ||
+			strings.Contains(strings.ToLower(m.ID), q) ||
+			strings.Contains(strings.ToLower(m.Label), q) ||
+			strings.Contains(strings.ToLower(m.Provider), q) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // CycleEffort cycles Fast -> Balanced -> Deep reasoning effort.
