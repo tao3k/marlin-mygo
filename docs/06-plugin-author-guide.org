@@ -9,13 +9,14 @@ This concise specification lets both human developers and coding LLMs author,
 verify, hot-reload, and publish secure, high-performance Marlin plugins in
 *Go (WASI Reactor)*, *TypeScript (Untrusted WebView)*, or *Declarative Packs*.
 
-* 1. Choose the Right Runtime
+* 1. Choose the Right Runtime (Case-by-Case Matrix)
 
-| Runtime | Use Case | Security & Performance Profile |
-|-------------------------+------------------------------------------------+------------------------------------------------|
-| =wasm-ui-ir= (Go 1.27)  | High-frequency dashboards, graphs, diffs, logs | =22 µs= GPU =DrawList=, zero WebView RAM       |
-| =webview-untrusted= (TS)| Rich HTML/CSS layouts, boards, charts, editors | Strict CSP + =CallerPage= origin pinning       |
-| =declarative= (TOML)    | Themes, overlays, keymaps (Desktop + iOS/And.) | Zero executable code (App Store compliant)     |
+| Case & Runtime | Target Platforms | Security & Performance Profile |
+|-----------------------------------------------------------+---------------------------------------------+--------------------------------------------------------------|
+| *Case 1:* =webview-untrusted= (*React 19* + TSX) ⭐ Desktop | Desktop hot-plug; curated built-in on mobile| =@tao3k/marlin-panel-sdk/react=, responsive, =<=384 KiB= cap |
+| *Case 2:* =wasm-ui-ir= (*Go 1.27* zero-=unsafe= Reactor)    | Desktop hot-plug (native GPU)               | =6.6 µs= GPU =DrawList=, *0 MB* WebView RAM                  |
+| *Case 3:* =webview-untrusted= (*Zero-dep TS*)               | Desktop hot-plug                            | ~2–11 KB single-file bundle, 13 ms =bun build=               |
+| *Case 4:* =declarative= (*TOML*)                            | *Desktop + iOS + Android* OTA sync          | Zero executable code (Apple App Store 2.5.2 compliant)       |
 
 * 2. Minimal Go 1.27 WASI Reactor Plugin (100% Zero =unsafe= + Interactive GPU Button)
 
@@ -128,15 +129,19 @@ Org syntax parsing — they consume canonical =orgize= DTO projections
 (=org.agenda=, =org.clock=) and customize views, alarms, capture templates, and
 keybindings across all three runtimes:
 
-| Example Directory | Plugin ID | Runtime | Personal Use Case |
+| Example Directory | Plugin ID | Runtime / Stack | Personal & AI Workflow Case |
 |--------------------------------------------------+------------------------------+----------------------+------------------------------------------------------------------------|
-| =examples/plugins/ts-org-agenda-planner=         | =tao3k.org-agenda-planner=   | =webview-untrusted=  | Org Agenda queue, time-block conflict detector, structured capture, alarm |
-| =examples/plugins/go-focus-clock-reactor=        | =tao3k.focus-clock-reactor=  | =wasm-ui-ir=         | 120Hz GPU focus countdown, next agenda card, quick log, binary sparkline  |
-| =examples/plugins/declarative-daily-planner-pack=| =tao3k.daily-planner-pack=   | =declarative=        | Zero-code calm theme, agenda blocks, capture templates, Meow/Hydra keys   |
+| =examples/plugins/ts-org-agenda-planner=         | =tao3k.org-agenda-planner=   | React 19 + TSX       | Org Agenda queue, AI Auto-Plan, time-block conflict detector, alarm    |
+| =examples/plugins/react-ai-memory-inbox=         | =tao3k.ai-memory-inbox=      | React 19 + TSX       | AI Knowledge & Memory triage (=orgize= =OrgizeMemoryResponseDto=)      |
+| =examples/plugins/react-ai-workflow-cockpit=     | =tao3k.ai-workflow-cockpit=  | React 19 + TSX       | Multi-Agent workflow run cockpit + receipts + Tier-0 Gate handoff      |
+| =examples/plugins/go-focus-clock-reactor=        | =tao3k.focus-clock-reactor=  | Go 1.27 WASI GPU     | 120Hz GPU focus countdown, next agenda card, quick log, binary sparkline |
+| =examples/plugins/declarative-daily-planner-pack=| =tao3k.daily-planner-pack=   | Declarative TOML     | Zero-code calm theme, agenda blocks, capture templates, Meow/Hydra keys |
 
-Build, certify, and sign all canonical examples into one local Marketplace catalog:
+Launch the one-command interactive desktop showcase (mounts React 19 + Go WASI GPU side-by-side with live cross-runtime sync):
 
 #+begin_src shell
+just showcase
+# Or build, certify, and sign all 9 canonical examples into a catalog:
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
 #+end_src
 

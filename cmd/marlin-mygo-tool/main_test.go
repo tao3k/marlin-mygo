@@ -27,7 +27,7 @@ func TestCanonicalProtosAndQuintSpecExistOnDisk(t *testing.T) {
 
 func TestInitPluginKeygenPackAndVerifyEndToEnd(t *testing.T) {
 	tmp := t.TempDir()
-	for _, rt := range []string{"ts", "go-wasm", "declarative"} {
+	for _, rt := range []string{"react", "ts", "go-wasm", "declarative"} {
 		dir := filepath.Join(tmp, rt)
 		if err := runInitPlugin([]string{"-id", "acme.demo-" + rt, "-runtime", rt, "-slot", "workbench.main", "-out", dir}); err != nil {
 			t.Fatalf("init-plugin %s failed: %v", rt, err)
@@ -48,6 +48,12 @@ func TestInitPluginKeygenPackAndVerifyEndToEnd(t *testing.T) {
 	}
 
 	// End-to-end doctor (-perf) + bench-plugin + keygen -> publish -> verify on scaffolded plugins.
+	if _, err := os.Stat(filepath.Join(tmp, "react", "src", "main.tsx")); err != nil {
+		t.Fatalf("expected scaffolded react plugin to include src/main.tsx: %v", err)
+	}
+	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "react"), "-perf", "-scale", "2.0", "-iterations", "30"}); err != nil {
+		t.Fatalf("doctor -perf failed on scaffolded react 19 plugin: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(tmp, "ts", "src", "perf.ts")); err != nil {
 		t.Fatalf("expected scaffolded ts plugin to include src/perf.ts: %v", err)
 	}

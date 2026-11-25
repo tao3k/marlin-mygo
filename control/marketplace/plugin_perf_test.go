@@ -23,19 +23,28 @@ func TestBenchPluginDirPassesAllThreePersonalPlanningExamples(t *testing.T) {
 		LatencyScale: 2.5, // generous for -race / shared CI runners
 	}
 
-	// 1. TS WebView plugin with real `bun build` + `src/perf.ts` macro suite (500 orgize cards).
-	tsRep, err := marketplace.BenchPluginDir(ctx, filepath.Join(examplesRoot, "ts-org-agenda-planner"), cfg)
-	if err != nil || !tsRep.Passed {
-		t.Fatalf("BenchPluginDir(ts-org-agenda-planner) failed: err=%v rep=%+v", err, tsRep)
-	}
-	foundTSMacro := false
-	for _, m := range tsRep.Metrics {
-		if m.Name == "ts.selectAgendaCards_500" && m.Passed {
-			foundTSMacro = true
+	// 1. All 3 React 19 AI Workflow WebView plugins (real `bun build` + React 19 + `src/perf.ts` macro suites).
+	for _, tc := range []struct {
+		dir        string
+		wantMetric string
+	}{
+		{"ts-org-agenda-planner", "ts.selectAgendaCards_500"},
+		{"react-ai-memory-inbox", "ts.filterMemoryCards_500"},
+		{"react-ai-workflow-cockpit", "ts.summarizeWorkflowRun_200"},
+	} {
+		tsRep, err := marketplace.BenchPluginDir(ctx, filepath.Join(examplesRoot, tc.dir), cfg)
+		if err != nil || !tsRep.Passed {
+			t.Fatalf("BenchPluginDir(%s) failed: err=%v rep=%+v", tc.dir, err, tsRep)
 		}
-	}
-	if !foundTSMacro {
-		t.Fatalf("expected ts.selectAgendaCards_500 metric from src/perf.ts, got %+v", tsRep.Metrics)
+		found := false
+		for _, m := range tsRep.Metrics {
+			if m.Name == tc.wantMetric && m.Passed {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s: expected %s metric from src/perf.ts, got %+v", tc.dir, tc.wantMetric, tsRep.Metrics)
+		}
 	}
 
 	// 2. Go WASI Reactor plugin with real `GOOS=wasip1` compile + `wazero` UI-IR & DrawList microbenchmarks.

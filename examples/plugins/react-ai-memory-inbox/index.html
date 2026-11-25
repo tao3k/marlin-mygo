@@ -1,0 +1,53 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Marlin AI Memory &amp; Knowledge Triage Inbox (React 19)</title>
+    <style>
+      :root {
+        --bg: var(--marlin-canvas, #282c34);
+        --bar: var(--marlin-bar, #1c1f24);
+        --fg: var(--marlin-ink, #bbc2cf);
+        --accent: var(--marlin-accent, #c678dd);
+        --info: var(--marlin-info, #51afef);
+        --ok: var(--marlin-success, #98be65);
+        --warn: var(--marlin-warning, #ecbe7b);
+        --muted: var(--marlin-muted, #73797e);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 14px; font: 13px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); }
+      header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+      .subtitle { color: var(--muted); font-size: 12px; }
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+      @media (max-width: 680px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+      .stat { background: var(--bar); border-radius: 8px; padding: 10px; }
+      .stat strong { font-size: 18px; color: var(--info); display: block; }
+      .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+      .controls input { flex: 1; min-width: 180px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--muted); background: var(--bar); color: var(--fg); }
+      button { border: 0; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 600; cursor: pointer; background: var(--bar); color: var(--fg); }
+      button.active { background: var(--info); color: #111; }
+      button.accept { background: var(--ok); color: #111; }
+      button.supersede { background: var(--warn); color: #111; }
+      .card { background: var(--bar); border-radius: 10px; padding: 12px; margin-bottom: 10px; border-left: 3px solid var(--info); }
+      .card.action { border-left-color: var(--accent); }
+      .card.suppressed { border-left-color: var(--warn); opacity: 0.85; }
+      .badge { display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 11px; margin-right: 6px; background: rgba(198, 120, 221, 0.16); color: var(--accent); }
+      .evidence { font-size: 12px; color: var(--muted); margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--muted); }
+      .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+      .receipt { font-size: 12px; color: var(--ok); margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

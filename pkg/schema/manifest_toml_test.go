@@ -50,6 +50,18 @@ func TestParseCanonicalExampleManifests(t *testing.T) {
 			wantRT:   schema.RuntimeWebViewUntrusted,
 		},
 		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "react-ai-memory-inbox", "marlin-plugin.toml"),
+			wantID:   "tao3k.ai-memory-inbox",
+			wantSlot: "workbench.main",
+			wantRT:   schema.RuntimeWebViewUntrusted,
+		},
+		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "react-ai-workflow-cockpit", "marlin-plugin.toml"),
+			wantID:   "tao3k.ai-workflow-cockpit",
+			wantSlot: "workbench.main",
+			wantRT:   schema.RuntimeWebViewUntrusted,
+		},
+		{
 			rel:      filepath.Join("..", "..", "examples", "plugins", "ios-personal-overlay", "marlin-plugin.toml"),
 			wantID:   "tao3k.ios-personal-capture",
 			wantSlot: "workbench.main",

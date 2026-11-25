@@ -11,6 +11,7 @@ path = [
   "gen/**/*.pb.go",
   "proto/marlin-wire-v1.bin",
   "package.json",
+  "bun.lock",
   "tsconfig.json",
   "packages/*/package.json",
   "packages/*/tsconfig.json",

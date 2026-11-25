@@ -30,9 +30,13 @@ e2e-rust core="../..":
 model-gate:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate
 
-# Scaffold a new Marketplace plugin (runtime: ts | go-wasm | declarative).
-init-plugin id runtime="ts" slot="workbench.main" out="":
+# Scaffold a new Marketplace plugin (runtime: react | ts | go-wasm | declarative).
+init-plugin id runtime="react" slot="workbench.main" out="":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool init-plugin -id {{id}} -runtime {{runtime}} -slot {{slot}} -out "{{out}}"
+
+# One-command macOS/desktop live showcase: React 19 AI workflows + Go WASI GPU Focus Clock.
+showcase plugin="agenda":
+    CGO_ENABLED=0 go run ./cmd/marlin-app -showcase -showcase-plugin {{plugin}}
 
 # Run Pure-Go zero-cgo test suite across all 5 engine planes, plus race detector.
 test-go:

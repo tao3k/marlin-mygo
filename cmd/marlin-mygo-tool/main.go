@@ -280,7 +280,7 @@ func runModelGate(args []string) error {
 func runInitPlugin(args []string) error {
 	fs := flag.NewFlagSet("init-plugin", flag.ContinueOnError)
 	idStr := fs.String("id", "", "namespaced plugin ID (e.g. acme.sprint-board)")
-	runtimeKind := fs.String("runtime", "ts", "plugin runtime: ts | go-wasm | declarative")
+	runtimeKind := fs.String("runtime", "react", "plugin runtime: react | ts | go-wasm | declarative")
 	slotStr := fs.String("slot", "workbench.main", "target UI slot ID")
 	outDir := fs.String("out", "", "output directory (defaults to ./<plugin-short-name>)")
 	force := fs.Bool("force", false, "allow writing into an existing directory")
@@ -350,6 +350,147 @@ budget fails, inspect the measured value, budget, and remediation hint and fix i
 `, pluginID, runtimeFlag, slotID)
 
 	switch runtimeFlag {
+	case "react":
+		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = %q
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_state]
+kind = "projection.read"
+surface = %q
+
+[contributions.%s_panel]
+kind = "ui-panel"
+requires = ["read_state"]
+
+[contributions.%s_panel.panel]
+runtime = "webview-untrusted"
+slot_id = %q
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = [%q]
+declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
+`, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
+
+		pkgJSON := fmt.Sprintf(`{
+  "name": "@marlin-plugin/%s",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tao3k/marlin-panel-sdk": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
+`, shortName)
+
+		indexHTML := fmt.Sprintf(`<!-- SPDX-FileCopyrightText: 2026 tao3k team and Contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' marlin-plugin:; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+    <title>%s</title>
+    <style>
+      body { margin: 0; background: var(--marlin-canvas, #282c34); color: var(--marlin-ink, #bbc2cf); font-family: system-ui, -apple-system, sans-serif; padding: 16px; }
+      button { background: var(--marlin-accent, #c678dd); color: #1c1f24; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+      pre { background: var(--marlin-bar, #1c1f24); padding: 10px; border-radius: 8px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
+`, pluginID)
+
+		mainTSX := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { createRoot } from "react-dom/client";
+import {
+  MarlinPanelProvider,
+  useMarlinAction,
+  useMarlinProjection,
+} from "@tao3k/marlin-panel-sdk/react";
+
+function PanelView() {
+  const { data, eventCount } = useMarlinProjection<Record<string, unknown>>(%q, { status: "ready" });
+  const refresh = useMarlinAction<{ source: string }>(%q);
+
+  return (
+    <main>
+      <h1>%s (React 19)</h1>
+      <p>Events synced: {eventCount}</p>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+      <button type="button" disabled={refresh.pending} onClick={() => void refresh.submit({ source: "react-click" })}>
+        {refresh.pending ? "Submitting..." : "Trigger Scoped Action"}
+      </button>
+      {refresh.lastReceipt && <p>Receipt: {refresh.lastReceipt.receiptId ?? refresh.lastReceipt.denial}</p>}
+    </main>
+  );
+}
+
+const el = document.getElementById("root");
+if (el) {
+  createRoot(el).render(
+    <MarlinPanelProvider pluginId=%q>
+      <PanelView />
+    </MarlinPanelProvider>,
+  );
+}
+`, topicName, actionName, pluginID, pluginID)
+
+		perfTS := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { definePluginPerfSuite, runPluginPerfCLI } from "@tao3k/marlin-panel-sdk";
+
+export const perfSuite = definePluginPerfSuite({
+  pluginId: %q,
+  cases: [
+    {
+      name: "state.projection.smoke",
+      budgetUs: 250,
+      remediation: "Keep selector/projection transforms O(N) and memoize expensive derived lists in React 19.",
+      run: () => {
+        const items = [1, 2, 3, 4, 5, 6, 7, 8];
+        let sum = 0;
+        for (let i = 0; i < items.length; i++) sum += items[i];
+        if (sum < 0) throw new Error("unreachable");
+      },
+    },
+  ],
+});
+
+if (import.meta.main) {
+  runPluginPerfCLI(perfSuite);
+}
+`, pluginID)
+
+		readme := fmt.Sprintf("# %s (React 19 Untrusted WebView Plugin)\n\nSlot: `%s`\nRuntime: `webview-untrusted` (React 19 + `bun build`)\n", pluginID, slotID)
+		return map[string]string{
+			"marlin-plugin.toml": manifest,
+			"package.json":       pkgJSON,
+			"index.html":         indexHTML,
+			"src/main.tsx":       mainTSX,
+			"src/perf.ts":        perfTS,
+			"README.md":          readme,
+			"AGENT.md":           agentCard,
+		}, nil
+
 	case "ts":
 		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
 #
@@ -621,6 +762,6 @@ muted = "#73797e"
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported -runtime %q (want ts, go-wasm, or declarative)", runtimeFlag)
+		return nil, fmt.Errorf("unsupported -runtime %q (want react, ts, go-wasm, or declarative)", runtimeFlag)
 	}
 }

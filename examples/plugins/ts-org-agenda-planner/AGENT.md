@@ -14,10 +14,10 @@ SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
 ## Surface & Security Boundaries
 
-- **Runtime**: `webview-untrusted` (TypeScript compiled via `bun build` into a zero-runtime browser `bundle.js`).
+- **Runtime**: `webview-untrusted` (React 19 TSX + `@tao3k/marlin-panel-sdk/react`, compiled via `bun build` into a zero-runtime browser `bundle.js`).
 - **Slot**: `workbench.main` (`activation = "on-command"`, `triggers = ["agenda.open", "planner.today"]`, `idle_unload_sec = 600`).
 - **Read Scopes**: `org.agenda`, `org.clock`, `session.summary`.
-- **Declared Actions**: `org.capture.plan`, `org.todo.toggle`, `org.clock.in`, `org.clock.out`, `agenda.alarm.trigger`.
+- **Declared Actions**: `org.capture.plan`, `org.todo.toggle`, `org.clock.in`, `org.clock.out`, `agenda.alarm.trigger`, `agent.workflow.plan-day`.
 - **CSP**: `default-src 'self'; script-src 'self'` — no remote script URLs, no `eval(`, no `new Function(`.
 
 ## Safe Downstream Customizations for Users & LLMs

@@ -220,7 +220,7 @@ func auditWebViewPlugin(ctx context.Context, absDir string, panel *schema.PanelC
 	var violation string
 	for _, rel := range auditFiles {
 		lower := strings.ToLower(rel)
-		if !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".js") && !strings.HasSuffix(lower, ".ts") && !strings.HasSuffix(lower, ".mjs") {
+		if !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".js") && !strings.HasSuffix(lower, ".ts") && !strings.HasSuffix(lower, ".tsx") && !strings.HasSuffix(lower, ".mjs") {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(auditRoot, filepath.FromSlash(rel)))

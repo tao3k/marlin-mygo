@@ -40,7 +40,7 @@ type PluginPerfConfig struct {
 	MaxWasmDrawListUs     float64 // p50 budget in us (default 150 us)
 	MaxUITreeNodes        int     // compact UI-IR budget (default 256, hard cap 1024)
 	MaxUITreeDepth        int     // compact UI-IR depth budget (default 16, hard cap 32)
-	MaxWebViewBundleBytes int64   // minified bundle.js budget (default 256 KiB)
+	MaxWebViewBundleBytes int64   // minified bundle.js budget (default 384 KiB — fits React 19 + UI logic, blocks MB bloat)
 	MaxWebViewAssetsBytes int64   // total staged payload budget (default 1 MiB)
 	MaxWebViewBuildMs     float64 // bun build budget (default 2500 ms)
 	MaxDeclarativeBytes   int64   // total pack size budget (default 256 KiB)
@@ -73,7 +73,7 @@ func (c PluginPerfConfig) withDefaults() PluginPerfConfig {
 		c.MaxUITreeDepth = 16
 	}
 	if c.MaxWebViewBundleBytes <= 0 {
-		c.MaxWebViewBundleBytes = 256 * 1024
+		c.MaxWebViewBundleBytes = 384 * 1024
 	}
 	if c.MaxWebViewAssetsBytes <= 0 {
 		c.MaxWebViewAssetsBytes = 1024 * 1024
@@ -436,9 +436,8 @@ func benchWebViewPlugin(ctx context.Context, absDir string, panel *schema.PanelC
 					"compilerOptions": map[string]any{
 						"moduleResolution": "bundler",
 						"target":           "ES2022",
-						"paths": map[string][]string{
-							"@tao3k/marlin-panel-sdk": {sdkEntry},
-						},
+						"jsx":              "react-jsx",
+						"paths":            buildWorkspaceTSPaths(sdkEntry),
 					},
 				}
 				if rawCfg, mErr := json.Marshal(cfgDoc); mErr == nil && os.WriteFile(tsconfigPath, rawCfg, 0o644) == nil {

@@ -183,5 +183,5 @@ func (r *webViewSlotRenderer) Render(ctx shell.RenderContext) {
 		return
 	}
 	t := c.Theme()
-	ui.WebView(c, r.inst.wv).Grow(1).Radius(8).Border(1, t.Border)
+	ui.WebView(c, r.inst.wv).Grow(1).MinHeight(380).Radius(8).Border(1, t.Border)
 }

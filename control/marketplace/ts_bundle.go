@@ -117,24 +117,37 @@ func BundleTSWebViewDir(ctx context.Context, pluginDir, htmlEntry string) (stage
 		return "", noop, false, 0, err
 	}
 
-	args := []string{"build", entryAbs, "--target=browser", "--format=esm", "--bundle", "--minify", "--outfile=" + bundleOut}
+	args := []string{
+		"build", entryAbs,
+		"--target=browser",
+		"--format=esm",
+		"--bundle",
+		"--minify",
+		`--define:process.env.NODE_ENV="production"`,
+		"--outfile=" + bundleOut,
+	}
 
-	// If the plugin hasn't run `bun install` for @tao3k/marlin-panel-sdk yet,
-	// transparently wire workspace packages/panel-sdk via a temp tsconfig override
-	// without mutating the author's source directory.
+	// If the plugin hasn't run `bun install` locally yet, transparently wire
+	// workspace @tao3k/marlin-panel-sdk (+ /react) and workspace React 19 via a
+	// temp tsconfig override without mutating the author's source directory.
+	wsNodeModules := ""
 	if _, nmErr := os.Stat(filepath.Join(absPluginDir, "node_modules", "@tao3k", "marlin-panel-sdk")); nmErr != nil {
 		if sdkEntry := locateWorkspacePanelSDK(absPluginDir); sdkEntry != "" {
 			tmpCfgDir, cfgErr := os.MkdirTemp("", "marlin-ts-cfg-*")
 			if cfgErr == nil {
 				defer os.RemoveAll(tmpCfgDir)
 				tsconfigPath := filepath.Join(tmpCfgDir, "tsconfig.json")
+				pathsMap := buildWorkspaceTSPaths(sdkEntry)
+				wsRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(sdkEntry))))
+				if st, sErr := os.Stat(filepath.Join(wsRoot, "node_modules")); sErr == nil && st.IsDir() {
+					wsNodeModules = filepath.Join(wsRoot, "node_modules")
+				}
 				cfgDoc := map[string]any{
 					"compilerOptions": map[string]any{
 						"moduleResolution": "bundler",
 						"target":           "ES2022",
-						"paths": map[string][]string{
-							"@tao3k/marlin-panel-sdk": {sdkEntry},
-						},
+						"jsx":              "react-jsx",
+						"paths":            pathsMap,
 					},
 				}
 				if rawCfg, mErr := json.Marshal(cfgDoc); mErr == nil && os.WriteFile(tsconfigPath, rawCfg, 0o644) == nil {
@@ -146,6 +159,11 @@ func BundleTSWebViewDir(ctx context.Context, pluginDir, htmlEntry string) (stage
 
 	cmd := exec.CommandContext(ctx, bunBin, args...)
 	cmd.Dir = absPluginDir
+	cmdEnv := append(os.Environ(), "NODE_ENV=production")
+	if wsNodeModules != "" {
+		cmdEnv = append(cmdEnv, "NODE_PATH="+wsNodeModules)
+	}
+	cmd.Env = cmdEnv
 	if out, runErr := cmd.CombinedOutput(); runErr != nil {
 		clean()
 		return "", noop, false, 0, fmt.Errorf("bun build %s failed: %w\n%s", relTS, runErr, strings.TrimSpace(string(out)))
@@ -202,4 +220,29 @@ func locateWorkspacePanelSDK(startDir string) string {
 		}
 	}
 	return ""
+}
+
+func buildWorkspaceTSPaths(sdkIndexPath string) map[string][]string {
+	sdkDir := filepath.Dir(sdkIndexPath)
+	paths := map[string][]string{
+		"@tao3k/marlin-panel-sdk": {sdkIndexPath},
+	}
+	reactEntry := filepath.Join(sdkDir, "react.ts")
+	if _, err := os.Stat(reactEntry); err == nil {
+		paths["@tao3k/marlin-panel-sdk/react"] = []string{reactEntry}
+	}
+	wsRoot := filepath.Dir(filepath.Dir(filepath.Dir(sdkDir)))
+	nm := filepath.Join(wsRoot, "node_modules")
+	for pkg, rel := range map[string]string{
+		"react":                 filepath.Join(nm, "react", "index.js"),
+		"react/jsx-runtime":     filepath.Join(nm, "react", "jsx-runtime.js"),
+		"react/jsx-dev-runtime": filepath.Join(nm, "react", "jsx-dev-runtime.js"),
+		"react-dom":             filepath.Join(nm, "react-dom", "index.js"),
+		"react-dom/client":      filepath.Join(nm, "react-dom", "client.js"),
+	} {
+		if _, err := os.Stat(rel); err == nil {
+			paths[pkg] = []string{rel}
+		}
+	}
+	return paths
 }

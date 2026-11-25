@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Marlin Multi-Agent AI Workflow Cockpit (React 19)</title>
+    <style>
+      :root {
+        --bg: var(--marlin-canvas, #282c34);
+        --bar: var(--marlin-bar, #1c1f24);
+        --fg: var(--marlin-ink, #bbc2cf);
+        --accent: var(--marlin-accent, #c678dd);
+        --info: var(--marlin-info, #51afef);
+        --ok: var(--marlin-success, #98be65);
+        --warn: var(--marlin-warning, #ecbe7b);
+        --muted: var(--marlin-muted, #73797e);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 14px; font: 13px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); }
+      header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+      .subtitle { color: var(--muted); font-size: 12px; }
+      .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+      @media (max-width: 680px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+      .stat { background: var(--bar); border-radius: 8px; padding: 10px; }
+      .stat strong { font-size: 18px; color: var(--accent); display: block; }
+      button { border: 0; border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; background: var(--bar); color: var(--fg); }
+      button.primary { background: var(--accent); color: #111; }
+      button.warn { background: var(--warn); color: #111; }
+      button.active { background: var(--info); color: #111; }
+      .step { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--bar); border-radius: 8px; padding: 10px; margin-bottom: 8px; border-left: 3px solid var(--info); }
+      .step.done { border-left-color: var(--ok); }
+      .step.waiting_gate { border-left-color: var(--warn); }
+      .step.failed { border-left-color: #e06c75; }
+      .badge { display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 11px; margin-right: 6px; background: rgba(81, 175, 239, 0.16); color: var(--info); }
+      .receipt { font-size: 12px; color: var(--ok); margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

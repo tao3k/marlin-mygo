@@ -80,6 +80,9 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      - name: Install build-time TS/React 19 dependencies (dev/bundle only; zero runtime Bun)
+        run: bun install --frozen-lockfile
+
       - name: Run Pure-Go zero-cgo unit, property, and resident WASM tests
         run: CGO_ENABLED=0 go test -v ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
 
@@ -116,8 +119,11 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Run TypeScript Panel SDK unit tests
-        run: bun test packages/panel-sdk
+      - name: Install build-time TS/React 19 dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run TypeScript Panel SDK and Example Plugin unit & perf tests
+        run: bun test packages/panel-sdk examples/plugins
 
       - name: Enforce Go + TypeScript performance gate (strict zero-alloc + tightened latency ceilings)
         run: CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=250ms -latency-scale=2.5

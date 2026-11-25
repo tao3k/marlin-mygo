@@ -80,10 +80,25 @@ func main() {
 	maxActiveLazy := flag.Int("max-active-lazy", 8, "maximum simultaneously active lazy plugins in O(1) LRU working set (0 = unbounded)")
 	idleReapInterval := flag.Duration("idle-reap-interval", 15*time.Second, "background O(1) idle plugin reclamation check interval")
 	devPluginDir := flag.String("dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
+	showcase := flag.Bool("showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 AI workflow + Go WASI GPU Focus Clock with live cross-runtime sync")
+	showcasePlugin := flag.String("showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var showcaseCleanup func()
+	if *showcase && strings.TrimSpace(*catalogDir) == "" && strings.TrimSpace(*catalogURL) == "" {
+		cDir, pFile, clean, err := prepareShowcaseCatalog(ctx)
+		if err != nil {
+			log.Fatalf("prepare -showcase catalog failed: %v", err)
+		}
+		showcaseCleanup = clean
+		defer showcaseCleanup()
+		*catalogDir = cDir
+		*catalogPub = pFile
+		*catalogPublisher = "tao3k.official"
+	}
 
 	targets := transport.NewTargetRegistry()
 	federation := transport.NewFederationSupervisor(targets)
@@ -118,6 +133,11 @@ func main() {
 
 	wb := shell.NewWorkbenchController(slots)
 	var dispatcher pluginhost.ActionDispatcher = demoDispatcher{}
+	var showcaseDisp *showcaseDispatcher
+	if *showcase {
+		showcaseDisp = &showcaseDispatcher{}
+		dispatcher = showcaseDisp
+	}
 	var liveTarget *grpcwire.Target
 	var liveDriver *grpcwire.SessionDriver
 
@@ -267,19 +287,26 @@ func main() {
 	app.PluginMountedFn = mounted.Load
 
 	if liveTarget == nil {
-		app.ShowPendingGate(mygoshell.PendingGateView{
+		openGateNow := !*showcase && strings.TrimSpace(*devPluginDir) == ""
+		app.SetPendingGate(mygoshell.PendingGateView{
 			GateID:      "gate-demo-1",
 			ToolName:    "device.ios.notify.send",
 			Prompt:      "Allow Marlin to send notification on iPhone?",
 			Description: "Overlay floats above Untrusted plugin WebViews (host.gate).",
-		})
+		}, openGateNow)
 	}
 
 	mygo.App.WhenReady(func() {
+		winTitle := "Marlin MyGo Modular Engine"
+		winW, winH := 1120, 720
+		if *showcase {
+			winTitle = "Marlin MyGo Showcase — React 19 AI Workflows + Go WASI GPU"
+			winW, winH = 1240, 820
+		}
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Marlin MyGo Modular Engine",
-			Width:     1120,
-			Height:    720,
+			Title:     winTitle,
+			Width:     winW,
+			Height:    winH,
 			MinWidth:  680,
 			MinHeight: 440,
 			Content:   ui.View(app.View),
@@ -291,6 +318,47 @@ func main() {
 			*catalogURL, *catalogDir, *catalogPub, *trustRingFile, *catalogPublisher,
 			*pluginsProfile, *maxActiveLazy, *idleReapInterval,
 		)
+		if *showcase && lazySess != nil {
+			showcaseDisp.attach(host, app, win)
+			showcaseDisp.startTickLoop(ctx)
+
+			initialMain := resolveShowcasePluginID(*showcasePlugin)
+			var activeMainMu sync.Mutex
+			activeMainID := string(initialMain)
+			app.QuickPlugins = []mygoshell.QuickPluginEntry{
+				{PluginID: "tao3k.org-agenda-planner", Label: "Org Agenda (React 19)"},
+				{PluginID: "tao3k.ai-memory-inbox", Label: "AI Memory Inbox (React 19)"},
+				{PluginID: "tao3k.ai-workflow-cockpit", Label: "AI Workflow Cockpit (React 19)"},
+			}
+			app.ActiveQuickPluginID = func() string {
+				activeMainMu.Lock()
+				defer activeMainMu.Unlock()
+				return activeMainID
+			}
+			app.OnQuickPluginSelect = func(pluginID string) {
+				activeMainMu.Lock()
+				activeMainID = pluginID
+				activeMainMu.Unlock()
+				go func() {
+					if _, err := lazySess.InstallOrUpgrade(ctx, schema.PluginID(pluginID)); err != nil {
+						log.Printf("[showcase] switch to %s failed: %v", pluginID, err)
+						return
+					}
+					syncMarketplace()
+					win.Invalidate()
+				}()
+			}
+			go func() {
+				if _, err := lazySess.InstallOrUpgrade(ctx, initialMain); err != nil {
+					log.Printf("[showcase] mount main %s failed: %v", initialMain, err)
+				}
+				if _, err := lazySess.InstallOrUpgrade(ctx, "tao3k.focus-clock-reactor"); err != nil {
+					log.Printf("[showcase] mount inspector focus-clock failed: %v", err)
+				}
+				syncMarketplace()
+				win.Invalidate()
+			}()
+		}
 		fireHook := func(hookName string) {
 			if lazySess == nil {
 				return

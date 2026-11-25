@@ -25,6 +25,13 @@ type PendingGateView struct {
 	Description string
 }
 
+// QuickPluginEntry defines an optional sidebar quick-switch button used in
+// desktop showcase mode to hot-swap between interactive AI workflow plugins.
+type QuickPluginEntry struct {
+	PluginID string
+	Label    string
+}
+
 // WorkbenchApp renders the full modular Marlin shell on MyGo's native GPU UI.
 // Overlays (Command Palette, Approval Gate, Hydra chord bar) are drawn last so
 // they float above any embedded Untrusted WebView plugin slot.
@@ -48,10 +55,13 @@ type WorkbenchApp struct {
 	Marketplace *MarketplaceController
 
 	// Optional callbacks invoked by top-level chrome controls.
-	OnGateDecision  func(gateID string, approve bool)
-	OnCommandInvoke func(commandName string)
-	OnTogglePlugin  func()
-	PluginMountedFn func() bool
+	OnGateDecision      func(gateID string, approve bool)
+	OnCommandInvoke     func(commandName string)
+	OnTogglePlugin      func()
+	PluginMountedFn     func() bool
+	QuickPlugins        []QuickPluginEntry
+	ActiveQuickPluginID func() string
+	OnQuickPluginSelect func(pluginID string)
 
 	mu              sync.Mutex
 	selectedID      string
@@ -107,13 +117,19 @@ func (a *WorkbenchApp) HandleKeyToken(mode input.KeyScope, token string) (input.
 	}
 }
 
-// ShowPendingGate opens the authoritative Approval Gate modal above all slots.
-func (a *WorkbenchApp) ShowPendingGate(gate PendingGateView) {
+// SetPendingGate registers an authoritative Approval Gate and optionally opens
+// its modal immediately (openNow=false keeps it armed in the top bar).
+func (a *WorkbenchApp) SetPendingGate(gate PendingGateView, openNow bool) {
 	a.mu.Lock()
 	cp := gate
 	a.pendingGate = &cp
-	a.gateOpen = true
+	a.gateOpen = openNow
 	a.mu.Unlock()
+}
+
+// ShowPendingGate opens the authoritative Approval Gate modal above all slots.
+func (a *WorkbenchApp) ShowPendingGate(gate PendingGateView) {
+	a.SetPendingGate(gate, true)
 }
 
 // activeWorkbench resolves the WorkbenchController for the currently selected target,
@@ -154,6 +170,24 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 		ui.Column(c).Width(240).Padding(10).Gap(8).
 			Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
 			a.renderTargetSidebar(c, t)
+			if len(a.QuickPlugins) > 0 && a.OnQuickPluginSelect != nil {
+				ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).Bold().TextColor(t.TextMuted)
+				activeID := ""
+				if a.ActiveQuickPluginID != nil {
+					activeID = a.ActiveQuickPluginID()
+				}
+				for _, qp := range a.QuickPlugins {
+					var clicked bool
+					if qp.PluginID == activeID {
+						clicked = ui.PrimaryButton(c.Key("qp-"+qp.PluginID), qp.Label).Clicked()
+					} else {
+						clicked = ui.Button(c.Key("qp-"+qp.PluginID), qp.Label).Clicked()
+					}
+					if clicked {
+						a.OnQuickPluginSelect(qp.PluginID)
+					}
+				}
+			}
 			if a.OnTogglePlugin != nil {
 				label := "Mount Plugin"
 				if a.PluginMountedFn != nil && a.PluginMountedFn() {

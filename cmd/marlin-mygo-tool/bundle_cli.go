@@ -203,6 +203,8 @@ func runBuildExamples(args []string) error {
 		filepath.Join("examples", "plugins", "ts-org-kanban"),
 		filepath.Join("examples", "plugins", "ts-session-radar"),
 		filepath.Join("examples", "plugins", "ts-org-agenda-planner"),
+		filepath.Join("examples", "plugins", "react-ai-memory-inbox"),
+		filepath.Join("examples", "plugins", "react-ai-workflow-cockpit"),
 		filepath.Join("examples", "plugins", "ios-personal-overlay"),
 		filepath.Join("examples", "plugins", "declarative-daily-planner-pack"),
 	}

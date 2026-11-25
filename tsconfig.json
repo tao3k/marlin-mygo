@@ -3,10 +3,12 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
     "paths": {
-      "@tao3k/marlin-panel-sdk": ["./packages/panel-sdk/src/index.ts"]
+      "@tao3k/marlin-panel-sdk": ["./packages/panel-sdk/src/index.ts"],
+      "@tao3k/marlin-panel-sdk/react": ["./packages/panel-sdk/src/react.ts"]
     }
   }
 }
