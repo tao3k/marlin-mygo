@@ -265,3 +265,34 @@ func readHexKey(path string, wantLen int) ([]byte, error) {
 	}
 	return decoded, nil
 }
+
+func runE2ERust(args []string) error {
+	fs := flag.NewFlagSet("e2e-rust", flag.ContinueOnError)
+	coreDir := fs.String("core", "../..", "path to marlin-agent-core checkout")
+	binPath := fs.String("bin", "", "optional pre-built marlin-mygo-host binary path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	hostBin := *binPath
+	if hostBin == "" {
+		absCore, err := filepath.Abs(*coreDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("[1/2] Building Rust marlin-mygo-host in %s...\n", absCore)
+		build := exec.Command("cargo", "build", "--locked", "-p", "marlin-agent-app-server", "--features", "ui-grpc", "--bin", "marlin-mygo-host")
+		build.Dir = absCore
+		build.Stdout = os.Stdout
+		build.Stderr = os.Stderr
+		if err := build.Run(); err != nil {
+			return fmt.Errorf("cargo build marlin-mygo-host failed: %w", err)
+		}
+		hostBin = filepath.Join(absCore, "target", "debug", "marlin-mygo-host")
+	}
+	fmt.Printf("[2/2] Running real cross-process Rust <-> Go E2E suite against %s...\n", hostBin)
+	testCmd := exec.Command("go", "test", "-v", "-race", "-run", "Test(ManagedSidecarLaunchesRealRustBridge|GrandUnifiedFullStackRealIntegration)", "./control/grpcwire")
+	testCmd.Env = append(os.Environ(), "CGO_ENABLED=0", "MARLIN_RUST_SIDECAR_BIN="+hostBin)
+	testCmd.Stdout = os.Stdout
+	testCmd.Stderr = os.Stderr
+	return testCmd.Run()
+}

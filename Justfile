@@ -22,6 +22,10 @@ proto-gen-ts:
 proto-compat core="../..":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool compat-check -core {{core}}
 
+# Build Rust marlin-mygo-host and run real cross-process TLS 1.3 + Sidecar + WASM Reactor E2E.
+e2e-rust core="../..":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core {{core}}
+
 # Run Quint formal security model gate (typecheck + tests + 1000-sample run + 7 negative controls).
 model-gate:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate
