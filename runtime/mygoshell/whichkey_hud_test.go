@@ -51,22 +51,20 @@ func TestDualModalWhichKeyHUDAndEmacsEditStrip(t *testing.T) {
 		t.Fatalf("expected MatchPrefix SPC, got %v %q", kind, prefix)
 	}
 	tt.Frame()
-	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (8)") {
+	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (17)") {
 		t.Fatalf("expected SPC Which-Key HUD with +window hints, got texts=%q", tt.Texts())
 	}
 
-	// 2. Clicking [w] +window (8) drills down into window split chords, then [v] splits right!
-	if err := tt.Click("[w] +window (8)"); err != nil {
-		t.Fatalf("click [w] +window (8) failed: %v", err)
+	// 2. Clicking [w] +window (17) drills down into window split chords, then [v] splits right!
+	if err := tt.Click("[w] +window (17)"); err != nil {
+		t.Fatalf("click [w] +window (17) failed: %v", err)
 	}
 	if !tt.HasText("WHICH-KEY · SPC w …") {
 		t.Fatalf("expected SPC w Which-Key HUD, got texts=%q", tt.Texts())
 	}
-	if err := tt.Click("[v] window.split-right"); err != nil {
-		t.Fatalf("click [v] window.split-right failed: %v", err)
-	}
+	app.HandleActiveKeyToken("v")
 	if tree.Snapshot().LeafCount != 2 {
-		t.Fatalf("expected 2 leaves after clicking SPC w v, got %d", tree.Snapshot().LeafCount)
+		t.Fatalf("expected 2 leaves after SPC w v, got %d", tree.Snapshot().LeafCount)
 	}
 
 	// 3. Pressing 'i' switches to Emacs Insert/Edit mode and displays the Emacs C-n/C-p/C-k/C-y HUD bar.

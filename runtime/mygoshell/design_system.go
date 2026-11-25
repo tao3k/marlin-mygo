@@ -51,6 +51,24 @@ var (
 	svgIconXMark = ui.MustParseSVG([]byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 	))
+	svgIconSplitRight = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
+	))
+	svgIconSplitBelow = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>`,
+	))
+	svgIconSwap = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 2 21 6 17 10"/><path d="M3 6h18"/><polyline points="7 22 3 18 7 14"/><path d="M21 18H3"/></svg>`,
+	))
+	svgIconExpand = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
+	))
+	svgIconUndo = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>`,
+	))
+	svgIconRedo = ui.MustParseSVG([]byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 0 1 4-4h12"/></svg>`,
+	))
 )
 
 func rgbaFromRGB(c schema.RGB, alpha float32) ui.Color {
@@ -169,6 +187,65 @@ func ApplePillButton(
 			ui.Icon(c, icon).Size(sz, sz).TextColor(textColor)
 		}
 		ui.Text(c, label).FontSize(fontSize).FontWeight(600).TextColor(textColor).NoWrap()
+	})
+	return btn
+}
+
+// AppleIconPillButton renders a compact shadowless 120Hz vector icon capsule
+// (used on Emacs pane modelines so split/swap/zoom/undo controls stay crisp
+// with accessible labels for keyboard and headless UI testing).
+func AppleIconPillButton(
+	c *ui.Context,
+	key string,
+	accessibleLabel string,
+	variant AppleButtonVariant,
+	dt DerivedTheme,
+	icon *ui.SVG,
+) ui.Element {
+	btn := ui.ButtonBase(c.Key(key)).Label(accessibleLabel).Padding(5, 7).Radius(8).
+		AlignItems(ui.Center).Justify(ui.Center)
+
+	var textColor ui.Color
+	switch variant {
+	case BtnTinted:
+		alpha := float32(0.16)
+		if dt.Appearance == AppearanceLight {
+			alpha = 0.11
+		}
+		textColor = toColor(dt.Accent)
+		if dt.Appearance == AppearanceDark {
+			textColor = toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.30))
+		}
+		btn.Background(rgbaFromRGB(dt.Accent, alpha)).Border(1, rgbaFromRGB(dt.Accent, 0.24))
+	case BtnDestructive:
+		alpha := float32(0.14)
+		if dt.Appearance == AppearanceLight {
+			alpha = 0.10
+		}
+		textColor = toColor(dt.Danger)
+		btn.Background(rgbaFromRGB(dt.Danger, alpha)).Border(1, rgbaFromRGB(dt.Danger, 0.24))
+	default:
+		textColor = toColor(dt.InkSecondary)
+		fill := toColor(dt.SurfaceElevated)
+		if btn.Hovered() {
+			fill = toColor(dt.SurfaceHover)
+			textColor = toColor(dt.Ink)
+		} else if dt.Appearance == AppearanceLight {
+			fill = ui.RGBA(255, 255, 255, 0.90)
+		}
+		borderCol := glassBorderColor(dt)
+		if btn.Hovered() {
+			borderCol = rgbaFromRGB(dt.Accent, 0.36)
+		}
+		btn.Background(fill).Border(1, borderCol)
+	}
+
+	btn.Children(func() {
+		if icon != nil {
+			ui.Icon(c, icon).Size(12.5, 12.5).TextColor(textColor)
+		} else {
+			ui.Text(c, accessibleLabel).FontSize(11).FontWeight(600).TextColor(textColor).NoWrap()
+		}
 	})
 	return btn
 }

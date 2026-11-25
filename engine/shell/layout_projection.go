@@ -23,6 +23,15 @@ const (
 	CmdWindowDelete        = "window.delete"
 	CmdWindowToggleZoom    = "window.toggle-zoom"
 	CmdWindowFocusNext     = "window.focus-next"
+	CmdWindowFocusLeft     = "window.focus-left"
+	CmdWindowFocusDown     = "window.focus-down"
+	CmdWindowFocusUp       = "window.focus-up"
+	CmdWindowFocusRight    = "window.focus-right"
+	CmdWindowWiden         = "window.widen"
+	CmdWindowShrink        = "window.shrink"
+	CmdWindowRotate        = "window.rotate"
+	CmdWindowUndo          = "window.undo"
+	CmdWindowRedo          = "window.redo"
 	CmdWindowBalance       = "window.balance"
 	CmdWindowCycleBuffer   = "window.cycle-buffer"
 	CmdWindowSwapNext      = "window.swap-next"
@@ -78,10 +87,12 @@ func ApplyLayoutSpec(tree *WindowTree, spec LayoutSpec, catalog map[string]PaneB
 	if persp == "" {
 		persp = "custom"
 	}
+	tree.pushUndoLocked("")
 	tree.perspective = persp
 	tree.root = built
 	tree.focusedID = firstLeafID
 	tree.zoomed = false
+	tree.markDirtyLocked()
 	return nil
 }
 
@@ -200,6 +211,33 @@ func ExecuteWindowCommand(tree *WindowTree, cmdName string, buffers []PaneBuffer
 	case CmdWindowFocusNext:
 		tree.FocusNext()
 		return true, nil
+	case CmdWindowFocusLeft:
+		tree.FocusDirection(DirLeft)
+		return true, nil
+	case CmdWindowFocusDown:
+		tree.FocusDirection(DirDown)
+		return true, nil
+	case CmdWindowFocusUp:
+		tree.FocusDirection(DirUp)
+		return true, nil
+	case CmdWindowFocusRight:
+		tree.FocusDirection(DirRight)
+		return true, nil
+	case CmdWindowWiden:
+		tree.ResizeFocusedSplit(0.05)
+		return true, nil
+	case CmdWindowShrink:
+		tree.ResizeFocusedSplit(-0.05)
+		return true, nil
+	case CmdWindowRotate:
+		tree.RotateFocusedSplit()
+		return true, nil
+	case CmdWindowUndo:
+		tree.Undo()
+		return true, nil
+	case CmdWindowRedo:
+		tree.Redo()
+		return true, nil
 	case CmdWindowBalance:
 		tree.Balance()
 		return true, nil
@@ -269,6 +307,15 @@ func DefaultEmacsWindowCommands() []input.CommandEntry {
 		{Name: CmdWindowDelete, Description: "Delete focused window (SPC w d / C-x 0)"},
 		{Name: CmdWindowToggleZoom, Description: "Toggle zoom on focused window (SPC w z / C-x 1)"},
 		{Name: CmdWindowFocusNext, Description: "Focus next window pane (SPC w o / C-x o)"},
+		{Name: CmdWindowFocusLeft, Description: "Focus window pane to the left (SPC w h)"},
+		{Name: CmdWindowFocusDown, Description: "Focus window pane below (SPC w j)"},
+		{Name: CmdWindowFocusUp, Description: "Focus window pane above (SPC w k)"},
+		{Name: CmdWindowFocusRight, Description: "Focus window pane to the right (SPC w l)"},
+		{Name: CmdWindowWiden, Description: "Widen focused window split by 5% (SPC w >)"},
+		{Name: CmdWindowShrink, Description: "Shrink focused window split by 5% (SPC w <)"},
+		{Name: CmdWindowRotate, Description: "Rotate focused split row/column axis (SPC w R)"},
+		{Name: CmdWindowUndo, Description: "Undo last window layout change (SPC w u / C-x u)"},
+		{Name: CmdWindowRedo, Description: "Redo window layout change (SPC w r)"},
 		{Name: CmdWindowBalance, Description: "Balance split ratios (SPC w = / C-x +)"},
 		{Name: CmdWindowCycleBuffer, Description: "Cycle buffer in focused window (SPC w b)"},
 		{Name: CmdWindowSwapNext, Description: "Swap focused window buffer with next pane (SPC w x / C-x x)"},

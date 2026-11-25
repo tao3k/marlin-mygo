@@ -15,9 +15,10 @@ import (
 // WindowRenderCallbacks connects Emacs-style pane headers and body regions to
 // the host WorkbenchApp buffers (WebView slots, Go WASI slots, native GPU views).
 type WindowRenderCallbacks struct {
-	RenderBuffer   func(c *ui.Context, t *ui.Theme, dt DerivedTheme, winID shell.WindowID, buf shell.PaneBuffer)
-	NextBufferFor  func(current shell.PaneBuffer) shell.PaneBuffer
-	DefaultSplitTo func() shell.PaneBuffer
+	RenderBuffer    func(c *ui.Context, t *ui.Theme, dt DerivedTheme, winID shell.WindowID, buf shell.PaneBuffer)
+	NextBufferFor   func(current shell.PaneBuffer) shell.PaneBuffer
+	DefaultSplitTo  func() shell.PaneBuffer
+	OnLayoutChanged func(snap shell.WindowTreeSnapshot)
 }
 
 // RenderWindowTree paints an Emacs-style composable binary split tree onto
@@ -69,29 +70,55 @@ func renderWindowNode(
 	}
 	secondFlex := 1.0 - firstFlex
 
+	notifyLayout := func() {
+		if cb.OnLayoutChanged != nil {
+			cb.OnLayoutChanged(tree.Snapshot())
+		}
+	}
+
 	if node.Axis == shell.SplitRow {
-		ui.Row(c.Key("wrow-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch).Children(func() {
+		row := ui.Row(c.Key("wrow-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch)
+		spanW := row.Bounds().W
+		if spanW <= 1 {
+			spanW = 800
+		}
+		row.Children(func() {
 			ui.Column(c.Key("wfirst-"+string(node.ID))).Grow(firstFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 				renderWindowNode(c, t, dt, tree, snap, node.First, cb)
 			})
-			// Sleek Apple interactive split divider handle (click cycles 50/50 -> 65/35 -> 35/65).
+			// 120Hz continuous drag-to-resize split divider (double-click snaps 50/50; click cycles).
 			div := ui.ButtonBase(c.Key("wdiv-"+string(node.ID))).Label("Resize Split").
-				Width(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+				Width(8).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+			activeDiv := div.Hovered() || div.Dragging()
 			div.Children(func() {
 				barCol := toColor(dt.Border)
-				if div.Hovered() {
+				barW := float32(2)
+				barH := float32(34)
+				if activeDiv {
 					barCol = toColor(dt.Accent)
+					barW = 3
+					barH = 48
 				}
-				ui.Box(c).Width(2).Height(32).Radius(1).Background(barCol)
+				ui.Box(c).Width(barW).Height(barH).Radius(2).Background(barCol)
 			})
-			if div.Clicked() {
+			if dx, _, dragged := div.Dragged(); dragged && dx != 0 {
+				if tree.ResizeSplit(node.ID, node.Ratio+dx/spanW) {
+					notifyLayout()
+				}
+			} else if div.DoubleClicked() {
+				if tree.ResizeSplit(node.ID, 0.50) {
+					notifyLayout()
+				}
+			} else if div.Clicked() {
 				nextRatio := float32(0.65)
 				if node.Ratio > 0.60 {
 					nextRatio = 0.35
 				} else if node.Ratio < 0.40 {
 					nextRatio = 0.50
 				}
-				tree.ResizeSplit(node.ID, nextRatio)
+				if tree.ResizeSplit(node.ID, nextRatio) {
+					notifyLayout()
+				}
 			}
 			ui.Column(c.Key("wsecond-"+string(node.ID))).Grow(secondFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 				renderWindowNode(c, t, dt, tree, snap, node.Second, cb)
@@ -100,27 +127,47 @@ func renderWindowNode(
 		return
 	}
 
-	ui.Column(c.Key("wcol-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch).Children(func() {
+	col := ui.Column(c.Key("wcol-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch)
+	spanH := col.Bounds().H
+	if spanH <= 1 {
+		spanH = 600
+	}
+	col.Children(func() {
 		ui.Column(c.Key("wfirst-"+string(node.ID))).Grow(firstFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			renderWindowNode(c, t, dt, tree, snap, node.First, cb)
 		})
 		div := ui.ButtonBase(c.Key("wdiv-"+string(node.ID))).Label("Resize Split").
-			Height(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+			Height(8).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+		activeDiv := div.Hovered() || div.Dragging()
 		div.Children(func() {
 			barCol := toColor(dt.Border)
-			if div.Hovered() {
+			barW := float32(34)
+			barH := float32(2)
+			if activeDiv {
 				barCol = toColor(dt.Accent)
+				barW = 48
+				barH = 3
 			}
-			ui.Box(c).Width(32).Height(2).Radius(1).Background(barCol)
+			ui.Box(c).Width(barW).Height(barH).Radius(2).Background(barCol)
 		})
-		if div.Clicked() {
+		if _, dy, dragged := div.Dragged(); dragged && dy != 0 {
+			if tree.ResizeSplit(node.ID, node.Ratio+dy/spanH) {
+				notifyLayout()
+			}
+		} else if div.DoubleClicked() {
+			if tree.ResizeSplit(node.ID, 0.50) {
+				notifyLayout()
+			}
+		} else if div.Clicked() {
 			nextRatio := float32(0.65)
 			if node.Ratio > 0.60 {
 				nextRatio = 0.35
 			} else if node.Ratio < 0.40 {
 				nextRatio = 0.50
 			}
-			tree.ResizeSplit(node.ID, nextRatio)
+			if tree.ResizeSplit(node.ID, nextRatio) {
+				notifyLayout()
+			}
 		}
 		ui.Column(c.Key("wsecond-"+string(node.ID))).Grow(secondFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			renderWindowNode(c, t, dt, tree, snap, node.Second, cb)
@@ -171,34 +218,57 @@ func renderWindowLeaf(
 			}
 			ui.Spacer(c)
 
+			if isFocused && snap.CanUndo {
+				if AppleIconPillButton(c, "wundo-"+string(leaf.ID), "Undo Layout", BtnGlass, dt, svgIconUndo).Clicked() {
+					if tree.Undo() && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
+				}
+			}
+			if isFocused && snap.CanRedo {
+				if AppleIconPillButton(c, "wredo-"+string(leaf.ID), "Redo Layout", BtnGlass, dt, svgIconRedo).Clicked() {
+					if tree.Redo() && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
+				}
+			}
 			if cb.NextBufferFor != nil {
 				if ApplePillButton(c, "wbuf-"+string(leaf.ID), "Buf", BtnGlass, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					tree.SetWindowBuffer(leaf.ID, cb.NextBufferFor(leaf.Buffer))
+					if cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
 			}
 			if snap.LeafCount < shell.MaxOpenWindows {
-				if ApplePillButton(c, "wsplitv-"+string(leaf.ID), "|", BtnGlass, dt, nil, true).Clicked() {
+				if AppleIconPillButton(c, "wsplitv-"+string(leaf.ID), "Split Right", BtnGlass, dt, svgIconSplitRight).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					nextBuf := leaf.Buffer
 					if cb.DefaultSplitTo != nil {
 						nextBuf = cb.DefaultSplitTo()
 					}
-					_, _ = tree.SplitRight(nextBuf)
+					if _, err := tree.SplitRight(nextBuf); err == nil && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
-				if ApplePillButton(c, "wsplith-"+string(leaf.ID), "-", BtnGlass, dt, nil, true).Clicked() {
+				if AppleIconPillButton(c, "wsplith-"+string(leaf.ID), "Split Below", BtnGlass, dt, svgIconSplitBelow).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					nextBuf := leaf.Buffer
 					if cb.DefaultSplitTo != nil {
 						nextBuf = cb.DefaultSplitTo()
 					}
-					_, _ = tree.SplitBelow(nextBuf)
+					if _, err := tree.SplitBelow(nextBuf); err == nil && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
 			}
 			if snap.LeafCount > 1 {
-				if ApplePillButton(c, "wswap-"+string(leaf.ID), "Swap", BtnGlass, dt, nil, true).Clicked() {
+				if AppleIconPillButton(c, "wswap-"+string(leaf.ID), "Swap", BtnGlass, dt, svgIconSwap).Clicked() {
 					tree.FocusWindow(leaf.ID)
-					tree.SwapWithNext()
+					if tree.SwapWithNext() && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
 				zoomLbl := "Zoom"
 				zoomVar := BtnGlass
@@ -206,12 +276,17 @@ func renderWindowLeaf(
 					zoomLbl = "Unzoom"
 					zoomVar = BtnTinted
 				}
-				if ApplePillButton(c, "wzoom-"+string(leaf.ID), zoomLbl, zoomVar, dt, nil, true).Clicked() {
+				if AppleIconPillButton(c, "wzoom-"+string(leaf.ID), zoomLbl, zoomVar, dt, svgIconExpand).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					tree.ToggleZoom()
+					if cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
-				if ApplePillButton(c, "wclose-"+string(leaf.ID), "x", BtnDestructive, dt, nil, true).Clicked() {
-					_ = tree.DeleteWindow(leaf.ID)
+				if AppleIconPillButton(c, "wclose-"+string(leaf.ID), "Close Pane", BtnDestructive, dt, svgIconXMark).Clicked() {
+					if err := tree.DeleteWindow(leaf.ID); err == nil && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
 				}
 			}
 		})

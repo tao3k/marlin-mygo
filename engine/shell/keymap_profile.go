@@ -41,12 +41,21 @@ const (
 // Normal mode bindings for window composition, perspectives, and studio control.
 func NormalLeaderBindings() []input.Binding {
 	return []input.Binding{
-		// Window splits & pane management (SPC w ...)
+		// Window splits, 2D spatial navigation & Winner-Mode history (SPC w ...)
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "v"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "s"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "d"}, ActionKind: "window", CommandName: CmdWindowDelete},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "z"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "h"}, ActionKind: "window", CommandName: CmdWindowFocusLeft},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "j"}, ActionKind: "window", CommandName: CmdWindowFocusDown},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "k"}, ActionKind: "window", CommandName: CmdWindowFocusUp},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "l"}, ActionKind: "window", CommandName: CmdWindowFocusRight},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", ">"}, ActionKind: "window", CommandName: CmdWindowWiden},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "<"}, ActionKind: "window", CommandName: CmdWindowShrink},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "R"}, ActionKind: "window", CommandName: CmdWindowRotate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "u"}, ActionKind: "window", CommandName: CmdWindowUndo},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "r"}, ActionKind: "window", CommandName: CmdWindowRedo},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "="}, ActionKind: "window", CommandName: CmdWindowBalance},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
@@ -107,6 +116,7 @@ func GlobalEmacsBindings() []input.Binding {
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "+"}, ActionKind: "window", CommandName: CmdWindowBalance},
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "u"}, ActionKind: "window", CommandName: CmdWindowUndo},
 	}
 }
 

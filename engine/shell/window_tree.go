@@ -7,8 +7,27 @@ package shell
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 )
+
+// Direction specifies a 2D spatial direction for Emacs windmove-style navigation.
+type Direction uint8
+
+const (
+	DirLeft Direction = iota + 1
+	DirRight
+	DirUp
+	DirDown
+)
+
+// PaneRect describes a leaf window's normalized [0..1, 0..1] 2D spatial bounds.
+type PaneRect struct {
+	WindowID WindowID
+	X, Y     float32
+	W, H     float32
+	Buffer   PaneBuffer
+}
 
 // WindowID uniquely identifies one leaf window or split container inside a
 // composable Emacs-style WindowTree.
@@ -22,7 +41,8 @@ const (
 	SplitRow    SplitAxis = "row"    // side-by-side (`split-window-right` / SPC w v)
 	SplitColumn SplitAxis = "column" // stacked (`split-window-below` / SPC w s)
 
-	MaxOpenWindows = 8
+	MaxOpenWindows   = 8
+	maxWindowHistory = 32
 )
 
 var (
@@ -51,18 +71,29 @@ type WindowNode struct {
 }
 
 // WindowTreeSnapshot is a read-only point-in-time layout snapshot consumed at
-// 120Hz by MyGo GPU renderers without holding locks during paint.
+// 120Hz by MyGo GPU renderers with zero heap allocations on steady frames.
 type WindowTreeSnapshot struct {
+	Version     uint64
 	Perspective string
 	Root        *WindowNode
 	FocusedID   WindowID
 	Zoomed      bool
 	LeafCount   int
+	CanUndo     bool
+	CanRedo     bool
+}
+
+type windowHistoryEntry struct {
+	perspective string
+	root        *WindowNode
+	focusedID   WindowID
+	zoomed      bool
+	resizeSplit WindowID // non-empty for coalescable continuous divider drags
 }
 
 // WindowTree manages dynamic Emacs-style composable window splits, focus
-// cycling, per-pane buffer assignment, zoom/maximize, balance, and named
-// workspace perspectives.
+// cycling, 2D spatial navigation, Winner-Mode undo/redo history, per-pane
+// buffer assignment, zoom/maximize, balance, and named workspace perspectives.
 type WindowTree struct {
 	mu          sync.RWMutex
 	perspective string
@@ -70,6 +101,11 @@ type WindowTree struct {
 	focusedID   WindowID
 	zoomed      bool
 	nextSeq     uint64
+	version     uint64
+	cachedSnap  WindowTreeSnapshot
+	snapDirty   bool
+	undoStack   []windowHistoryEntry
+	redoStack   []windowHistoryEntry
 }
 
 // NewWindowTree initializes a single-window tree displaying initialBuffer.
@@ -78,12 +114,16 @@ func NewWindowTree(initialBuffer PaneBuffer) *WindowTree {
 		ID:     "win-1",
 		Buffer: initialBuffer,
 	}
-	return &WindowTree{
+	wt := &WindowTree{
 		perspective: "zen",
 		root:        root,
 		focusedID:   root.ID,
 		nextSeq:     1,
+		version:     1,
+		snapDirty:   true,
 	}
+	wt.rebuildSnapshotLocked()
+	return wt
 }
 
 func (t *WindowTree) allocIDLocked(prefix string) WindowID {
@@ -91,17 +131,73 @@ func (t *WindowTree) allocIDLocked(prefix string) WindowID {
 	return WindowID(fmt.Sprintf("%s-%d", prefix, t.nextSeq))
 }
 
-// Snapshot returns a deep-cloned, lock-free layout tree ready for rendering.
-func (t *WindowTree) Snapshot() WindowTreeSnapshot {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return WindowTreeSnapshot{
+func (t *WindowTree) rebuildSnapshotLocked() {
+	t.cachedSnap = WindowTreeSnapshot{
+		Version:     t.version,
 		Perspective: t.perspective,
 		Root:        cloneWindowNode(t.root),
 		FocusedID:   t.focusedID,
 		Zoomed:      t.zoomed,
 		LeafCount:   countLeaves(t.root),
+		CanUndo:     len(t.undoStack) > 0,
+		CanRedo:     len(t.redoStack) > 0,
 	}
+	t.snapDirty = false
+}
+
+func (t *WindowTree) markDirtyLocked() {
+	t.version++
+	t.rebuildSnapshotLocked()
+}
+
+func (t *WindowTree) pushUndoLocked(coalesceSplitID WindowID) {
+	if coalesceSplitID != "" && len(t.undoStack) > 0 && t.undoStack[len(t.undoStack)-1].resizeSplit == coalesceSplitID {
+		// Coalesce consecutive 120Hz drag frames of the same split divider into one Winner-Mode undo step.
+		t.redoStack = t.redoStack[:0]
+		return
+	}
+	entry := windowHistoryEntry{
+		perspective: t.perspective,
+		root:        cloneWindowNode(t.root),
+		focusedID:   t.focusedID,
+		zoomed:      t.zoomed,
+		resizeSplit: coalesceSplitID,
+	}
+	if len(t.undoStack) >= maxWindowHistory {
+		copy(t.undoStack, t.undoStack[1:])
+		t.undoStack[len(t.undoStack)-1] = entry
+	} else {
+		t.undoStack = append(t.undoStack, entry)
+	}
+	t.redoStack = t.redoStack[:0]
+}
+
+// Snapshot returns an immutable layout snapshot with ZERO heap allocations on
+// steady 120Hz frames (rebuilt only when the window tree mutates).
+func (t *WindowTree) Snapshot() WindowTreeSnapshot {
+	t.mu.RLock()
+	if !t.snapDirty {
+		snap := t.cachedSnap
+		t.mu.RUnlock()
+		return snap
+	}
+	t.mu.RUnlock()
+
+	t.mu.Lock()
+	if t.snapDirty {
+		t.rebuildSnapshotLocked()
+	}
+	snap := t.cachedSnap
+	t.mu.Unlock()
+	return snap
+}
+
+// Version returns the monotonic layout mutation counter for O(1) dirty checks.
+func (t *WindowTree) Version() uint64 {
+	t.mu.RLock()
+	v := t.version
+	t.mu.RUnlock()
+	return v
 }
 
 // FocusedBuffer returns the focused window ID and its mounted PaneBuffer.
@@ -148,6 +244,7 @@ func (t *WindowTree) splitWindow(targetID WindowID, axis SplitAxis, ratio float3
 	if leaf == nil || leaf.IsSplit {
 		return "", ErrWindowNotFound
 	}
+	t.pushUndoLocked("")
 	existingCopy := &WindowNode{
 		ID:     leaf.ID,
 		Buffer: leaf.Buffer,
@@ -167,6 +264,7 @@ func (t *WindowTree) splitWindow(targetID WindowID, axis SplitAxis, ratio float3
 	t.focusedID = newID
 	t.zoomed = false
 	t.perspective = "custom"
+	t.markDirtyLocked()
 	return newID, nil
 }
 
@@ -182,6 +280,10 @@ func (t *WindowTree) DeleteWindow(targetID WindowID) error {
 	if countLeaves(t.root) <= 1 {
 		return ErrLastWindow
 	}
+	if n := findWindow(t.root, targetID); n == nil || n.IsSplit {
+		return ErrWindowNotFound
+	}
+	t.pushUndoLocked("")
 	nextRoot, removed := removeLeaf(t.root, targetID)
 	if !removed || nextRoot == nil {
 		return ErrWindowNotFound
@@ -197,6 +299,7 @@ func (t *WindowTree) DeleteWindow(targetID WindowID) error {
 		t.zoomed = false
 	}
 	t.perspective = "custom"
+	t.markDirtyLocked()
 	return nil
 }
 
@@ -208,7 +311,10 @@ func (t *WindowTree) FocusWindow(targetID WindowID) bool {
 	if n == nil || n.IsSplit {
 		return false
 	}
-	t.focusedID = targetID
+	if t.focusedID != targetID {
+		t.focusedID = targetID
+		t.markDirtyLocked()
+	}
 	return true
 }
 
@@ -223,10 +329,12 @@ func (t *WindowTree) FocusNext() WindowID {
 	for i, l := range leaves {
 		if l.ID == t.focusedID {
 			t.focusedID = leaves[(i+1)%len(leaves)].ID
+			t.markDirtyLocked()
 			return t.focusedID
 		}
 	}
 	t.focusedID = leaves[0].ID
+	t.markDirtyLocked()
 	return t.focusedID
 }
 
@@ -238,7 +346,9 @@ func (t *WindowTree) SetWindowBuffer(targetID WindowID, buf PaneBuffer) bool {
 	if n == nil || n.IsSplit {
 		return false
 	}
+	t.pushUndoLocked("")
 	n.Buffer = buf
+	t.markDirtyLocked()
 	return true
 }
 
@@ -252,10 +362,14 @@ func (t *WindowTree) ToggleZoom() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if countLeaves(t.root) <= 1 {
-		t.zoomed = false
+		if t.zoomed {
+			t.zoomed = false
+			t.markDirtyLocked()
+		}
 		return false
 	}
 	t.zoomed = !t.zoomed
+	t.markDirtyLocked()
 	return t.zoomed
 }
 
@@ -263,10 +377,13 @@ func (t *WindowTree) ToggleZoom() bool {
 func (t *WindowTree) Balance() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pushUndoLocked("")
 	balanceNode(t.root)
+	t.markDirtyLocked()
 }
 
 // ResizeSplit updates one split container's ratio (clamped to [0.20, 0.80]).
+// Consecutive drag updates on the same splitID coalesce into one Undo step.
 func (t *WindowTree) ResizeSplit(splitID WindowID, ratio float32) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -279,7 +396,12 @@ func (t *WindowTree) ResizeSplit(splitID WindowID, ratio float32) bool {
 	} else if ratio > 0.80 {
 		ratio = 0.80
 	}
+	if math.Abs(float64(n.Ratio-ratio)) < 0.0005 {
+		return true
+	}
+	t.pushUndoLocked(splitID)
 	n.Ratio = ratio
+	t.markDirtyLocked()
 	return true
 }
 
@@ -288,6 +410,7 @@ func (t *WindowTree) ResizeSplit(splitID WindowID, ratio float32) bool {
 func (t *WindowTree) ApplyBuiltinPerspective(name string, primary, dock, chat, inspector PaneBuffer) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pushUndoLocked("")
 	t.zoomed = false
 	t.perspective = name
 	switch name {
@@ -340,6 +463,7 @@ func (t *WindowTree) ApplyBuiltinPerspective(name string, primary, dock, chat, i
 		t.focusedID = "win-1"
 		t.nextSeq = 2
 	}
+	t.markDirtyLocked()
 }
 
 func cloneWindowNode(n *WindowNode) *WindowNode {
@@ -438,6 +562,9 @@ func (t *WindowTree) ReplaceBuffer(oldBufferID string, fallback PaneBuffer) int 
 			replaced++
 		}
 	}
+	if replaced > 0 {
+		t.markDirtyLocked()
+	}
 	return replaced
 }
 
@@ -452,11 +579,239 @@ func (t *WindowTree) SwapWithNext() bool {
 	}
 	for i, leaf := range leaves {
 		if leaf.ID == t.focusedID {
+			t.pushUndoLocked("")
 			next := leaves[(i+1)%len(leaves)]
 			leaf.Buffer, next.Buffer = next.Buffer, leaf.Buffer
 			t.focusedID = next.ID
+			t.markDirtyLocked()
 			return true
 		}
 	}
 	return false
+}
+
+// Undo restores the previous window layout from Winner-Mode history (`SPC w u`).
+func (t *WindowTree) Undo() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.undoStack) == 0 {
+		return false
+	}
+	cur := windowHistoryEntry{
+		perspective: t.perspective,
+		root:        cloneWindowNode(t.root),
+		focusedID:   t.focusedID,
+		zoomed:      t.zoomed,
+	}
+	t.redoStack = append(t.redoStack, cur)
+	prev := t.undoStack[len(t.undoStack)-1]
+	t.undoStack = t.undoStack[:len(t.undoStack)-1]
+	t.perspective = prev.perspective
+	t.root = prev.root
+	t.focusedID = prev.focusedID
+	t.zoomed = prev.zoomed
+	t.markDirtyLocked()
+	return true
+}
+
+// Redo re-applies an undone window layout from Winner-Mode history (`SPC w r`).
+func (t *WindowTree) Redo() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.redoStack) == 0 {
+		return false
+	}
+	cur := windowHistoryEntry{
+		perspective: t.perspective,
+		root:        cloneWindowNode(t.root),
+		focusedID:   t.focusedID,
+		zoomed:      t.zoomed,
+	}
+	t.undoStack = append(t.undoStack, cur)
+	next := t.redoStack[len(t.redoStack)-1]
+	t.redoStack = t.redoStack[:len(t.redoStack)-1]
+	t.perspective = next.perspective
+	t.root = next.root
+	t.focusedID = next.focusedID
+	t.zoomed = next.zoomed
+	t.markDirtyLocked()
+	return true
+}
+
+// ComputePaneRects projects every leaf window onto normalized [0..1, 0..1] 2D space.
+func (t *WindowTree) ComputePaneRects() []PaneRect {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return computeRectsNode(t.root, 0, 0, 1, 1, nil)
+}
+
+func computeRectsNode(n *WindowNode, x, y, w, h float32, out []PaneRect) []PaneRect {
+	if n == nil {
+		return out
+	}
+	if !n.IsSplit {
+		return append(out, PaneRect{WindowID: n.ID, X: x, Y: y, W: w, H: h, Buffer: n.Buffer})
+	}
+	r := n.Ratio
+	if r < 0.20 || r > 0.80 {
+		r = 0.50
+	}
+	if n.Axis == SplitRow {
+		w1 := w * r
+		out = computeRectsNode(n.First, x, y, w1, h, out)
+		return computeRectsNode(n.Second, x+w1, y, w-w1, h, out)
+	}
+	h1 := h * r
+	out = computeRectsNode(n.First, x, y, w, h1, out)
+	return computeRectsNode(n.Second, x, y+h1, w, h-h1, out)
+}
+
+// FocusDirection moves active focus to the nearest geometric neighbor in dir
+// (Emacs windmove-left/right/up/down -> SPC w h/l/k/j).
+func (t *WindowTree) FocusDirection(dir Direction) WindowID {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	rects := computeRectsNode(t.root, 0, 0, 1, 1, nil)
+	if len(rects) <= 1 {
+		return t.focusedID
+	}
+	var cur PaneRect
+	found := false
+	for _, r := range rects {
+		if r.WindowID == t.focusedID {
+			cur = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		return t.focusedID
+	}
+	curCX := cur.X + cur.W*0.5
+	curCY := cur.Y + cur.H*0.5
+
+	const eps = 1e-4
+	var bestID WindowID
+	bestScore := float64(math.MaxFloat64)
+
+	for _, cand := range rects {
+		if cand.WindowID == cur.WindowID {
+			continue
+		}
+		candCX := cand.X + cand.W*0.5
+		candCY := cand.Y + cand.H*0.5
+
+		var primaryGap float64
+		var perpOverlap float32
+		switch dir {
+		case DirLeft:
+			if cand.X+cand.W > cur.X+eps {
+				continue
+			}
+			primaryGap = float64(cur.X - (cand.X + cand.W))
+			perpOverlap = min(cur.Y+cur.H, cand.Y+cand.H) - max(cur.Y, cand.Y)
+		case DirRight:
+			if cand.X < cur.X+cur.W-eps {
+				continue
+			}
+			primaryGap = float64(cand.X - (cur.X + cur.W))
+			perpOverlap = min(cur.Y+cur.H, cand.Y+cand.H) - max(cur.Y, cand.Y)
+		case DirUp:
+			if cand.Y+cand.H > cur.Y+eps {
+				continue
+			}
+			primaryGap = float64(cur.Y - (cand.Y + cand.H))
+			perpOverlap = min(cur.X+cur.W, cand.X+cand.W) - max(cur.X, cand.X)
+		case DirDown:
+			if cand.Y < cur.Y+cur.H-eps {
+				continue
+			}
+			primaryGap = float64(cand.Y - (cur.Y + cur.H))
+			perpOverlap = min(cur.X+cur.W, cand.X+cand.W) - max(cur.X, cand.X)
+		default:
+			continue
+		}
+
+		// Strongly prefer directly adjacent panes sharing an edge along the perpendicular axis.
+		perpPenalty := 0.0
+		if perpOverlap <= eps {
+			perpPenalty = 10.0
+		}
+		dist := math.Hypot(float64(candCX-curCX), float64(candCY-curCY))
+		score := primaryGap*5.0 + perpPenalty + dist
+		if score < bestScore {
+			bestScore = score
+			bestID = cand.WindowID
+		}
+	}
+	if bestID != "" && bestID != t.focusedID {
+		t.focusedID = bestID
+		t.markDirtyLocked()
+	}
+	return t.focusedID
+}
+
+// ResizeFocusedSplit adjusts the immediate parent split container of the focused
+// window by delta (e.g. +0.05 to widen, -0.05 to shrink; clamped to [0.20, 0.80]).
+func (t *WindowTree) ResizeFocusedSplit(delta float32) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	parent, isFirst := findParentSplit(t.root, t.focusedID)
+	if parent == nil {
+		return false
+	}
+	nextRatio := parent.Ratio
+	if isFirst {
+		nextRatio += delta
+	} else {
+		nextRatio -= delta
+	}
+	if nextRatio < 0.20 {
+		nextRatio = 0.20
+	} else if nextRatio > 0.80 {
+		nextRatio = 0.80
+	}
+	if math.Abs(float64(parent.Ratio-nextRatio)) < 0.0005 {
+		return false
+	}
+	t.pushUndoLocked(parent.ID)
+	parent.Ratio = nextRatio
+	t.markDirtyLocked()
+	return true
+}
+
+// RotateFocusedSplit flips the immediate parent split container of the focused
+// window between SplitRow (side-by-side) and SplitColumn (stacked) (`SPC w R`).
+func (t *WindowTree) RotateFocusedSplit() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	parent, _ := findParentSplit(t.root, t.focusedID)
+	if parent == nil {
+		return false
+	}
+	t.pushUndoLocked("")
+	if parent.Axis == SplitRow {
+		parent.Axis = SplitColumn
+	} else {
+		parent.Axis = SplitRow
+	}
+	t.perspective = "custom"
+	t.markDirtyLocked()
+	return true
+}
+
+func findParentSplit(n *WindowNode, target WindowID) (*WindowNode, bool) {
+	if n == nil || !n.IsSplit {
+		return nil, false
+	}
+	if n.First != nil && n.First.ID == target {
+		return n, true
+	}
+	if n.Second != nil && n.Second.ID == target {
+		return n, false
+	}
+	if p, first := findParentSplit(n.First, target); p != nil {
+		return p, first
+	}
+	return findParentSplit(n.Second, target)
 }

@@ -848,7 +848,8 @@ func (a *WorkbenchApp) renderComposableWorkspace(
 		defaultSplit = a.WindowBuffers[1]
 	}
 	RenderWindowTree(c, t, dt, a.Windows, WindowRenderCallbacks{
-		DefaultSplitTo: func() shell.PaneBuffer { return defaultSplit },
+		OnLayoutChanged: a.OnLayoutChanged,
+		DefaultSplitTo:  func() shell.PaneBuffer { return defaultSplit },
 		NextBufferFor: func(cur shell.PaneBuffer) shell.PaneBuffer {
 			if len(a.WindowBuffers) == 0 {
 				return cur

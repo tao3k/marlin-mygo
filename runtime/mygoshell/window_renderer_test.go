@@ -83,11 +83,28 @@ func TestWorkbenchAppEmacsWindowSplitsPerspectivesAndThemeCycling(t *testing.T) 
 		t.Fatalf("expected 3-pane cockpit perspective, got %+v", tree.Snapshot())
 	}
 
-	// Split vertically via Emacs window header control "|" -> 4 panes.
-	tt.Click("|")
+	// Split vertically via SF-Symbols vector header control "Split Right" -> 4 panes,
+	// then test Winner-Mode Undo Layout -> 3 panes and Redo Layout -> 4 panes.
+	if err := tt.Click("Split Right"); err != nil {
+		t.Fatalf("click Split Right failed: %v", err)
+	}
 	tt.Frame()
 	if tree.Snapshot().LeafCount != 4 {
-		t.Fatalf("expected 4 panes after clicking '|', got %d", tree.Snapshot().LeafCount)
+		t.Fatalf("expected 4 panes after clicking 'Split Right', got %d", tree.Snapshot().LeafCount)
+	}
+	if err := tt.Click("Undo Layout"); err != nil {
+		t.Fatalf("click Undo Layout failed: %v", err)
+	}
+	tt.Frame()
+	if tree.Snapshot().LeafCount != 3 {
+		t.Fatalf("expected 3 panes after Winner-Mode Undo Layout, got %d", tree.Snapshot().LeafCount)
+	}
+	if err := tt.Click("Redo Layout"); err != nil {
+		t.Fatalf("click Redo Layout failed: %v", err)
+	}
+	tt.Frame()
+	if tree.Snapshot().LeafCount != 4 {
+		t.Fatalf("expected 4 panes after Winner-Mode Redo Layout, got %d", tree.Snapshot().LeafCount)
 	}
 
 	// Cycle curated themes through all 5 presets cleanly.
