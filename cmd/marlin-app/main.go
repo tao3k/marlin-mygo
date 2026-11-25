@@ -54,6 +54,8 @@ func (demoDispatcher) SubmitScopedPanelAction(_ context.Context, req pluginhost.
 }
 
 func main() {
+	sidecarBin := flag.String("sidecar", "", "optional local Rust marlin-host/mygo_bridge_server binary to spawn with ephemeral token")
+	pubKeyFile := flag.String("pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
 	hostAddr := flag.String("host", "", "optional live Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
 	token := flag.String("token", "marlin-dev-token", "Bearer token for live Rust host")
 	caFile := flag.String("ca", "", "optional TLS CA PEM file for remote gRPC hosts")
@@ -98,9 +100,38 @@ func main() {
 
 	wb := shell.NewWorkbenchController(slots)
 	var dispatcher pluginhost.ActionDispatcher = demoDispatcher{}
+	var liveTarget *grpcwire.Target
 	var liveDriver *grpcwire.SessionDriver
 
-	if strings.TrimSpace(*hostAddr) != "" {
+	if strings.TrimSpace(*sidecarBin) != "" {
+		var pubHex string
+		if strings.TrimSpace(*pubKeyFile) != "" {
+			raw, err := os.ReadFile(*pubKeyFile)
+			if err != nil {
+				log.Fatalf("read -pubkey %s: %v", *pubKeyFile, err)
+			}
+			pubHex = strings.TrimSpace(string(raw))
+		}
+		managed, err := grpcwire.LaunchSidecarTarget(ctx, "local-rust-sidecar", "Rust Authority Sidecar", transport.SidecarConfig{
+			BinaryPath:      *sidecarBin,
+			PublisherKeyHex: pubHex,
+			Stderr:          os.Stderr,
+		})
+		if err != nil {
+			log.Fatalf("launch supervised sidecar %s: %v", *sidecarBin, err)
+		}
+		defer managed.Close()
+		liveTarget = managed.Target
+		if err := targets.Register(managed); err != nil {
+			log.Fatal(err)
+		}
+		federation.ProbeAll(ctx, 2*time.Second)
+		dispatcher = &grpcwire.PanelActionDispatcher{
+			Target:    liveTarget,
+			ProjectID: "default",
+			SessionID: schema.SessionID(*sessionID),
+		}
+	} else if strings.TrimSpace(*hostAddr) != "" {
 		authHeader := *token
 		if authHeader != "" && !strings.HasPrefix(authHeader, "Bearer ") {
 			authHeader = "Bearer " + authHeader
@@ -113,7 +144,7 @@ func main() {
 		if *caFile != "" || *certFile != "" || *keyFile != "" {
 			tlsCfg = &grpcwire.TLSConfig{CAFile: *caFile, CertFile: *certFile, KeyFile: *keyFile}
 		}
-		liveTarget, err := grpcwire.Dial(grpcwire.DialConfig{
+		dialed, err := grpcwire.Dial(grpcwire.DialConfig{
 			ID:          "live-rust-host",
 			DisplayName: "Rust Authority Core",
 			Mode:        mode,
@@ -124,8 +155,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("dial live Rust host %s: %v", *hostAddr, err)
 		}
-		defer liveTarget.Close()
-		if err := targets.Register(liveTarget); err != nil {
+		defer dialed.Close()
+		liveTarget = dialed
+		if err := targets.Register(dialed); err != nil {
 			log.Fatal(err)
 		}
 		federation.ProbeAll(ctx, 2*time.Second)
@@ -134,16 +166,6 @@ func main() {
 			ProjectID: "default",
 			SessionID: schema.SessionID(*sessionID),
 		}
-		liveDriver = grpcwire.NewSessionDriver(grpcwire.DriverConfig{
-			Target:       liveTarget,
-			TargetKind:   schema.TargetDesktopMacOS,
-			SessionID:    schema.SessionID(*sessionID),
-			Workbench:    wb,
-			Federation:   federation,
-			DeviceBridge: device.NewBridge(schema.TargetDesktopMacOS),
-			DeviceID:     "desktop-macos-app",
-			DisplayName:  "Marlin Desktop",
-		})
 	} else {
 		_ = targets.Register(&demoTarget{meta: transport.TargetMeta{
 			ID: "local-mac", DisplayName: "Local Sidecar", Mode: transport.ModeLocalSidecar,
@@ -202,7 +224,7 @@ func main() {
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 
-	if liveDriver == nil {
+	if liveTarget == nil {
 		app.ShowPendingGate(mygoshell.PendingGateView{
 			GateID:      "gate-demo-1",
 			ToolName:    "device.ios.notify.send",
@@ -222,9 +244,9 @@ func main() {
 		})
 		wvRuntime.AttachWindow(win)
 
-		if liveDriver != nil {
+		if liveTarget != nil {
 			liveDriver = grpcwire.NewSessionDriver(grpcwire.DriverConfig{
-				Target:       mustActiveGRPCTarget(targets),
+				Target:       liveTarget,
 				TargetKind:   schema.TargetDesktopMacOS,
 				SessionID:    schema.SessionID(*sessionID),
 				Workbench:    wb,
@@ -287,9 +309,4 @@ func main() {
 	if liveDriver != nil {
 		liveDriver.Stop()
 	}
-}
-
-func mustActiveGRPCTarget(reg *transport.TargetRegistry) *grpcwire.Target {
-	c, _ := reg.Active()
-	return c.(*grpcwire.Target)
 }
