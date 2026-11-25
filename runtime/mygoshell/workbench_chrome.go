@@ -32,7 +32,13 @@ func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedThe
 				a.cachedTopBadge = fmt.Sprintf("[%s · %s]", meta.TargetKind, phaseStr)
 			}
 			ui.Box(c).Size(7, 7).Radius(3.5).Background(toColor(dt.Success))
-			ui.Text(c, a.cachedTopBadge).FontSize(11).TextColor(toColor(dt.InkMuted))
+			if a.Federation != nil || a.FederationUI != nil {
+				if ApplePillButton(c, "status-federation", a.cachedTopBadge, BtnGlass, dt, nil, true).Clicked() {
+					a.OpenFederation()
+				}
+			} else {
+				ui.Text(c, a.cachedTopBadge).FontSize(11).TextColor(toColor(dt.InkMuted))
+			}
 		}
 		if snap != nil {
 			if a.cachedSnapBadge == "" || a.cachedSnapProfile != snap.ProfileName || a.cachedSnapGen != snap.Generation {

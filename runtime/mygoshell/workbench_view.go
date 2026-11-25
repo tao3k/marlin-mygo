@@ -76,6 +76,9 @@ type WorkbenchApp struct {
 	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
 	Projection *ProjectionController
 
+	// Optional Tier-0 native GPU Federation Cockpit topology inspector (lazy-created on open).
+	FederationUI *FederationController
+
 	// Optional Emacs-style composable binary split WindowTree. When non-nil, the
 	// main workspace renders dynamic split panes with active/inactive modelines
 	// instead of a single fixed frame.
@@ -119,6 +122,7 @@ type WorkbenchApp struct {
 	keymapOpen         bool
 	settingsOpen       bool
 	projectionOpen     bool
+	federationOpen     bool
 	addRemoteOpen      bool
 	addRemoteState     *SchemaFormState
 	addRemoteStatus    string
@@ -667,9 +671,34 @@ func (a *WorkbenchApp) OpenMarketplace() {
 	a.authOpen = false
 	a.settingsOpen = false
 	a.projectionOpen = false
+	a.federationOpen = false
 	a.addRemoteOpen = false
 	a.gateOpen = false
 }
+
+// OpenFederation opens the Tier-0 Multi-Target Federation Cockpit modal.
+func (a *WorkbenchApp) OpenFederation() {
+	if a.Federation == nil && a.FederationUI == nil {
+		return
+	}
+	if a.FederationUI == nil {
+		a.FederationUI = NewFederationController(a.Federation, a.Targets)
+	}
+	a.federationOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.keymapOpen = false
+	a.activityOpen = false
+	a.authOpen = false
+	a.marketplaceOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
+// IsFederationOpen reports whether the Tier-0 Federation Cockpit modal is visible.
+func (a *WorkbenchApp) IsFederationOpen() bool { return a.federationOpen }
 
 // DismissTopOverlay handles global ESC keyboard accessibility: closes the
 // active non-gate Tier-0 modal or cancels an in-progress Hydra chord / Which-Key HUD.
@@ -702,6 +731,9 @@ func (a *WorkbenchApp) DismissTopOverlay() bool {
 		return true
 	case a.projectionOpen:
 		a.projectionOpen = false
+		return true
+	case a.federationOpen:
+		a.federationOpen = false
 		return true
 	case a.addRemoteOpen:
 		a.addRemoteOpen = false

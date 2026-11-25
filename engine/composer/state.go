@@ -111,6 +111,7 @@ func DefaultSlashCommands() []SlashCommand {
 		{Name: "/keys", Description: "Open searchable Keymap Inspector", ActionID: "studio.open-keymap-inspector"},
 		{Name: "/activity", Description: "Open Tier-0 Notification & Activity Center", ActionID: "studio.open-notifications"},
 		{Name: "/marketplace", Description: "Open Official Marketplace (Plugins, Themes, Layouts)", ActionID: "studio.open-marketplace"},
+		{Name: "/federation", Description: "Open Tier-0 Multi-Target Federation Cockpit", ActionID: "studio.open-federation"},
 		{Name: "/theme", Description: "Cycle active Studio theme preset", ActionID: "studio.cycle-theme"},
 		{Name: "/export-layout", Description: "Export current WindowTree layout & theme profile JSON", ActionID: "studio.export-workspace-profile"},
 		{Name: "/import-layout", Description: "Import saved WindowTree layout & theme profile JSON", ActionID: "studio.import-workspace-profile"},

@@ -390,9 +390,16 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		takePhotoNow     bool
 		pickDocNow       bool
 		removeAttID      string
-		openPreviewAtt   *composer.AttachmentRef
-		closePreviewNow  bool
-		submittedMobTurn *composer.TurnSubmission
+		openPreviewAtt    *composer.AttachmentRef
+		closePreviewNow   bool
+		submittedMobTurn  *composer.TurnSubmission
+		startVoiceNow     bool
+		stopVoiceNow      bool
+		cancelVoiceNow    bool
+		openModelSheetNow bool
+		closeModelSheet   bool
+		pickedModelID     string
+		pickedEffort      composer.ReasoningEffort
 	)
 
 	ui.Column(c.Key("mobile-screen")).Fill().MinWidth(0).MinHeight(0).
@@ -407,7 +414,7 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Padding(12, 16, 10, 16).Gap(12).AlignItems(ui.Stretch).Clip().Children(func() {
 			switch tab {
 			case MobileTabChat:
-				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, &submitPrompt, &submittedMobTurn, &pickPhotoNow, &takePhotoNow, &pickDocNow, &removeAttID, &openPreviewAtt)
+				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, &submitPrompt, &submittedMobTurn, &pickPhotoNow, &takePhotoNow, &pickDocNow, &removeAttID, &openPreviewAtt, &startVoiceNow, &stopVoiceNow, &cancelVoiceNow, &openModelSheetNow)
 
 			case MobileTabGates:
 				m.renderGatesTab(c, t, dt, dev, gates, &decideGateID, &decideApprove)
@@ -439,6 +446,12 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 			RenderMobileAttachmentSheet(c, dt, att, m.Transcript.CachedThumbnail(att.SHA256Hex), m.Transcript.OnCopyCode, func() {
 				closePreviewNow = true
 			})
+		} else if m.Transcript.IsModelPickerOpen() && m.Transcript.Composer != nil {
+			RenderMobileModelSheet(c, dt, m.Transcript.Composer.Snapshot(),
+				func(mod composer.ModelOption) { pickedModelID = mod.ID },
+				func(eff composer.ReasoningEffort) { pickedEffort = eff },
+				func() { closeModelSheet = true },
+			)
 		}
 	}
 
@@ -496,6 +509,28 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	}
 	if pickDocNow && m.OnPickDocument != nil {
 		m.OnPickDocument()
+	}
+	if startVoiceNow && m.Transcript != nil {
+		m.Transcript.StartVoiceRecording()
+	}
+	if stopVoiceNow && m.Transcript != nil {
+		m.Transcript.StopVoiceRecording()
+	}
+	if cancelVoiceNow && m.Transcript != nil {
+		m.Transcript.CancelVoiceRecording()
+	}
+	if openModelSheetNow && m.Transcript != nil {
+		m.Transcript.OpenModelPicker()
+	}
+	if closeModelSheet && m.Transcript != nil {
+		m.Transcript.CloseModelPicker()
+	}
+	if pickedModelID != "" && m.Transcript != nil {
+		m.Transcript.SelectModel(pickedModelID)
+	}
+	if pickedEffort != "" && m.Transcript != nil && m.Transcript.Composer != nil {
+		m.Transcript.Composer.SetEffort(pickedEffort)
+		m.Transcript.SetDeepThink(pickedEffort == composer.EffortDeep)
 	}
 	if submittedMobTurn != nil {
 		refs := make([]composer.AttachmentRef, 0, len(submittedMobTurn.Attachments))

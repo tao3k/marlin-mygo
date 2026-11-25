@@ -101,6 +101,10 @@ bench:
 perf-gate scale="1.0":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool perf-gate -benchtime=300ms -latency-scale={{scale}}
 
+# Enforce Go modularity hygiene: zero non-generated .go files exceeding max_lines (default 1000).
+check-file-size max_lines="1000":
+    @OVER=$(find . -name '*.go' -not -path './gen/*' -not -path './.devenv/*' -not -path './.tmp/*' -exec wc -l {} + | awk -v max={{max_lines}} '$1 > max && $2 != "total" {print}'); if [ -n "$OVER" ]; then echo "Go files exceeding {{max_lines}} lines:"; echo "$OVER"; exit 1; else echo "OK: all non-generated Go files are <= {{max_lines}} lines"; fi
+
 # Serve a signed Marketplace catalog directory over local HTTP.
 serve-catalog dir="./dist/marketplace" addr="127.0.0.1:8787":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool serve-catalog -dir "{{dir}}" -addr "{{addr}}"

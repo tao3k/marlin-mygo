@@ -29,6 +29,10 @@ func (m *MobileCompanionApp) renderChatTab(
 	pickDocNow *bool,
 	removeAttID *string,
 	openPreviewAtt **composer.AttachmentRef,
+	startVoiceNow *bool,
+	stopVoiceNow *bool,
+	cancelVoiceNow *bool,
+	openModelSheetNow *bool,
 ) {
 	// Message feed with authentic iMessage / Apple Intelligence asymmetric bubbles.
 	ui.Column(c).Grow(1).MinHeight(0).Gap(12).AlignItems(ui.Stretch).Children(func() {
@@ -92,10 +96,27 @@ func (m *MobileCompanionApp) renderChatTab(
 		}
 		ui.Spacer(c)
 
-		// Shared multimodal attachment strip above the phone composer pill.
+		// Shared multimodal attachment strip + live voice bar above the phone composer pill.
 		var stagedAtts []composer.AttachmentRef
-		if m.Transcript != nil && m.Transcript.Composer != nil {
-			stagedAtts = m.Transcript.Composer.Snapshot().Attachments
+		activeModelLabel := "Marlin Core"
+		var voiceSnap composer.VoiceSnapshot
+		if m.Transcript != nil {
+			if m.Transcript.Composer != nil {
+				cs := m.Transcript.Composer.Snapshot()
+				stagedAtts = cs.Attachments
+				if cs.ActiveModel.Label != "" {
+					activeModelLabel = cs.ActiveModel.Label
+				}
+			}
+			if m.Transcript.Voice != nil {
+				voiceSnap = m.Transcript.Voice.Snapshot()
+			}
+		}
+		if voiceSnap.Phase != composer.VoiceIdle {
+			RenderVoiceRecordingBar(c, dt, voiceSnap,
+				func() { *cancelVoiceNow = true },
+				func() { *stopVoiceNow = true },
+			)
 		}
 		if len(stagedAtts) > 0 {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -108,7 +129,7 @@ func (m *MobileCompanionApp) renderChatTab(
 			})
 		}
 
-		// Native mobile media capture hooks (Photo / Camera / File) + quick-suggestion capsules.
+		// Native mobile media capture hooks (Photo / Camera / File / Voice / Model) + quick-suggestion capsules.
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			if m.OnPickPhoto != nil {
 				if ApplePillButton(c, "mob-att-photo", "Photo", BtnGlass, dt, svgIconImage, true).Clicked() {
@@ -123,6 +144,16 @@ func (m *MobileCompanionApp) renderChatTab(
 			if m.OnPickDocument != nil {
 				if ApplePillButton(c, "mob-att-doc", "File", BtnGlass, dt, svgIconPaperclip, true).Clicked() {
 					*pickDocNow = true
+				}
+			}
+			if voiceSnap.Phase == composer.VoiceIdle && m.Transcript != nil {
+				if ApplePillButton(c, "mob-att-voice", "Voice", BtnGlass, dt, svgIconMic, true).Clicked() {
+					*startVoiceNow = true
+				}
+			}
+			if m.Transcript != nil && m.Transcript.Composer != nil {
+				if ApplePillButton(c, "mob-att-model", activeModelLabel, BtnGlass, dt, nil, true).Clicked() {
+					*openModelSheetNow = true
 				}
 			}
 			for _, chip := range []struct{ key, label, prompt string }{

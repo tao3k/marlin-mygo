@@ -181,6 +181,8 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				app.OpenActivityCenter()
 			case "studio.open-marketplace":
 				app.OpenMarketplace()
+			case "studio.open-federation":
+				app.OpenFederation()
 			case "studio.cycle-theme":
 				if app.OnCycleTheme != nil {
 					app.OnCycleTheme()
@@ -354,6 +356,11 @@ func buildWorkbenchApp(
 ) (*mygoshell.WorkbenchApp, *mygoshell.MarketplaceController, *mygoshell.TranscriptController) {
 	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
 	app.Federation = federation
+	fedUI := mygoshell.NewFederationController(federation, targets)
+	fedUI.OnProbeAll = func() {
+		go federation.ProbeAll(ctx, 2*time.Second)
+	}
+	app.FederationUI = fedUI
 	app.BrandTitle = "Marlin Studio"
 	app.BrandSubtitle = "MyGo GPU · React 19 + WASI"
 
