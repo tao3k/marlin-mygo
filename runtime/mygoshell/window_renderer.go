@@ -70,10 +70,29 @@ func renderWindowNode(
 	secondFlex := 1.0 - firstFlex
 
 	if node.Axis == shell.SplitRow {
-		ui.Row(c.Key("wrow-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(8).AlignItems(ui.Stretch).Children(func() {
+		ui.Row(c.Key("wrow-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c.Key("wfirst-"+string(node.ID))).Grow(firstFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 				renderWindowNode(c, t, dt, tree, snap, node.First, cb)
 			})
+			// Sleek Apple interactive split divider handle (click cycles 50/50 -> 65/35 -> 35/65).
+			div := ui.ButtonBase(c.Key("wdiv-"+string(node.ID))).Label("Resize Split").
+				Width(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+			div.Children(func() {
+				barCol := toColor(dt.Border)
+				if div.Hovered() {
+					barCol = toColor(dt.Accent)
+				}
+				ui.Box(c).Width(2).Height(32).Radius(1).Background(barCol)
+			})
+			if div.Clicked() {
+				nextRatio := float32(0.65)
+				if node.Ratio > 0.60 {
+					nextRatio = 0.35
+				} else if node.Ratio < 0.40 {
+					nextRatio = 0.50
+				}
+				tree.ResizeSplit(node.ID, nextRatio)
+			}
 			ui.Column(c.Key("wsecond-"+string(node.ID))).Grow(secondFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 				renderWindowNode(c, t, dt, tree, snap, node.Second, cb)
 			})
@@ -81,10 +100,28 @@ func renderWindowNode(
 		return
 	}
 
-	ui.Column(c.Key("wcol-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(8).AlignItems(ui.Stretch).Children(func() {
+	ui.Column(c.Key("wcol-"+string(node.ID))).Grow(1).MinWidth(0).MinHeight(0).Gap(4).AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c.Key("wfirst-"+string(node.ID))).Grow(firstFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			renderWindowNode(c, t, dt, tree, snap, node.First, cb)
 		})
+		div := ui.ButtonBase(c.Key("wdiv-"+string(node.ID))).Label("Resize Split").
+			Height(6).AlignItems(ui.Center).Justify(ui.Center).Background(ui.Transparent)
+		div.Children(func() {
+			barCol := toColor(dt.Border)
+			if div.Hovered() {
+				barCol = toColor(dt.Accent)
+			}
+			ui.Box(c).Width(32).Height(2).Radius(1).Background(barCol)
+		})
+		if div.Clicked() {
+			nextRatio := float32(0.65)
+			if node.Ratio > 0.60 {
+				nextRatio = 0.35
+			} else if node.Ratio < 0.40 {
+				nextRatio = 0.50
+			}
+			tree.ResizeSplit(node.ID, nextRatio)
+		}
 		ui.Column(c.Key("wsecond-"+string(node.ID))).Grow(secondFlex).MinWidth(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			renderWindowNode(c, t, dt, tree, snap, node.Second, cb)
 		})
@@ -159,6 +196,10 @@ func renderWindowLeaf(
 				}
 			}
 			if snap.LeafCount > 1 {
+				if ApplePillButton(c, "wswap-"+string(leaf.ID), "Swap", BtnGlass, dt, nil, true).Clicked() {
+					tree.FocusWindow(leaf.ID)
+					tree.SwapWithNext()
+				}
 				zoomLbl := "Zoom"
 				zoomVar := BtnGlass
 				if snap.Zoomed && isFocused {

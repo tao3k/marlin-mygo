@@ -83,13 +83,13 @@ func RenderBoundedForm(
 	onSubmit func(map[string]any),
 ) {
 	t := c.Theme()
-	ui.Column(c).Padding(12).Gap(10).Radius(8).
-		Background(t.Surface).Border(1, t.Border).Children(func() {
+	dt := derivedThemeFromUITheme(t)
+	AppleGlassCard(c, "schema-form-"+string(spec.ID), dt, 18, 16, 12, func() {
 		title := spec.Title
 		if title == "" {
 			title = string(spec.ID)
 		}
-		ui.Text(c, title).Bold().FontSize(15)
+		ui.Text(c, title).FontWeight(700).FontSize(15.5).TextColor(toColor(dt.Ink))
 
 		for _, f := range spec.Fields {
 			label := f.Label
@@ -103,41 +103,37 @@ func RenderBoundedForm(
 				state.Bools[f.Key] = val
 
 			case schema.FieldEnum:
-				ui.Column(c).Gap(4).Children(func() {
-					ui.Text(c, label).FontSize(12).TextColor(t.TextMuted)
-					ui.Row(c).Gap(6).Children(func() {
-						cur := state.Strings[f.Key]
-						for _, opt := range f.EnumValues {
-							btnKey := c.Key("enum-" + f.Key + "-" + opt)
-							if cur == opt {
-								if ui.PrimaryButton(btnKey, opt).Clicked() {
-									state.Strings[f.Key] = opt
-								}
-							} else {
-								if ui.Button(btnKey, opt).Clicked() {
-									state.Strings[f.Key] = opt
-								}
-							}
-						}
-					})
+				ui.Column(c).Gap(6).Children(func() {
+					ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(toColor(dt.InkMuted))
+					items := make([]SegmentedItem, len(f.EnumValues))
+					for i, opt := range f.EnumValues {
+						items[i] = SegmentedItem{ID: opt, Label: opt}
+					}
+					if chosen := AppleSegmentedControl(c, "enum-"+f.Key, items, state.Strings[f.Key], dt, true); chosen != "" {
+						state.Strings[f.Key] = chosen
+					}
 				})
 
 			default: // FieldString or FieldInt
-				ui.Column(c).Gap(4).Children(func() {
-					ui.Text(c, label).FontSize(12).TextColor(t.TextMuted)
+				ui.Column(c).Gap(5).Children(func() {
+					ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(toColor(dt.InkMuted))
 					val := state.Strings[f.Key]
-					ui.TextInput(c.Key("input-"+f.Key), &val).Placeholder(label)
+					ui.Row(c).Padding(8, 12).Radius(12).
+						Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+						ui.TextInputBase(c.Key("input-"+f.Key), &val).
+							Placeholder(label).FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1)
+					})
 					state.Strings[f.Key] = val
 				})
 			}
 		}
 
 		if state.LastError != "" {
-			ui.Text(c, state.LastError).FontSize(12).TextColor(t.Warning)
+			ui.Text(c, state.LastError).FontSize(12).FontWeight(600).TextColor(toColor(dt.Warning))
 		}
 
 		ui.Row(c).Justify(ui.End).Children(func() {
-			if ui.PrimaryButton(c.Key("schema-form-submit"), "Save Settings").Clicked() {
+			if ApplePillButton(c, "schema-form-submit", "Save Settings", BtnPrimary, dt, svgIconCheck, false).Clicked() {
 				vals, err := state.Values(spec)
 				if err == nil {
 					err = spec.ValidateValues(vals)

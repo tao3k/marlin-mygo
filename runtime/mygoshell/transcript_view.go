@@ -655,10 +655,16 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			})
 		}
 
-		// Interactive chat composer bound to live durable sessions.
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("transcript-composer"), &draft).Placeholder("Message Marlin agent...")
-			if ui.PrimaryButton(c.Key("transcript-send"), "Send").Clicked() {
+		// Interactive Apple-style floating capsule chat composer bound to live durable sessions.
+		dt := derivedThemeFromUITheme(t)
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(5, 8, 5, 14).Radius(24).
+			Background(toColor(dt.SurfaceElevated)).
+			Border(1, glassBorderColor(dt)).
+			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).Children(func() {
+			ui.TextInputBase(c.Key("transcript-composer"), &draft).
+				Placeholder("Message Marlin agent...").
+				FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(5, 2)
+			if AppleCircleIconButton(c, "transcript-send", "Send", svgIconArrowUp, 32, dt).Clicked() {
 				trimmed := strings.TrimSpace(draft)
 				if trimmed != "" {
 					submitPrompt = trimmed
@@ -666,7 +672,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				}
 			}
 			if inFlight && onCancel != nil {
-				if ui.Button(c.Key("transcript-cancel"), "Cancel Turn").Clicked() {
+				if ApplePillButton(c, "transcript-cancel", "Cancel Turn", BtnDestructive, dt, svgIconXMark, true).Clicked() {
 					cancelClicked = true
 				}
 			}

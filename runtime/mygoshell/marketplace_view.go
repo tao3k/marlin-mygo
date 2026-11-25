@@ -41,6 +41,7 @@ type MarketplaceItem struct {
 	ReadScopes        []string
 	DeclaredActions   []string
 	SignatureVerified bool
+	TrustTier         string // "official" (default when SignatureVerified), "verified", or "unofficial"
 	PackageBytes      int64
 
 	Installed            bool
@@ -78,10 +79,20 @@ type MarketplaceItem struct {
 	sleepKey            string
 }
 
+func (it *MarketplaceItem) isOfficialAdmitted() bool {
+	if !it.SignatureVerified {
+		return false
+	}
+	tier := strings.ToLower(strings.TrimSpace(it.TrustTier))
+	return tier == "" || tier == "official"
+}
+
 func (it *MarketplaceItem) refreshLabels() {
 	it.titleLine = fmt.Sprintf("%s  v%s  [%s -> %s]", it.PluginID, it.Version, it.Runtime, it.SlotID)
-	if it.SignatureVerified {
-		it.trustBadge = fmt.Sprintf("VERIFIED · %s", it.PublisherID)
+	if it.isOfficialAdmitted() {
+		it.trustBadge = fmt.Sprintf("OFFICIAL VERIFIED · %s", it.PublisherID)
+	} else if it.SignatureVerified {
+		it.trustBadge = fmt.Sprintf("UNOFFICIAL TIER (%s) · %s", it.TrustTier, it.PublisherID)
 	} else {
 		it.trustBadge = fmt.Sprintf("UNVERIFIED · %s", it.PublisherID)
 	}
@@ -146,14 +157,17 @@ const maxVisibleMarketplaceCards = 12
 // MarketplaceController owns the built-in Tier-0 Host GPU Marketplace drawer
 // (painted above all Untrusted plugin WebViews so third-party plugins can never
 // occlude or spoof Ed25519 trust badges, permission lists, or rollback controls).
+// By default OfficialOnly=true enforces that only Official Marketplace verified
+// publishers can be installed or awakened from the UI.
 type MarketplaceController struct {
-	OnInstall  func(pluginID string) error
-	OnUpgrade  func(pluginID string) error
-	OnRollback func(pluginID string) error
-	OnDisable  func(pluginID string) error
-	OnWake     func(pluginID string) error
-	OnSleep    func(pluginID string) error
-	OnRefresh  func() error
+	OfficialOnly bool
+	OnInstall    func(pluginID string) error
+	OnUpgrade    func(pluginID string) error
+	OnRollback   func(pluginID string) error
+	OnDisable    func(pluginID string) error
+	OnWake       func(pluginID string) error
+	OnSleep      func(pluginID string) error
+	OnRefresh    func() error
 
 	mu                sync.RWMutex
 	items             []MarketplaceItem
@@ -185,7 +199,9 @@ type MarketplaceController struct {
 }
 
 func NewMarketplaceController() *MarketplaceController {
-	return &MarketplaceController{}
+	return &MarketplaceController{
+		OfficialOnly: true,
+	}
 }
 
 // SetItems replaces the Marketplace catalog snapshot and precomputes display labels.
@@ -414,136 +430,145 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 		doSleepID     string
 	)
 
+	dt := derivedThemeFromUITheme(t)
+	officialOnly := m.OfficialOnly
+
 	ui.Column(c).MinWidth(0).Gap(10).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "MARLIN MARKETPLACE (HOST TIER-0)").FontSize(16).Bold()
+			ui.Text(c, "MARLIN MARKETPLACE (HOST TIER-0)").FontSize(16).FontWeight(700).TextColor(toColor(dt.Ink))
+			if officialOnly {
+				AppleBadgePill(c, "OFFICIAL ONLY", dt.Success, dt)
+			}
 			ui.Spacer(c)
 			if m.OnRefresh != nil {
-				if ui.Button(c.Key("mkt-refresh"), "Refresh Catalog").Clicked() {
+				if ApplePillButton(c, "mkt-refresh", "Refresh Catalog", BtnGlass, dt, nil, true).Clicked() {
 					doRefresh = true
 				}
 			}
 			if onClose != nil {
-				if ui.Button(c.Key("mkt-close"), "Close").Clicked() {
+				if ApplePillButton(c, "mkt-close", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
 					doClose = true
 				}
 			}
 		})
 
-		ui.Text(c, "Ed25519-verified catalog & hot-plug lifecycle rendered inside the trusted host GPU plane.").
-			FontSize(12).TextColor(t.TextMuted)
+		ui.Text(c, "Official Ed25519-signed Marketplace catalog & hot-plug lifecycle managed inside the trusted host GPU plane.").
+			FontSize(12).TextColor(toColor(dt.InkMuted))
 
 		if profilerLine != "" {
-			ui.Text(c, profilerLine).FontSize(11).Bold().TextColor(t.Accent)
+			ui.Text(c, profilerLine).FontSize(11).FontWeight(600).TextColor(toColor(dt.Accent))
 		}
 
-		// Zero-alloc fuzzy search + runtime filter chips.
+		// Zero-alloc fuzzy search pill + Apple Segmented runtime filter.
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("mkt-search"), &query).Placeholder("Search plugins (fuzzy)...")
-			filterButtons := []struct {
-				label string
-				kind  schema.PanelRuntimeKind
-			}{
-				{"All", ""},
-				{"Go WASI", schema.RuntimeWasmUIIR},
-				{"TS WebView", schema.RuntimeWebViewUntrusted},
-				{"Declarative", schema.RuntimeDeclarative},
-			}
-			for _, fb := range filterButtons {
-				k := fb.kind
-				if rtFilter == k {
-					if ui.PrimaryButton(c.Key("mkt-rt-"+fb.label), fb.label).Clicked() {
-						clickedFilter = &k
-					}
-				} else {
-					if ui.Button(c.Key("mkt-rt-"+fb.label), fb.label).Clicked() {
-						clickedFilter = &k
-					}
+			ui.Row(c).Grow(1).Padding(7, 12).Radius(999).
+				Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+				ui.TextInputBase(c.Key("mkt-search"), &query).
+					Placeholder("Search official plugins (fuzzy)...").
+					FontSize(13).TextColor(toColor(dt.Ink)).Grow(1)
+			})
+			chosenRT := AppleSegmentedControl(c, "mkt-rt", []SegmentedItem{
+				{ID: "all", Label: "All"},
+				{ID: string(schema.RuntimeWasmUIIR), Label: "Go WASI"},
+				{ID: string(schema.RuntimeWebViewUntrusted), Label: "TS WebView"},
+				{ID: string(schema.RuntimeDeclarative), Label: "Declarative"},
+			}, func() string {
+				if rtFilter == "" {
+					return "all"
 				}
+				return string(rtFilter)
+			}(), dt, true)
+			if chosenRT != "" {
+				var k schema.PanelRuntimeKind
+				if chosenRT != "all" {
+					k = schema.PanelRuntimeKind(chosenRT)
+				}
+				clickedFilter = &k
 			}
 		})
 
 		if statusMsg != "" {
-			col := t.Accent
+			col := toColor(dt.Accent)
 			if statusErr {
-				col = t.Warning
+				col = toColor(dt.Warning)
 			}
-			ui.Text(c, statusMsg).FontSize(12).Bold().TextColor(col)
+			ui.Text(c, statusMsg).FontSize(12).FontWeight(600).TextColor(col)
 		}
 
 		if len(matched) == 0 {
-			ui.Text(c, "No matching Marketplace plugins found.").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "No matching Marketplace plugins found.").FontSize(12).TextColor(toColor(dt.InkMuted))
 		} else {
 			ui.Column(c).Gap(8).Children(func() {
 				for _, idx := range visibleMatched {
 					it := &m.renderItems[idx]
-					border := t.Border
-					if it.Installed {
-						border = t.Accent
-					}
-					ui.Column(c).Padding(10).Gap(4).Radius(6).Border(1, border).Children(func() {
+					admitted := !officialOnly || it.isOfficialAdmitted()
+					AppleGlassCard(c, "mkt-card-"+it.PluginID, dt, 16, 12, 6, func() {
 						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, it.titleLine).Bold().FontSize(13)
+							ui.Text(c, it.titleLine).FontWeight(700).FontSize(13).TextColor(toColor(dt.Ink))
 							ui.Spacer(c)
-							trustColor := t.Accent
-							if !it.SignatureVerified {
-								trustColor = t.Warning
+							trustTone := dt.Success
+							if !admitted {
+								trustTone = dt.Danger
+							} else if !it.SignatureVerified {
+								trustTone = dt.Warning
 							}
-							ui.Text(c, it.trustBadge).FontSize(11).Bold().TextColor(trustColor)
+							AppleBadgePill(c, it.trustBadge, trustTone, dt)
 						})
 						if it.Summary != "" {
-							ui.Text(c, it.Summary).FontSize(12)
+							ui.Text(c, it.Summary).FontSize(12).TextColor(toColor(dt.InkSecondary))
 						}
-						ui.Text(c, it.permLine).FontSize(11).TextColor(t.TextMuted)
+						ui.Text(c, it.permLine).FontSize(11).TextColor(toColor(dt.InkMuted))
 						if it.escalationWarn != "" {
-							ui.Text(c, it.escalationWarn).FontSize(11).Bold().TextColor(t.Warning)
+							ui.Text(c, it.escalationWarn).FontSize(11).FontWeight(700).TextColor(toColor(dt.Warning))
 						}
 						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, it.healthBadge).FontSize(11).Bold().TextColor(t.Accent)
+							ui.Text(c, it.healthBadge).FontSize(11).FontWeight(600).TextColor(toColor(dt.Accent))
 							ui.Spacer(c)
-							if !it.Installed {
-								if ui.PrimaryButton(c.Key(it.instKey), it.installLabel).Clicked() {
+							if !admitted && !it.Installed {
+								AppleBadgePill(c, "BLOCKED · OFFICIAL ONLY", dt.Danger, dt)
+							} else if !it.Installed {
+								if ApplePillButton(c, it.instKey, it.installLabel, BtnPrimary, dt, nil, true).Clicked() {
 									doInstallID = it.PluginID
 								}
 							} else if it.Dormant {
-								if m.OnWake != nil {
-									if ui.PrimaryButton(c.Key(it.wakeKey), it.wakeLabel).Clicked() {
+								if m.OnWake != nil && admitted {
+									if ApplePillButton(c, it.wakeKey, it.wakeLabel, BtnPrimary, dt, nil, true).Clicked() {
 										doWakeID = it.PluginID
 									}
 								}
 								if m.OnDisable != nil {
-									if ui.Button(c.Key(it.disKey), it.disableLabel).Clicked() {
+									if ApplePillButton(c, it.disKey, it.disableLabel, BtnDestructive, dt, nil, true).Clicked() {
 										doDisableID = it.PluginID
 									}
 								}
 							} else {
-								if it.Version != "" && it.InstalledVersion != "" && it.Version != it.InstalledVersion && m.OnUpgrade != nil {
+								if it.Version != "" && it.InstalledVersion != "" && it.Version != it.InstalledVersion && m.OnUpgrade != nil && admitted {
 									if it.escalationWarn != "" && !pendingEsc[it.PluginID] {
-										if ui.PrimaryButton(c.Key(it.upgKey), it.upgradeLabel).Clicked() {
+										if ApplePillButton(c, it.upgKey, it.upgradeLabel, BtnPrimary, dt, nil, true).Clicked() {
 											armEscalateID = it.PluginID
 										}
 									} else if it.escalationWarn != "" {
-										if ui.PrimaryButton(c.Key(it.confirmUpgKey), it.confirmUpgradeLabel).Clicked() {
+										if ApplePillButton(c, it.confirmUpgKey, it.confirmUpgradeLabel, BtnPrimary, dt, svgIconCheck, true).Clicked() {
 											doUpgradeID = it.PluginID
 										}
 									} else {
-										if ui.PrimaryButton(c.Key(it.upgKey), it.upgradeLabel).Clicked() {
+										if ApplePillButton(c, it.upgKey, it.upgradeLabel, BtnPrimary, dt, nil, true).Clicked() {
 											doUpgradeID = it.PluginID
 										}
 									}
 								}
 								if it.PreviousVersion != "" && m.OnRollback != nil {
-									if ui.Button(c.Key(it.rbKey), it.rollbackLabel).Clicked() {
+									if ApplePillButton(c, it.rbKey, it.rollbackLabel, BtnTinted, dt, nil, true).Clicked() {
 										doRollbackID = it.PluginID
 									}
 								}
 								if m.OnSleep != nil {
-									if ui.Button(c.Key(it.sleepKey), it.sleepLabel).Clicked() {
+									if ApplePillButton(c, it.sleepKey, it.sleepLabel, BtnGlass, dt, nil, true).Clicked() {
 										doSleepID = it.PluginID
 									}
 								}
 								if m.OnDisable != nil {
-									if ui.Button(c.Key(it.disKey), it.disableLabel).Clicked() {
+									if ApplePillButton(c, it.disKey, it.disableLabel, BtnDestructive, dt, nil, true).Clicked() {
 										doDisableID = it.PluginID
 									}
 								}
@@ -560,15 +585,15 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 					m.cachedPageInfo = fmt.Sprintf("Showing %d-%d of %d matching plugins", m.pageInfoStart, m.pageInfoEnd, m.pageInfoTotal)
 				}
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, m.cachedPageInfo).FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, m.cachedPageInfo).FontSize(11).TextColor(toColor(dt.InkMuted))
 					ui.Spacer(c)
 					if pageOffset > 0 {
-						if ui.Button(c.Key("mkt-page-prev"), "Prev Page").Clicked() {
+						if ApplePillButton(c, "mkt-page-prev", "Prev Page", BtnGlass, dt, nil, true).Clicked() {
 							nextPageOff = max(0, pageOffset-maxVisibleMarketplaceCards)
 						}
 					}
 					if visibleEnd < len(matched) {
-						if ui.Button(c.Key("mkt-page-next"), "Next Page").Clicked() {
+						if ApplePillButton(c, "mkt-page-next", "Next Page", BtnGlass, dt, nil, true).Clicked() {
 							nextPageOff = visibleEnd
 						}
 					}

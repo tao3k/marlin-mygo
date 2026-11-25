@@ -22,6 +22,7 @@ const (
 	CmdWindowFocusNext     = "window.focus-next"
 	CmdWindowBalance       = "window.balance"
 	CmdWindowCycleBuffer   = "window.cycle-buffer"
+	CmdWindowSwapNext      = "window.swap-next"
 	CmdPerspectiveFocus    = "window.perspective.focus"
 	CmdPerspectiveSplit    = "window.perspective.split"
 	CmdPerspectiveCockpit  = "window.perspective.cockpit"
@@ -213,6 +214,9 @@ func ExecuteWindowCommand(tree *WindowTree, cmdName string, buffers []PaneBuffer
 		}
 		tree.SetWindowBuffer(winID, next)
 		return true, nil
+	case CmdWindowSwapNext:
+		tree.SwapWithNext()
+		return true, nil
 	case CmdPerspectiveFocus:
 		tree.ApplyBuiltinPerspective("focus", primary, dock, secondary, projection)
 		return true, nil
@@ -242,6 +246,7 @@ func DefaultEmacsWindowBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "="}, ActionKind: "window", CommandName: CmdWindowBalance},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
 		// Classic Emacs chords (C-x ...)
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "3"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "2"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
@@ -249,6 +254,7 @@ func DefaultEmacsWindowBindings() []input.Binding {
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "1"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
 		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "+"}, ActionKind: "window", CommandName: CmdWindowBalance},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
 	}
 }
 
@@ -262,6 +268,7 @@ func DefaultEmacsWindowCommands() []input.CommandEntry {
 		{Name: CmdWindowFocusNext, Description: "Focus next window pane (SPC w o / C-x o)"},
 		{Name: CmdWindowBalance, Description: "Balance split ratios (SPC w = / C-x +)"},
 		{Name: CmdWindowCycleBuffer, Description: "Cycle buffer in focused window (SPC w b)"},
+		{Name: CmdWindowSwapNext, Description: "Swap focused window buffer with next pane (SPC w x / C-x x)"},
 		{Name: CmdPerspectiveFocus, Description: "Apply Focus 2-pane perspective"},
 		{Name: CmdPerspectiveSplit, Description: "Apply Split 2-pane perspective"},
 		{Name: CmdPerspectiveCockpit, Description: "Apply Cockpit 3-pane perspective"},

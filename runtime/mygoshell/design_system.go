@@ -108,8 +108,10 @@ func ApplePillButton(
 		botCol := toColor(dt.Accent)
 		textColor = toColor(dt.InkOnAccent)
 		btn.Gradient(topCol, botCol, 180).
-			InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.28)).
-			Shadow(0, 4, 12, -2, rgbaFromRGB(dt.Accent, 0.34))
+			InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.28))
+		if !compact {
+			btn.Shadow(0, 3, 10, -2, rgbaFromRGB(dt.Accent, 0.34))
+		}
 
 	case BtnTinted:
 		alpha := float32(0.15)
@@ -141,16 +143,24 @@ func ApplePillButton(
 		btn.Background(rgbaFromRGB(dt.Success, alpha)).
 			Border(1, rgbaFromRGB(dt.Success, 0.24))
 
-	default: // BtnGlass — 120Hz specular frosted capsule (zero per-frame CPU blur/animation stall)
+	default: // BtnGlass — 120Hz specular frosted capsule with crisp hover lift
 		textColor = toColor(dt.Ink)
 		fill := toColor(dt.SurfaceElevated)
-		if dt.Appearance == AppearanceLight {
+		if btn.Hovered() {
+			fill = toColor(dt.SurfaceHover)
+		} else if dt.Appearance == AppearanceLight {
 			fill = ui.RGBA(255, 255, 255, 0.92)
 		}
+		borderCol := glassBorderColor(dt)
+		if btn.Hovered() {
+			borderCol = rgbaFromRGB(dt.Accent, 0.36)
+		}
 		btn.Background(fill).
-			Border(1, glassBorderColor(dt)).
-			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
-			Shadow(0, 2, 8, -2, ambientShadowColor(dt))
+			Border(1, borderCol).
+			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt))
+		if !compact {
+			btn.Shadow(0, 2, 6, -1, ambientShadowColor(dt))
+		}
 	}
 
 	btn.Children(func() {
@@ -294,7 +304,7 @@ func AppleGlassCard(c *ui.Context, key string, dt DerivedTheme, radius float32, 
 		Background(bg).
 		Border(1, glassBorderColor(dt)).
 		InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).
-		Shadow(0, 6, 20, -6, ambientShadowColor(dt)).
+		Shadow(0, 2, 6, -1, ambientShadowColor(dt)).
 		Children(body)
 }
 

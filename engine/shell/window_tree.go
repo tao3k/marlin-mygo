@@ -420,3 +420,43 @@ func balanceNode(n *WindowNode) {
 	balanceNode(n.First)
 	balanceNode(n.Second)
 }
+
+// ReplaceBuffer replaces any leaf window currently displaying oldBufferID with
+// fallback (e.g. when a Marketplace plugin is hot-unplugged), guaranteeing zero
+// dead or empty panes. Returns the number of migrated panes.
+func (t *WindowTree) ReplaceBuffer(oldBufferID string, fallback PaneBuffer) int {
+	if oldBufferID == "" {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	leaves := collectLeaves(t.root, nil)
+	replaced := 0
+	for _, leaf := range leaves {
+		if leaf.Buffer.BufferID == oldBufferID {
+			leaf.Buffer = fallback
+			replaced++
+		}
+	}
+	return replaced
+}
+
+// SwapWithNext swaps the mounted PaneBuffer of the focused window with the
+// next leaf window in traversal order (`SPC w x` / window.swap-next).
+func (t *WindowTree) SwapWithNext() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	leaves := collectLeaves(t.root, nil)
+	if len(leaves) < 2 {
+		return false
+	}
+	for i, leaf := range leaves {
+		if leaf.ID == t.focusedID {
+			next := leaves[(i+1)%len(leaves)]
+			leaf.Buffer, next.Buffer = next.Buffer, leaf.Buffer
+			t.focusedID = next.ID
+			return true
+		}
+	}
+	return false
+}

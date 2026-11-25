@@ -19,7 +19,10 @@ import (
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
 
-var ErrTrustRingInvalid = errors.New("marketplace: invalid trust-ring.toml configuration")
+var (
+	ErrTrustRingInvalid          = errors.New("marketplace: invalid trust-ring.toml configuration")
+	ErrOfficialPublisherRequired = errors.New("marketplace: only official verified marketplace publishers are permitted")
+)
 
 // TrustTier classifies a publisher in a multi-publisher TrustRing.
 type TrustTier string
@@ -171,6 +174,29 @@ func (r *TrustRing) ReleaseTrust() *schema.ReleaseTrust {
 		keys[p.PublisherID] = p.PublicKey
 	}
 	return schema.NewReleaseTrust(keys)
+}
+
+// OfficialReleaseTrust builds a strict schema.ReleaseTrust containing ONLY
+// TrustTierOfficial publisher keys so third-party, dev, or unsigned bundles
+// are cryptographically rejected fail-closed in Official-Marketplace-Only mode.
+func (r *TrustRing) OfficialReleaseTrust() *schema.ReleaseTrust {
+	keys := make(map[schema.PublisherID]ed25519.PublicKey)
+	for _, p := range r.Publishers {
+		if p.Tier == TrustTierOfficial {
+			keys[p.PublisherID] = p.PublicKey
+		}
+	}
+	return schema.NewReleaseTrust(keys)
+}
+
+// IsOfficialPublisher reports whether publisherID belongs to TrustTierOfficial.
+func (r *TrustRing) IsOfficialPublisher(id schema.PublisherID) bool {
+	for _, p := range r.Publishers {
+		if p.PublisherID == id && p.Tier == TrustTierOfficial {
+			return true
+		}
+	}
+	return false
 }
 
 // CatalogKey resolves the Ed25519 catalog verification key for publisherID, or

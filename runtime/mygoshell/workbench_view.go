@@ -164,10 +164,12 @@ func (a *WorkbenchApp) ApplyLayoutSpec(spec shell.LayoutSpec) error {
 	if a.Windows == nil {
 		return shell.ErrInvalidLayoutSpec
 	}
+	a.mu.Lock()
 	catalog := make(map[string]shell.PaneBuffer, len(a.WindowBuffers))
 	for _, b := range a.WindowBuffers {
 		catalog[b.BufferID] = b
 	}
+	a.mu.Unlock()
 	if err := shell.ApplyLayoutSpec(a.Windows, spec, catalog); err != nil {
 		return err
 	}
@@ -175,6 +177,61 @@ func (a *WorkbenchApp) ApplyLayoutSpec(spec shell.LayoutSpec) error {
 		a.OnLayoutChanged(a.Windows.Snapshot())
 	}
 	return nil
+}
+
+// RegisterWindowBuffer dynamically publishes a newly hot-plugged Official
+// Marketplace plugin buffer into WorkbenchApp.WindowBuffers so every Emacs
+// split pane can display or cycle to it immediately.
+func (a *WorkbenchApp) RegisterWindowBuffer(buf shell.PaneBuffer) {
+	if buf.BufferID == "" {
+		return
+	}
+	a.mu.Lock()
+	updated := false
+	for i := range a.WindowBuffers {
+		if a.WindowBuffers[i].BufferID == buf.BufferID {
+			a.WindowBuffers[i] = buf
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		a.WindowBuffers = append(a.WindowBuffers, buf)
+	}
+	a.mu.Unlock()
+	if a.Windows != nil && a.OnLayoutChanged != nil {
+		a.OnLayoutChanged(a.Windows.Snapshot())
+	}
+}
+
+// UnregisterWindowBuffer removes an unplugged plugin buffer from WindowBuffers
+// and migrates any Emacs pane currently displaying it to fallback so hot-unplug
+// never leaves a blank or dangling window.
+func (a *WorkbenchApp) UnregisterWindowBuffer(bufferID string, fallback shell.PaneBuffer) int {
+	if bufferID == "" {
+		return 0
+	}
+	a.mu.Lock()
+	filtered := a.WindowBuffers[:0]
+	for _, b := range a.WindowBuffers {
+		if b.BufferID != bufferID {
+			filtered = append(filtered, b)
+		}
+	}
+	a.WindowBuffers = filtered
+	if fallback.BufferID == "" && len(a.WindowBuffers) > 0 {
+		fallback = a.WindowBuffers[0]
+	}
+	a.mu.Unlock()
+
+	migrated := 0
+	if a.Windows != nil {
+		migrated = a.Windows.ReplaceBuffer(bufferID, fallback)
+		if a.OnLayoutChanged != nil {
+			a.OnLayoutChanged(a.Windows.Snapshot())
+		}
+	}
+	return migrated
 }
 
 func (a *WorkbenchApp) invokeCommand(commandName string) {
