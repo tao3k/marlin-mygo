@@ -49,6 +49,7 @@ type WorkbenchApp struct {
 	// Optional live Fenwick-virtualized streaming transcript + interactive composer.
 	Transcript       *TranscriptController
 	TranscriptHidden bool
+	SidebarCollapsed bool
 	OnSendPrompt     func(prompt string)
 	OnCancelTurn     func()
 
@@ -287,6 +288,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.mu.Lock()
 		a.whichKeyOpen = !a.whichKeyOpen
 		a.mu.Unlock()
+	case shell.CmdStudioToggleSidebar:
+		a.ToggleSidebar()
 	case shell.CmdBufferPick:
 		a.bufferPickerOpen = true
 		a.bufferPickerQuery = ""
@@ -409,6 +412,9 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	if a.Transcript != nil && c.Shortcut(ui.Cmd, ui.KeyJ) {
 		a.TranscriptHidden = !a.TranscriptHidden
 	}
+	if c.Shortcut(ui.Cmd, ui.KeyB) {
+		a.ToggleSidebar()
+	}
 	if a.OnCycleTheme != nil && c.Shortcut(ui.Cmd, ui.KeyT) {
 		a.OnCycleTheme()
 	}
@@ -455,73 +461,75 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	}
 
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		// Left sidebar: studio brand, AI workflow quick-switcher, and federated nodes.
-		ui.Column(c).Width(228).Padding(14).Gap(10).AlignItems(ui.Stretch).
-			Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
-			if a.BrandTitle != "" {
-				ui.Column(c).Gap(2).Padding(0, 2, 6, 2).Children(func() {
-					ui.Text(c, a.BrandTitle).FontSize(15).Bold().TextColor(t.Text)
-					if a.BrandSubtitle != "" {
-						ui.Text(c, a.BrandSubtitle).FontSize(11).TextColor(t.TextMuted)
-					}
-				})
-			}
-			if len(a.QuickPlugins) > 0 && a.OnQuickPluginSelect != nil {
-				ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).FontWeight(700).LetterSpacing(0.5).TextColor(t.TextMuted)
-				activeID := ""
-				if a.ActiveQuickPluginID != nil {
-					activeID = a.ActiveQuickPluginID()
-				}
-				ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-					for _, qp := range a.QuickPlugins {
-						active := qp.PluginID == activeID
-						rowBtn := ui.ButtonBase(c.Key(qp.PluginID)).Label(qp.Label).
-							Padding(8, 12).Radius(12).AlignItems(ui.Center).Justify(ui.Start).Gap(8)
-						txtCol := toColor(dt.Ink)
-						if active {
-							topCol := toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.12))
-							rowBtn.Gradient(topCol, toColor(dt.Accent), 180).
-								InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.24)).
-								Shadow(0, 3, 10, -2, rgbaFromRGB(dt.Accent, 0.34))
-							txtCol = toColor(dt.InkOnAccent)
-						} else {
-							rowBtn.Background(toColor(dt.SurfaceElevated)).
-								Border(1, glassBorderColor(dt))
+		// Left sidebar (toggleable via Cmd+B / SPC w B / top-bar Sidebar pill).
+		if !a.IsSidebarCollapsed() {
+			ui.Column(c).Width(228).Padding(14).Gap(10).AlignItems(ui.Stretch).
+				Background(t.Surface).BorderWidth(0, 1, 0, 0).BorderColor(t.Border).Children(func() {
+				if a.BrandTitle != "" {
+					ui.Column(c).Gap(2).Padding(0, 2, 6, 2).Children(func() {
+						ui.Text(c, a.BrandTitle).FontSize(15).Bold().TextColor(t.Text)
+						if a.BrandSubtitle != "" {
+							ui.Text(c, a.BrandSubtitle).FontSize(11).TextColor(t.TextMuted)
 						}
-						rowBtn.Children(func() {
-							ui.Text(c, qp.Label).FontSize(12).FontWeight(600).TextColor(txtCol).MaxLines(1)
-						})
-						if rowBtn.Clicked() {
-							a.OnQuickPluginSelect(qp.PluginID)
+					})
+				}
+				if len(a.QuickPlugins) > 0 && a.OnQuickPluginSelect != nil {
+					ui.Text(c, "AI WORKFLOW PLUGINS").FontSize(10).FontWeight(700).LetterSpacing(0.5).TextColor(t.TextMuted)
+					activeID := ""
+					if a.ActiveQuickPluginID != nil {
+						activeID = a.ActiveQuickPluginID()
+					}
+					ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+						for _, qp := range a.QuickPlugins {
+							active := qp.PluginID == activeID
+							rowBtn := ui.ButtonBase(c.Key(qp.PluginID)).Label(qp.Label).
+								Padding(8, 12).Radius(12).AlignItems(ui.Center).Justify(ui.Start).Gap(8)
+							txtCol := toColor(dt.Ink)
+							if active {
+								topCol := toColor(mixRGB(dt.Accent, schema.RGB{R: 255, G: 255, B: 255}, 0.12))
+								rowBtn.Gradient(topCol, toColor(dt.Accent), 180).
+									InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.24)).
+									Shadow(0, 3, 10, -2, rgbaFromRGB(dt.Accent, 0.34))
+								txtCol = toColor(dt.InkOnAccent)
+							} else {
+								rowBtn.Background(toColor(dt.SurfaceElevated)).
+									Border(1, glassBorderColor(dt))
+							}
+							rowBtn.Children(func() {
+								ui.Text(c, qp.Label).FontSize(12).FontWeight(600).TextColor(txtCol).MaxLines(1)
+							})
+							if rowBtn.Clicked() {
+								a.OnQuickPluginSelect(qp.PluginID)
+							}
 						}
+					})
+				}
+				a.renderTargetSidebar(c, t)
+				if a.OnAddRemoteTarget != nil {
+					if ApplePillButton(c, "open-add-remote", "+ Remote Target", BtnTinted, dt, nil, true).Clicked() {
+						if a.addRemoteState == nil {
+							a.addRemoteState = NewSchemaFormState(remoteTargetFormSchema(), nil)
+						}
+						a.addRemoteStatus = ""
+						a.addRemoteOpen = true
+						a.paletteOpen = false
+						a.marketplaceOpen = false
+						a.settingsOpen = false
+						a.projectionOpen = false
+						a.gateOpen = false
 					}
-				})
-			}
-			a.renderTargetSidebar(c, t)
-			if a.OnAddRemoteTarget != nil {
-				if ApplePillButton(c, "open-add-remote", "+ Remote Target", BtnTinted, dt, nil, true).Clicked() {
-					if a.addRemoteState == nil {
-						a.addRemoteState = NewSchemaFormState(remoteTargetFormSchema(), nil)
+				}
+				if a.OnTogglePlugin != nil {
+					label := "Mount Plugin"
+					if a.PluginMountedFn != nil && a.PluginMountedFn() {
+						label = "Unmount Plugin"
 					}
-					a.addRemoteStatus = ""
-					a.addRemoteOpen = true
-					a.paletteOpen = false
-					a.marketplaceOpen = false
-					a.settingsOpen = false
-					a.projectionOpen = false
-					a.gateOpen = false
+					if ApplePillButton(c, "toggle-plugin", label, BtnGlass, dt, nil, true).Clicked() {
+						a.OnTogglePlugin()
+					}
 				}
-			}
-			if a.OnTogglePlugin != nil {
-				label := "Mount Plugin"
-				if a.PluginMountedFn != nil && a.PluginMountedFn() {
-					label = "Unmount Plugin"
-				}
-				if ApplePillButton(c, "toggle-plugin", label, BtnGlass, dt, nil, true).Clicked() {
-					a.OnTogglePlugin()
-				}
-			}
-		})
+			})
+		}
 
 		// Right workspace: crisp top chrome + Emacs composable WindowTree (or Scheme UI IR fallback).
 		ui.Column(c).Grow(1).MinWidth(0).AlignItems(ui.Stretch).Children(func() {
@@ -792,9 +800,33 @@ func formatFederatedNodeLabel(n transport.FederatedNode) string {
 	return b.String()
 }
 
+// ToggleSidebar collapses or expands the persistent left navigation sidebar
+// (`Cmd+B` / `SPC w B`) to reclaim 228px of split workspace width on demand.
+func (a *WorkbenchApp) ToggleSidebar() bool {
+	a.mu.Lock()
+	a.SidebarCollapsed = !a.SidebarCollapsed
+	collapsed := a.SidebarCollapsed
+	a.mu.Unlock()
+	return collapsed
+}
+
+// IsSidebarCollapsed reports whether the persistent left sidebar is collapsed.
+func (a *WorkbenchApp) IsSidebarCollapsed() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.SidebarCollapsed
+}
+
 func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIWorkbenchSnapshot) {
 	ui.Row(c).Padding(8, 12).Gap(10).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+		sbVar := BtnGlass
+		if a.IsSidebarCollapsed() {
+			sbVar = BtnTinted
+		}
+		if ApplePillButton(c, "toggle-sidebar", "Sidebar", sbVar, a.cachedDerivedTheme, nil, true).Clicked() {
+			a.ToggleSidebar()
+		}
 		if active, ok := a.Targets.Active(); ok {
 			ui.Text(c, active.Meta().DisplayName).Bold()
 		}

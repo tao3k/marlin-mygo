@@ -359,10 +359,7 @@ func (tc *TranscriptController) UpsertToolCall(card ToolCallCardView, folded boo
 		tc.entries[row].OutcomeLabel = cp.Phase
 		tc.entries[row].ToolCard = &cp
 		tc.entries[row].refreshLabels()
-		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
-		if tc.autoFollow {
-			tc.scrollToBottomLocked()
-		}
+		tc.updateRowHeightLocked(row)
 		return row
 	}
 	entry := TranscriptEntry{
@@ -401,10 +398,7 @@ func (tc *TranscriptController) UpsertHumanGate(gate HumanGateCardView) int {
 		tc.entries[row].OutcomeLabel = badge
 		tc.entries[row].HumanGate = &cp
 		tc.entries[row].refreshLabels()
-		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
-		if tc.autoFollow {
-			tc.scrollToBottomLocked()
-		}
+		tc.updateRowHeightLocked(row)
 		return row
 	}
 	entry := TranscriptEntry{
@@ -447,10 +441,7 @@ func (tc *TranscriptController) ApplyCancellationReceipt(receipt CancellationRec
 	if tc.activeTurn == cp.TurnOrdinal {
 		tc.inFlight = false
 	}
-	tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
-	if tc.autoFollow {
-		tc.scrollToBottomLocked()
-	}
+	tc.updateRowHeightLocked(row)
 	return row
 }
 
@@ -507,14 +498,12 @@ func (tc *TranscriptController) ApplyCheckpoint(turnOrdinal uint64, eventID, tex
 	tc.entries[row].Text += textDelta
 	tc.entries[row].Streaming = true
 	tc.entries[row].refreshLabels()
-	tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
-	if tc.autoFollow {
-		tc.scrollToBottomLocked()
-	}
+	tc.updateRowHeightLocked(row)
 	return row
 }
 
-// CompleteTurn finalizes a streaming assistant turn and updates its badge height.
+// CompleteTurn finalizes a streaming assistant turn and updates its badge height
+// using anchor-preserving Fenwick mutation so readers scrolled up never jump.
 func (tc *TranscriptController) CompleteTurn(turnOrdinal uint64, outcomeLabel string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -522,18 +511,15 @@ func (tc *TranscriptController) CompleteTurn(turnOrdinal uint64, outcomeLabel st
 		tc.entries[row].Streaming = false
 		tc.entries[row].OutcomeLabel = outcomeLabel
 		tc.entries[row].refreshLabels()
-		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
+		tc.updateRowHeightLocked(row)
 	}
 	if tc.activeTurn == turnOrdinal {
 		tc.inFlight = false
 	}
-	if tc.autoFollow {
-		tc.scrollToBottomLocked()
-	}
 }
 
 // ToggleFold flips a collapsible entry's folded state and updates the Fenwick
-// height tree in O(log N) without rebuilding any prefix sums.
+// height tree in O(log N) with 0px ScrollAnchor compensation when scrolled up.
 func (tc *TranscriptController) ToggleFold(row int) bool {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -541,10 +527,7 @@ func (tc *TranscriptController) ToggleFold(row int) bool {
 		return false
 	}
 	tc.entries[row].Folded = !tc.entries[row].Folded
-	tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
-	if tc.autoFollow {
-		tc.scrollToBottomLocked()
-	}
+	tc.updateRowHeightLocked(row)
 	return tc.entries[row].Folded
 }
 
@@ -651,6 +634,106 @@ func (tc *TranscriptController) SetModelLabel(label string) {
 	tc.mu.Unlock()
 }
 
+// WrapCols returns the current estimated wrapping column width for Fenwick heights.
+func (tc *TranscriptController) WrapCols() int {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.wrapCols
+}
+
+// SyncWrapWidth adapts wrapCols dynamically to the real GPU pane width (in DIPs)
+// and rebuilds Fenwick heights in O(N) ONLY when wrapCols changes, preserving
+// the reader's ScrollAnchor with 0px drift (fixes narrow-pane wrapping drift).
+func (tc *TranscriptController) SyncWrapWidth(paneWidthPx float32) bool {
+	if paneWidthPx <= 80 {
+		return false
+	}
+	cols := int((paneWidthPx - 56) / 7.5)
+	if cols < 24 {
+		cols = 24
+	} else if cols > 120 {
+		cols = 120
+	}
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if cols == tc.wrapCols {
+		return false
+	}
+	tc.wrapCols = cols
+	if len(tc.entries) == 0 {
+		return true
+	}
+	newHeights := make([]uint32, len(tc.entries))
+	for i := range tc.entries {
+		newHeights[i] = tc.estimateHeightLocked(tc.entries[i])
+	}
+	if tc.autoFollow {
+		_ = tc.heights.RebuildHeightsAnchored(newHeights, tc.scrollY)
+		tc.scrollToBottomLocked()
+	} else {
+		tc.scrollY = tc.heights.RebuildHeightsAnchored(newHeights, tc.scrollY)
+		tc.clampScrollLocked()
+	}
+	return true
+}
+
+// JumpToRow positions the virtualized viewport directly at row in O(log N)
+// (e.g. when the Rust backend returns a search hit or receipt target),
+// automatically unfolding a collapsed Thinking/Tool block if targeted.
+func (tc *TranscriptController) JumpToRow(row int) bool {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if row < 0 || row >= len(tc.entries) {
+		return false
+	}
+	if tc.entries[row].Collapsible && tc.entries[row].Folded {
+		tc.entries[row].Folded = false
+		tc.entries[row].refreshLabels()
+		tc.heights.UpdateHeight(row, tc.estimateHeightLocked(tc.entries[row]))
+	}
+	tc.autoFollow = false
+	tc.scrollY = tc.heights.PrefixSum(row)
+	tc.clampScrollLocked()
+	return true
+}
+
+// ScrollY returns the current virtual scroll offset in pixels.
+func (tc *TranscriptController) ScrollY() uint64 {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.scrollY
+}
+
+// AutoFollow reports whether the transcript is locked to the streaming tail.
+func (tc *TranscriptController) AutoFollow() bool {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.autoFollow
+}
+
+func (tc *TranscriptController) updateRowHeightLocked(row int) {
+	newH := tc.estimateHeightLocked(tc.entries[row])
+	if tc.autoFollow {
+		tc.heights.UpdateHeight(row, newH)
+		tc.scrollToBottomLocked()
+	} else {
+		tc.scrollY = tc.heights.UpdateHeightAnchored(row, newH, tc.scrollY)
+		tc.clampScrollLocked()
+	}
+}
+
+func (tc *TranscriptController) clampScrollLocked() {
+	total := tc.heights.TotalHeight()
+	if total <= tc.viewportH {
+		tc.scrollY = 0
+		return
+	}
+	maxY := total - tc.viewportH
+	if tc.scrollY > maxY {
+		tc.scrollY = maxY
+	}
+}
+
 // Render paints ONLY the Fenwick-virtualized visible slice of transcript rows
 // plus the interactive chat composer onto MyGo's GPU scene graph.
 func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(string), onCancel func()) {
@@ -702,8 +785,12 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 
 	dt := derivedThemeFromUITheme(t)
 
-	ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
-		Background(toColor(dt.Surface)).Border(1, glassBorderColor(dt)).Children(func() {
+	root := ui.Column(c.Key("transcript-root")).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
+		Background(toColor(dt.Surface)).Border(1, glassBorderColor(dt))
+	if w := root.Bounds().W; w > 80 {
+		tc.SyncWrapWidth(w)
+	}
+	root.Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
 			ui.Text(c, statsLine).FontSize(11).TextColor(toColor(dt.InkMuted))

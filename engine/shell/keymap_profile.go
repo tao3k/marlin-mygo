@@ -19,6 +19,7 @@ const (
 	CmdStudioOpenGate        = "studio.open-gate"
 	CmdStudioCycleTheme      = "studio.cycle-theme"
 	CmdStudioToggleWhichKey  = "studio.toggle-which-key"
+	CmdStudioToggleSidebar   = "studio.toggle-sidebar"
 
 	// Classic Emacs editing & navigation commands active in Insert/Edit mode (ScopeInsert).
 	CmdEditNextLine           = "edit.next-line"
@@ -59,6 +60,7 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "="}, ActionKind: "window", CommandName: CmdWindowBalance},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "B"}, ActionKind: "studio", CommandName: CmdStudioToggleSidebar},
 
 		// Stacked Buffer / Tab controls & lazy hibernation (SPC b ...)
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "b"}, ActionKind: "buffer", CommandName: CmdBufferPick},
@@ -159,6 +161,7 @@ func DualModalCommands() []input.CommandEntry {
 		{Name: CmdStudioOpenProjection, Description: "Open Projection Inspector (SPC i)"},
 		{Name: CmdStudioCycleTheme, Description: "Cycle active Studio theme preset (SPC t t)"},
 		{Name: CmdStudioToggleWhichKey, Description: "Toggle dual-modal SPC / Emacs Which-Key HUD (SPC ?)"},
+		{Name: CmdStudioToggleSidebar, Description: "Collapse or expand persistent left sidebar (Cmd+B / SPC w B)"},
 		{Name: CmdEditNextLine, Description: "Emacs Insert: move to next line (C-n)"},
 		{Name: CmdEditPrevLine, Description: "Emacs Insert: move to previous line (C-p)"},
 		{Name: CmdEditBeginningOfLine, Description: "Emacs Insert: beginning of line (C-a)"},

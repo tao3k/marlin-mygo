@@ -126,6 +126,78 @@ func (v *VirtualHeightIndex) FindRowAtY(y uint64) (row int, offsetInRow uint64) 
 	return pos, y - acc
 }
 
+// ScrollAnchor identifies a logical reading position (row index + offset within
+// that row) that remains visually invariant when rows above it change height
+// (e.g. collapsing a Thinking block or hydrating virtualized history).
+type ScrollAnchor struct {
+	Row         int
+	OffsetInRow uint64
+}
+
+// CaptureAnchor records the logical row and intra-row pixel offset at scrollY
+// in O(log N) time.
+func (v *VirtualHeightIndex) CaptureAnchor(scrollY uint64) ScrollAnchor {
+	row, off := v.FindRowAtY(scrollY)
+	return ScrollAnchor{Row: row, OffsetInRow: off}
+}
+
+// ResolveAnchor projects anchor back to an exact vertical pixel offset in O(log N),
+// clamping cleanly if the anchored row itself shrank.
+func (v *VirtualHeightIndex) ResolveAnchor(anchor ScrollAnchor) uint64 {
+	if anchor.Row < 0 || anchor.Row >= len(v.heights) {
+		return 0
+	}
+	off := anchor.OffsetInRow
+	if h := uint64(v.heights[anchor.Row]); off > h {
+		off = h
+	}
+	return v.PrefixSum(anchor.Row) + off
+}
+
+// UpdateHeightAnchored mutates row's height in O(log N) and returns the exact
+// compensated scrollY that guarantees 0px visual drift for the reader's current
+// anchor (solving Thinking-collapse jump and virtual-list rubber-banding by construction).
+func (v *VirtualHeightIndex) UpdateHeightAnchored(row int, newHeight uint32, scrollY uint64) uint64 {
+	if row < 0 || row >= len(v.heights) {
+		return scrollY
+	}
+	anchor := v.CaptureAnchor(scrollY)
+	v.UpdateHeight(row, newHeight)
+	if anchor.Row < 0 {
+		return 0
+	}
+	return v.ResolveAnchor(anchor)
+}
+
+// RebuildHeightsAnchored replaces all row heights in O(N) (e.g. when a split
+// pane changes width and wraps text to a new column count) while preserving
+// the reader's exact logical ScrollAnchor with zero visual jump.
+func (v *VirtualHeightIndex) RebuildHeightsAnchored(newHeights []uint32, scrollY uint64) uint64 {
+	if len(newHeights) != len(v.heights) {
+		return scrollY
+	}
+	anchor := v.CaptureAnchor(scrollY)
+	n := len(newHeights)
+	copy(v.heights, newHeights)
+	// Linear O(N) Fenwick tree reconstruction.
+	var total uint64
+	for i := 1; i <= n; i++ {
+		v.bit[i] = uint64(newHeights[i-1])
+		total += uint64(newHeights[i-1])
+	}
+	for i := 1; i <= n; i++ {
+		parent := i + (i & -i)
+		if parent <= n {
+			v.bit[parent] += v.bit[i]
+		}
+	}
+	v.total = total
+	if anchor.Row < 0 {
+		return 0
+	}
+	return v.ResolveAnchor(anchor)
+}
+
 // VisibleRange returns the inclusive [firstRow, lastRow] interval intersecting
 // [scrollY, scrollY+viewportHeight) along with the top clip offset of firstRow.
 func (v *VirtualHeightIndex) VisibleRange(scrollY, viewportHeight uint64) (firstRow, lastRow int, firstOffset uint64) {

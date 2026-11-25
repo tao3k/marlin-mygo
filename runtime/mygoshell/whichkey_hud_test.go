@@ -51,13 +51,13 @@ func TestDualModalWhichKeyHUDAndEmacsEditStrip(t *testing.T) {
 		t.Fatalf("expected MatchPrefix SPC, got %v %q", kind, prefix)
 	}
 	tt.Frame()
-	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (17)") {
+	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (18)") {
 		t.Fatalf("expected SPC Which-Key HUD with +window hints, got texts=%q", tt.Texts())
 	}
 
-	// 2. Clicking [w] +window (17) drills down into window split chords, then [v] splits right!
-	if err := tt.Click("[w] +window (17)"); err != nil {
-		t.Fatalf("click [w] +window (17) failed: %v", err)
+	// 2. Clicking [w] +window (18) drills down into window split chords, then [v] splits right!
+	if err := tt.Click("[w] +window (18)"); err != nil {
+		t.Fatalf("click [w] +window (18) failed: %v", err)
 	}
 	if !tt.HasText("WHICH-KEY · SPC w …") {
 		t.Fatalf("expected SPC w Which-Key HUD, got texts=%q", tt.Texts())
