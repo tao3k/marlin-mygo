@@ -97,6 +97,8 @@ func main() {
 		err = runCatalog(os.Args[2:])
 	case "build-examples":
 		err = runBuildExamples(os.Args[2:])
+	case "validate-registry":
+		err = runValidateRegistry(os.Args[2:])
 	case "e2e-rust":
 		err = runE2ERust(os.Args[2:])
 	case "perf-gate":

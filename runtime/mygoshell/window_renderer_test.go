@@ -136,4 +136,29 @@ func TestWorkbenchAppEmacsWindowSplitsPerspectivesAndThemeCycling(t *testing.T) 
 	if lastSnap.LeafCount != 3 {
 		t.Fatalf("expected 3 panes after SPC w v chord, got %d", lastSnap.LeafCount)
 	}
+
+	// Verify dual modal keymaps: Normal (SPC) -> Insert (Emacs C-n/C-p) -> Normal (C-g).
+	var editCmds []string
+	app.OnEditCommand = func(cmd string) { editCmds = append(editCmds, cmd) }
+	if app.ActiveKeyMode() != input.ScopeNormal {
+		t.Fatalf("expected initial mode ScopeNormal, got %v", app.ActiveKeyMode())
+	}
+	if k, cmd := app.HandleActiveKeyToken("i"); k != input.MatchExact || cmd != shell.CmdModeInsert {
+		t.Fatalf("expected 'i' -> mode.insert, got k=%v cmd=%q", k, cmd)
+	}
+	if app.ActiveKeyMode() != input.ScopeInsert {
+		t.Fatalf("expected mode ScopeInsert after 'i', got %v", app.ActiveKeyMode())
+	}
+	if k, cmd := app.HandleActiveKeyToken("C-n"); k != input.MatchExact || cmd != shell.CmdEditNextLine {
+		t.Fatalf("expected C-n -> edit.next-line in Insert mode, got k=%v cmd=%q", k, cmd)
+	}
+	if len(editCmds) != 1 || editCmds[0] != shell.CmdEditNextLine {
+		t.Fatalf("expected OnEditCommand recorded edit.next-line, got %v", editCmds)
+	}
+	if k, cmd := app.HandleActiveKeyToken("C-g"); k != input.MatchExact || cmd != shell.CmdModeNormal {
+		t.Fatalf("expected C-g -> mode.normal, got k=%v cmd=%q", k, cmd)
+	}
+	if app.ActiveKeyMode() != input.ScopeNormal {
+		t.Fatalf("expected mode ScopeNormal after C-g, got %v", app.ActiveKeyMode())
+	}
 }

@@ -76,6 +76,7 @@ type WorkbenchApp struct {
 	// Optional callbacks invoked by top-level chrome controls.
 	OnGateDecision      func(gateID string, approve bool)
 	OnCommandInvoke     func(commandName string)
+	OnEditCommand       func(commandName string)
 	OnTogglePlugin      func()
 	PluginMountedFn     func() bool
 	QuickPlugins        []QuickPluginEntry
@@ -104,6 +105,7 @@ type WorkbenchApp struct {
 	addRemoteStatus   string
 	rankedBuf         []input.RankedCommand
 	activeChord       []string
+	activeKeyMode     input.KeyScope
 	gateOpen          bool
 	pendingGate       *PendingGateView
 	cachedThemeKey     schema.UITheme
@@ -134,21 +136,43 @@ func NewWorkbenchApp(
 	return app
 }
 
-// EnableEmacsWindowKeymap compiles the canonical Emacs (`C-x ...`) and
-// Meow (`SPC w ...`) composable window chord keymap onto WorkbenchApp and
-// registers the corresponding window commands in the Cmd+K Command Palette.
+// ActiveKeyMode returns the current modal keymap layout (ScopeNormal SPC-leader
+// by default, or ScopeInsert for Emacs Edit/Insert keybindings such as C-n/C-p).
+func (a *WorkbenchApp) ActiveKeyMode() input.KeyScope {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.activeKeyMode == 0 {
+		return input.ScopeNormal
+	}
+	return a.activeKeyMode
+}
+
+// SetKeyMode transitions between ScopeNormal (SPC leader) and ScopeInsert (Emacs edit).
+func (a *WorkbenchApp) SetKeyMode(mode input.KeyScope) {
+	a.mu.Lock()
+	a.activeKeyMode = mode
+	a.activeChord = a.activeChord[:0]
+	a.mu.Unlock()
+}
+
+// EnableEmacsWindowKeymap compiles both modal keymap layouts — Layout 1 (Normal
+// SPC leader) and Layout 2 (Insert/Edit Emacs C-n/C-p/C-a/C-e/C-k/C-y) plus
+// global C-x window chords — and registers them in the Cmd+K Command Palette.
 func (a *WorkbenchApp) EnableEmacsWindowKeymap() error {
-	kt, err := input.CompileKeyTrie(shell.DefaultEmacsWindowBindings())
+	kt, err := shell.CompileDualModalKeymap()
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
 	a.KeyTrie = kt
+	if a.activeKeyMode == 0 {
+		a.activeKeyMode = input.ScopeNormal
+	}
 	existing := make(map[string]struct{}, len(a.Commands))
 	for _, c := range a.Commands {
 		existing[c.Name] = struct{}{}
 	}
-	for _, c := range shell.DefaultEmacsWindowCommands() {
+	for _, c := range shell.DualModalCommands() {
 		if _, ok := existing[c.Name]; !ok {
 			a.Commands = append(a.Commands, c)
 		}
@@ -235,6 +259,30 @@ func (a *WorkbenchApp) UnregisterWindowBuffer(bufferID string, fallback shell.Pa
 }
 
 func (a *WorkbenchApp) invokeCommand(commandName string) {
+	switch commandName {
+	case shell.CmdModeInsert:
+		a.SetKeyMode(input.ScopeInsert)
+	case shell.CmdModeNormal:
+		a.SetKeyMode(input.ScopeNormal)
+	case shell.CmdStudioOpenMarketplace:
+		a.marketplaceOpen = true
+	case shell.CmdStudioOpenProjection:
+		a.projectionOpen = true
+	case shell.CmdStudioOpenPalette:
+		a.paletteOpen = true
+	case shell.CmdStudioOpenGate:
+		if a.pendingGate != nil {
+			a.gateOpen = true
+		}
+	case shell.CmdStudioCycleTheme:
+		if a.OnCycleTheme != nil {
+			a.OnCycleTheme()
+		}
+	default:
+		if strings.HasPrefix(commandName, "edit.") && a.OnEditCommand != nil {
+			a.OnEditCommand(commandName)
+		}
+	}
 	if a.Windows != nil {
 		if handled, err := shell.ExecuteWindowCommand(a.Windows, commandName, a.WindowBuffers); handled && err == nil {
 			if a.OnLayoutChanged != nil {
@@ -245,6 +293,12 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 	if a.OnCommandInvoke != nil && commandName != "" {
 		a.OnCommandInvoke(commandName)
 	}
+}
+
+// HandleActiveKeyToken feeds token using the currently active modal layout
+// (ScopeNormal SPC-leader or ScopeInsert Emacs-editing).
+func (a *WorkbenchApp) HandleActiveKeyToken(token string) (input.MatchKind, string) {
+	return a.HandleKeyToken(a.ActiveKeyMode(), token)
 }
 
 // HandleKeyToken feeds one normalized key token (e.g. "SPC", "w", "v") through
@@ -585,6 +639,20 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				{ID: "zen", Label: "Zen"},
 			}, activePersp, a.cachedDerivedTheme, true); chosen != "" {
 				a.OnSelectPerspective(chosen)
+			}
+		}
+		if a.KeyTrie != nil {
+			mode := a.ActiveKeyMode()
+			modeLbl := "NORMAL · SPC"
+			modeVar := BtnTinted
+			nextMode := input.ScopeInsert
+			if mode == input.ScopeInsert {
+				modeLbl = "INSERT · EMACS"
+				modeVar = BtnSuccess
+				nextMode = input.ScopeNormal
+			}
+			if ApplePillButton(c, "key-mode", modeLbl, modeVar, a.cachedDerivedTheme, nil, true).Clicked() {
+				a.SetKeyMode(nextMode)
 			}
 		}
 		a.mu.Lock()
