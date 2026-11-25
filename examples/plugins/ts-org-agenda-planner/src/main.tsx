@@ -10,6 +10,12 @@ import {
 } from "@tao3k/marlin-panel-sdk";
 import {
   MarlinPanelProvider,
+  PanelHeader,
+  PanelShell,
+  SectionCard,
+  SegmentedControl,
+  StatusBadge,
+  ToastBanner,
   useMarlinAction,
   useMarlinProjection,
 } from "@tao3k/marlin-panel-sdk/react";
@@ -142,6 +148,18 @@ interface CaptureSubmitPayload {
   timeWindow: string;
 }
 
+const KIND_OPTIONS = [
+  { key: "task", label: "Task" },
+  { key: "note", label: "Note" },
+  { key: "idea", label: "Idea" },
+  { key: "decision", label: "Decision" },
+] as const;
+
+const TARGET_OPTIONS = [
+  { key: "inbox", label: "Inbox" },
+  { key: "datetree", label: "Datetree" },
+] as const;
+
 const CaptureFormBar = memo(function CaptureFormBar({
   pending,
   onSubmitCapture,
@@ -173,38 +191,45 @@ const CaptureFormBar = memo(function CaptureFormBar({
   }
 
   return (
-    <form className="capture-bar" onSubmit={(e) => void handleSubmit(e)}>
-      <select value={kind} onChange={(e) => setKind(e.target.value as OrgizeAgentCaptureKindDto)} aria-label="Capture Kind">
-        <option value="task">Task</option>
-        <option value="note">Note</option>
-        <option value="idea">Idea</option>
-        <option value="decision">Decision</option>
-      </select>
-      <select value={targetKind} onChange={(e) => setTargetKind(e.target.value as OrgizeAgentCaptureTargetKindDto)} aria-label="Capture Target">
-        <option value="inbox">Inbox</option>
-        <option value="datetree">Datetree</option>
-      </select>
-      <input
-        type="text"
-        value={titleInput}
-        onChange={(e) => setTitleInput(e.target.value)}
-        placeholder="Capture title (routed to orgize capturePlan)"
-      />
-      <input
-        type="text"
-        value={tagsInput}
-        onChange={(e) => setTagsInput(e.target.value)}
-        placeholder="tags: deep,arch"
-      />
-      <input
-        type="text"
-        value={winInput}
-        onChange={(e) => setWinInput(e.target.value)}
-        placeholder="14:00-15:00"
-      />
-      <button className="primary" type="submit" disabled={pending}>
-        Capture
-      </button>
+    <form className="m-composer" onSubmit={(e) => void handleSubmit(e)}>
+      <div className="m-composer-top">
+        <input
+          className="m-input"
+          type="text"
+          value={titleInput}
+          onChange={(e) => setTitleInput(e.target.value)}
+          placeholder="Add a task, note, or scheduled block..."
+        />
+        <button className="m-btn m-btn-primary" type="submit" disabled={pending}>
+          Capture
+        </button>
+      </div>
+      <div className="m-composer-meta">
+        <SegmentedControl
+          options={KIND_OPTIONS}
+          value={kind}
+          onChange={(v) => setKind(v as OrgizeAgentCaptureKindDto)}
+        />
+        <SegmentedControl
+          options={TARGET_OPTIONS}
+          value={targetKind}
+          onChange={(v) => setTargetKind(v as OrgizeAgentCaptureTargetKindDto)}
+        />
+        <input
+          className="m-input m-input-compact"
+          type="text"
+          value={tagsInput}
+          onChange={(e) => setTagsInput(e.target.value)}
+          placeholder="tags: deep, arch"
+        />
+        <input
+          className="m-input m-input-compact m-mono"
+          type="text"
+          value={winInput}
+          onChange={(e) => setWinInput(e.target.value)}
+          placeholder="14:00-15:00"
+        />
+      </div>
     </form>
   );
 });
@@ -221,28 +246,34 @@ const AgendaCardRow = memo(function AgendaCardRow({
   const isDone = card.todoState === "done";
   const timeStr = card.time ? ` · ${card.time}${card.endTime ? `-${card.endTime}` : ""}` : "";
   const tagStr = card.effectiveTags.length > 0 ? ` · :${card.effectiveTags.join(":")}:` : "";
+  const urgent = card.urgency.total >= 80;
   return (
-    <div className={`item ${card.urgency.total >= 80 ? "urgent" : ""} ${isDone ? "done" : ""}`}>
-      <div>
-        <div>
-          {card.todo ? `[${card.todo}] ` : ""}
-          {card.title}
-          <span className="badge">U:{card.urgency.total}</span>
+    <div className="m-row" style={isDone ? { opacity: 0.55 } : undefined}>
+      <div style={{ minWidth: 0 }}>
+        <div className="m-row-gap" style={{ gap: 6 }}>
+          {card.todo && (
+            <StatusBadge tone={isDone ? "success" : urgent ? "accent" : "info"}>
+              {card.todo}
+            </StatusBadge>
+          )}
+          <span style={{ fontWeight: 520, textDecoration: isDone ? "line-through" : "none" }}>
+            {card.title}
+          </span>
           {card.blockers.length > 0 && (
-            <span className="badge blocked">Blocked ({card.blockers.length})</span>
+            <StatusBadge tone="danger">Blocked ({card.blockers.length})</StatusBadge>
           )}
         </div>
-        <div className="meta">
+        <div className="m-caption m-mono">
           {card.displayDate}
           {timeStr}
-          {tagStr}
+          {tagStr} · U:{card.urgency.total}
         </div>
       </div>
-      <div className="pills" style={{ marginBottom: 0 }}>
-        <button type="button" onClick={() => onClockIn(card)}>
+      <div className="m-row-gap" style={{ flexShrink: 0 }}>
+        <button className="m-btn m-btn-ghost" type="button" onClick={() => onClockIn(card)}>
           Clock In
         </button>
-        <button type="button" onClick={() => onToggleDone(card)}>
+        <button className="m-btn" type="button" onClick={() => onToggleDone(card)}>
           {isDone ? "Reopen" : "Done"}
         </button>
       </div>
@@ -266,28 +297,44 @@ const FocusClockCard = memo(function FocusClockCard({
       ? Math.min(100, Math.round(((alarm.durationSec - alarm.remainingSec) * 100) / alarm.durationSec))
       : 0;
   return (
-    <div className="card">
-      <h3>Focus Alarm &amp; Org Clock</h3>
-      <div className="subtitle">
+    <SectionCard
+      title="Focus Timer"
+      right={<StatusBadge tone={alarm.status === "running" ? "success" : "muted"}>{alarm.status}</StatusBadge>}
+    >
+      <div className="m-caption">
         {alarm.label} · {alarm.completedBlocks} completed
       </div>
-      <div className="clock-display">{formatClock(alarm.remainingSec)}</div>
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      <div className="m-clock-face">{formatClock(alarm.remainingSec)}</div>
+      <div
+        style={{
+          height: 5,
+          borderRadius: 999,
+          background: "var(--marlin-surface-recessed)",
+          overflow: "hidden",
+          marginBottom: 12,
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            background: "var(--marlin-accent)",
+            transition: "width 250ms linear",
+          }}
+        />
       </div>
-      <div className="pills">
-        <button className="primary" type="button" onClick={onToggleStart}>
+      <div className="m-row-gap">
+        <button className="m-btn m-btn-primary" type="button" onClick={onToggleStart}>
           {alarm.status === "running" ? "Pause" : "Start"}
         </button>
-        <button type="button" onClick={onStartBreak}>
+        <button className="m-btn" type="button" onClick={onStartBreak}>
           5m Break
         </button>
-        <button type="button" onClick={onReset}>
+        <button className="m-btn m-btn-ghost" type="button" onClick={onReset}>
           Reset
         </button>
       </div>
-      <div className="subtitle">Status: {alarm.status}</div>
-    </div>
+    </SectionCard>
   );
 });
 
@@ -507,90 +554,98 @@ export function OrgAgendaPlannerApp() {
   }
 
   const sessionLabel = sessionProj.data.sessionId
-    ? `React 19 · orgize DTOs · session ${String(sessionProj.data.sessionId)} · turn #${String(sessionProj.data.turnOrdinal ?? 0)}`
-    : "React 19 · Powered by tao3k/orgize DTOs (zero JS Org parsing)";
+    ? `Session ${String(sessionProj.data.sessionId)} · turn #${String(sessionProj.data.turnOrdinal ?? 0)} · ${clockSummary.totalMinutes}m clocked`
+    : `${clockSummary.totalMinutes}m clocked today${clockSummary.runningCount > 0 ? ` · active: ${clockSummary.runningTitle}` : ""}`;
+
+  const handleFilterChange = useCallback((next: AgendaFilter) => {
+    setFilter(next);
+    setVisibleLimit(VISIBLE_CARD_WINDOW);
+  }, []);
+
+  const handleDismissReceipt = useCallback(() => setReceiptMsg(""), []);
+
+  const filterOptions = useMemo(
+    () =>
+      FILTER_DEFS.map((d) => ({
+        key: d.key,
+        label: d.key === "all" ? `All (${cards.length})` : d.label,
+      })),
+    [cards.length],
+  );
 
   return (
-    <div>
-      <header>
-        <div>
-          <strong>Org Agenda &amp; AI Daily Planner</strong>
-          <div className="subtitle">{sessionLabel}</div>
-        </div>
-        <div className="pills" style={{ marginBottom: 0 }}>
-          <span className="subtitle">
-            Clocked today: {clockSummary.totalMinutes}m
-            {clockSummary.runningCount > 0 ? ` · active: ${clockSummary.runningTitle}` : ""}
-          </span>
-          <button type="button" onClick={() => setScratchOpen((o) => !o)}>
-            {scratchOpen ? "Close Scratchpad" : "Orgize Scratchpad"}
-          </button>
-          <button
-            className="ok"
-            type="button"
-            disabled={aiPlanAct.pending}
-            onClick={() => void handleAIPlanDay()}
-          >
-            {aiPlanAct.pending ? "Planning..." : "AI Auto-Plan Today"}
-          </button>
-        </div>
-      </header>
+    <PanelShell>
+      <PanelHeader
+        title="Agenda"
+        caption={sessionLabel}
+        actions={
+          <>
+            <button className="m-btn m-btn-ghost" type="button" onClick={() => setScratchOpen((o) => !o)}>
+              {scratchOpen ? "Close Scratchpad" : "Scratchpad"}
+            </button>
+            <button
+              className="m-btn m-btn-soft-success"
+              type="button"
+              disabled={aiPlanAct.pending}
+              onClick={() => void handleAIPlanDay()}
+            >
+              {aiPlanAct.pending ? "Planning..." : "AI Auto-Plan"}
+            </button>
+          </>
+        }
+      />
 
       {scratchOpen && (
-        <div className="card">
-          <h3>Offline tao3k/orgize-wasm Scratchpad (Zero JS Org Parsing)</h3>
+        <SectionCard title="Org Scratchpad">
           <textarea
+            className="m-textarea m-mono"
             rows={4}
-            style={{ width: "100%", background: "var(--bg)", color: "var(--fg)", border: "1px solid var(--muted)", borderRadius: 6, padding: 8, marginBottom: 8 }}
+            style={{ marginBottom: 8 }}
             value={scratchInput}
             onChange={(e) => setScratchInput(e.target.value)}
-            placeholder="Paste .org text (when tao3k/orgize-wasm Worker is mounted) or an OrgizeAgendaViewResponseDto JSON snapshot..."
+            placeholder="Paste .org notes or agenda projection JSON..."
           />
-          <button className="primary" type="button" onClick={() => void handleApplyScratchpad()}>
-            Project via orgize
+          <button className="m-btn m-btn-primary" type="button" onClick={() => void handleApplyScratchpad()}>
+            Project
           </button>
-        </div>
+        </SectionCard>
       )}
 
       <CaptureFormBar pending={captureAct.pending} onSubmitCapture={handleCaptureSubmit} />
 
-      <div className="grid">
+      <div className="m-split">
         <section>
-          <div className="card">
-            <h3>Orgize Agenda Queue ({visibleCards.length})</h3>
-            <div className="segmented">
-              {FILTER_DEFS.map((d) => (
-                <button
-                  key={d.key}
-                  type="button"
-                  className={filter === d.key ? "active" : ""}
-                  onClick={() => {
-                    setFilter(d.key);
-                    setVisibleLimit(VISIBLE_CARD_WINDOW);
-                  }}
-                >
-                  {d.key === "all" ? `All (${cards.length})` : d.label}
-                </button>
-              ))}
-            </div>
-
+          <SectionCard
+            title={`Queue (${visibleCards.length})`}
+            right={
+              <SegmentedControl
+                options={filterOptions}
+                value={filter}
+                onChange={handleFilterChange}
+              />
+            }
+          >
             {conflicts.map((cf, idx) => (
-              <div className="conflict" key={`${cf.window}-${idx}`}>
+              <div className="m-callout m-callout-warn" key={`${cf.window}-${idx}`}>
                 {cf.summary}
               </div>
             ))}
 
-            {renderedCards.map((card, idx) => (
-              <AgendaCardRow
-                key={`${card.title}-${idx}`}
-                card={card}
-                onClockIn={handleClockIn}
-                onToggleDone={handleToggleDone}
-              />
-            ))}
+            <div className="m-list">
+              {renderedCards.map((card, idx) => (
+                <AgendaCardRow
+                  key={`${card.title}-${idx}`}
+                  card={card}
+                  onClockIn={handleClockIn}
+                  onToggleDone={handleToggleDone}
+                />
+              ))}
+            </div>
+
             {visibleCards.length > renderedCards.length && (
-              <div className="pills" style={{ marginTop: 10, marginBottom: 0 }}>
+              <div style={{ marginTop: 10 }}>
                 <button
+                  className="m-btn"
                   type="button"
                   onClick={() => setVisibleLimit((n) => n + VISIBLE_CARD_WINDOW)}
                 >
@@ -598,7 +653,7 @@ export function OrgAgendaPlannerApp() {
                 </button>
               </div>
             )}
-          </div>
+          </SectionCard>
         </section>
 
         <aside>
@@ -609,22 +664,24 @@ export function OrgAgendaPlannerApp() {
             onReset={handleResetAlarm}
           />
 
-          <div className="card">
-            <h3>Today&apos;s Time Blocks</h3>
-            {todayBlocks.map((b, i) => (
-              <div className="item" key={`${b.title}-${i}`}>
-                <span>
-                  {b.time}
-                  {b.endTime ? `-${b.endTime}` : ""} · {b.title}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          <div className="receipt">{receiptMsg}</div>
+          <SectionCard title="Today's Schedule">
+            <div className="m-list">
+              {todayBlocks.map((b, i) => (
+                <div className="m-row" key={`${b.title}-${i}`}>
+                  <span className="m-mono" style={{ fontSize: 12 }}>
+                    {b.time}
+                    {b.endTime ? `-${b.endTime}` : ""}
+                  </span>
+                  <span style={{ flex: 1 }}>{b.title}</span>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
         </aside>
       </div>
-    </div>
+
+      <ToastBanner message={receiptMsg} onDismiss={handleDismissReceipt} />
+    </PanelShell>
   );
 }
 

@@ -45,7 +45,7 @@ func TestMobileCompanionTabsGateApprovalCaptureAndAppStorePolicy(t *testing.T) {
 	}
 
 	// Switch to Gates tab and approve once.
-	if err := tt.Click("Gates"); err != nil {
+	if err := tt.Click("Gates (1)"); err != nil {
 		t.Fatalf("click Gates tab: %v", err)
 	}
 	if !tt.HasText("Approve evening reminder?") {
@@ -87,6 +87,28 @@ func TestMobileCompanionTabsGateApprovalCaptureAndAppStorePolicy(t *testing.T) {
 	if !tt.HasText("App Store 2.5.2") {
 		t.Fatalf("expected App Store 2.5.2 policy banner visible, got %q", tt.Texts())
 	}
+
+	// Verify Android Material 3 companion profile, channels, and theme switching.
+	and := NewMobileCompanionAppForPlatform(MobilePlatformAndroid, "pixel9", "Pixel 9 -> Desktop Host")
+	and.SetPendingGates([]PendingGateView{
+		{GateID: "gate-and-1", ToolName: "device.android.notify.send", Prompt: "Send Android notification?"},
+	})
+	andTT := ui.NewTester(and.View, 412, 915)
+	if !andTT.HasText("Android") || !andTT.HasText("Today's Agenda") {
+		t.Fatalf("expected Android phone chrome & chat chips, got %q", andTT.Texts())
+	}
+	if err := andTT.Click("Capture"); err != nil {
+		t.Fatalf("click Android Capture tab: %v", err)
+	}
+	if !andTT.HasText("Share Intent") || !andTT.HasText("Quick Tile") {
+		t.Fatalf("expected Android native capture channels, got %q", andTT.Texts())
+	}
+	if err := andTT.Click("Midnight"); err != nil {
+		t.Fatalf("cycle Android theme: %v", err)
+	}
+	if !andTT.HasText("Paper Light") {
+		t.Fatalf("expected Android theme cycled to Paper Light, got %q", andTT.Texts())
+	}
 }
 
 func TestStudioShortcutsThemeToggleAndSettingsDrawer(t *testing.T) {
@@ -98,7 +120,7 @@ func TestStudioShortcutsThemeToggleAndSettingsDrawer(t *testing.T) {
 		ID:    "studio.prefs",
 		Title: "Marlin Studio Preferences",
 		Fields: []schema.FieldSpec{
-			{Key: "theme", Label: "Theme", Kind: schema.FieldEnum, EnumValues: []string{"obsidian", "paper"}, Default: "obsidian"},
+			{Key: "theme", Label: "Theme", Kind: schema.FieldEnum, EnumValues: []string{"midnight", "paper"}, Default: "midnight"},
 			{Key: "focus_min", Label: "Focus Minutes", Kind: schema.FieldInt, MinInt: 5, MaxInt: 90, Default: 25},
 		},
 	}

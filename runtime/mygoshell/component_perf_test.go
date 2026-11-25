@@ -663,7 +663,7 @@ func setupSchemaFormComponentPerf() func() {
 		ID:    "studio.settings",
 		Title: "Marlin Studio Runtime Preferences",
 		Fields: []schema.FieldSpec{
-			{Key: "theme", Label: "Theme", Kind: schema.FieldEnum, EnumValues: []string{"obsidian", "slate", "light"}, Default: "obsidian"},
+			{Key: "theme", Label: "Theme", Kind: schema.FieldEnum, EnumValues: []string{"midnight", "slate", "light"}, Default: "midnight"},
 			{Key: "runtime", Label: "Default Runtime", Kind: schema.FieldEnum, EnumValues: []string{"react19", "go-wasm", "declarative"}, Default: "react19"},
 			{Key: "lazy_cap", Label: "Max Active Lazy Plugins", Kind: schema.FieldInt, Default: 8},
 			{Key: "idle_sec", Label: "Idle Unload Seconds", Kind: schema.FieldInt, Default: 180},

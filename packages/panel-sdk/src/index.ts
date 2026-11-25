@@ -40,6 +40,9 @@ export * from "./perf";
 // Re-export typed tao3k/orgize-wasm Worker client (zero duplicated Org parsing).
 export * from "./orgize_worker";
 
+// Re-export unified token-driven CSS stylesheet & live theme application engine.
+export * from "./theme";
+
 export interface ScopedPanelEvent<T = unknown> {
   eventId: EventCursor;
   pluginId: string;

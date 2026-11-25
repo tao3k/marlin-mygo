@@ -62,6 +62,13 @@ type WorkbenchApp struct {
 	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
 	Projection *ProjectionController
 
+	// Optional Emacs-style composable binary split WindowTree. When non-nil, the
+	// main workspace renders dynamic split panes with active/inactive modelines
+	// instead of a single fixed frame.
+	Windows             *shell.WindowTree
+	WindowBuffers       []shell.PaneBuffer
+	OnSelectPerspective func(name string)
+
 	// Optional callback invoked when the user adds a Remote TLS gRPC target via "+ Remote".
 	OnAddRemoteTarget func(targetID, displayName, endpoint, bearerToken string) error
 
@@ -75,6 +82,8 @@ type WorkbenchApp struct {
 	OnQuickPluginSelect func(pluginID string)
 	OnToggleTheme       func()
 	IsLightThemeFn      func() bool
+	ActiveThemeNameFn   func() string
+	OnCycleTheme        func()
 	SettingsSchema      *schema.BoundedSchema
 	SettingsState       *SchemaFormState
 	OnSaveSettings      func(values map[string]any)
@@ -96,8 +105,9 @@ type WorkbenchApp struct {
 	activeChord       []string
 	gateOpen          bool
 	pendingGate       *PendingGateView
-	cachedThemeKey    schema.UITheme
-	cachedTheme       *ui.Theme
+	cachedThemeKey     schema.UITheme
+	cachedTheme        *ui.Theme
+	cachedDerivedTheme DerivedTheme
 	cachedTopTargetID string
 	cachedTopKind     schema.TargetKind
 	cachedTopPhase    string
@@ -211,6 +221,9 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 	if a.Transcript != nil && c.Shortcut(ui.Cmd, ui.KeyJ) {
 		a.TranscriptHidden = !a.TranscriptHidden
 	}
+	if a.OnCycleTheme != nil && c.Shortcut(ui.Cmd, ui.KeyT) {
+		a.OnCycleTheme()
+	}
 	if a.OnQuickPluginSelect != nil && len(a.QuickPlugins) > 0 {
 		if c.Shortcut(ui.Cmd, ui.Key1) {
 			a.OnQuickPluginSelect(a.QuickPlugins[0].PluginID)
@@ -236,13 +249,17 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 		theme = snap.Theme
 	}
 	var t *ui.Theme
+	var dt DerivedTheme
 	if a.cachedTheme != nil && a.cachedThemeKey == theme {
 		t = a.cachedTheme
+		dt = a.cachedDerivedTheme
 		c.SetTheme(t)
 	} else {
+		dt = DeriveTheme("active", "Active", theme)
 		t = ApplyMarlinTheme(c, theme)
 		a.cachedThemeKey = theme
 		a.cachedTheme = t
+		a.cachedDerivedTheme = dt
 	}
 
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
@@ -303,10 +320,10 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			}
 		})
 
-		// Right workspace: crisp top chrome + Scheme UI IR frame tree + hot-pluggable slots.
+		// Right workspace: crisp top chrome + Emacs composable WindowTree (or Scheme UI IR fallback).
 		ui.Column(c).Grow(1).MinWidth(0).AlignItems(ui.Stretch).Children(func() {
 			a.renderTopBar(c, t, snap)
-			ui.Column(c).Grow(1).MinWidth(0).Padding(14).Gap(12).AlignItems(ui.Stretch).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(10).AlignItems(ui.Stretch).Children(func() {
 				rctx := shell.RenderContext{
 					Surface:  c,
 					Theme:    theme,
@@ -314,12 +331,18 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				}
 				if hasSnap {
 					rctx.SessionID = snap.SessionLabel
-					RenderUIElement(c, snap.FrameTree, a.Slots, rctx)
-				} else if a.Transcript == nil {
-					ui.Text(c, "Waiting for marlin.ui.v1 workbench snapshot...").TextColor(t.TextMuted)
 				}
-				if a.Transcript != nil && !a.TranscriptHidden {
-					a.Transcript.Render(c, t, a.OnSendPrompt, a.OnCancelTurn)
+				if a.Windows != nil {
+					a.renderComposableWorkspace(c, t, dt, snap, hasSnap, rctx)
+				} else {
+					if hasSnap {
+						RenderUIElement(c, snap.FrameTree, a.Slots, rctx)
+					} else if a.Transcript == nil {
+						ui.Text(c, "Waiting for marlin.ui.v1 workbench snapshot...").TextColor(t.TextMuted)
+					}
+					if a.Transcript != nil && !a.TranscriptHidden {
+						a.Transcript.Render(c, t, a.OnSendPrompt, a.OnCancelTurn)
+					}
 				}
 			})
 		})
@@ -425,6 +448,25 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			}
 			ui.Text(c, a.cachedSnapBadge).FontSize(12).TextColor(t.Accent)
 		}
+		if a.Windows != nil && a.OnSelectPerspective != nil {
+			activePersp := a.Windows.Snapshot().Perspective
+			for _, p := range []struct{ id, label string }{
+				{"focus", "Focus"},
+				{"split", "Split"},
+				{"cockpit", "Cockpit"},
+				{"zen", "Zen"},
+			} {
+				var clicked bool
+				if activePersp == p.id {
+					clicked = ui.PrimaryButton(c.Key("persp-"+p.id), p.label).Clicked()
+				} else {
+					clicked = ui.Button(c.Key("persp-"+p.id), p.label).Clicked()
+				}
+				if clicked {
+					a.OnSelectPerspective(p.id)
+				}
+			}
+		}
 		a.mu.Lock()
 		chord := strings.Join(a.activeChord, " ")
 		a.mu.Unlock()
@@ -432,7 +474,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 			ui.Textf(c, "HYDRA: %s …", chord).FontSize(12).Bold().TextColor(t.Warning)
 		}
 		ui.Spacer(c)
-		if a.Transcript != nil && len(a.QuickPlugins) > 0 {
+		if a.Windows == nil && a.Transcript != nil && len(a.QuickPlugins) > 0 {
 			chatLabel := "Show Chat"
 			if !a.TranscriptHidden {
 				chatLabel = "Hide Chat"
@@ -441,7 +483,15 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.TranscriptHidden = !a.TranscriptHidden
 			}
 		}
-		if a.OnToggleTheme != nil {
+		if a.OnCycleTheme != nil {
+			themeLbl := "Theme"
+			if a.ActiveThemeNameFn != nil && a.ActiveThemeNameFn() != "" {
+				themeLbl = a.ActiveThemeNameFn()
+			}
+			if ui.Button(c.Key("cycle-theme"), themeLbl).Clicked() {
+				a.OnCycleTheme()
+			}
+		} else if a.OnToggleTheme != nil {
 			themeLbl := "Light"
 			if a.IsLightThemeFn != nil && a.IsLightThemeFn() {
 				themeLbl = "Dark"
@@ -460,7 +510,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.gateOpen = false
 			}
 		}
-		if a.SettingsSchema != nil && a.SettingsState != nil {
+		if a.SettingsSchema != nil && a.SettingsState != nil && a.OnCycleTheme == nil {
 			if ui.Button(c.Key("open-settings"), "Settings").Clicked() {
 				a.settingsOpen = true
 				a.paletteOpen = false
@@ -485,6 +535,67 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.gateOpen = true
 			}
 		}
+	})
+}
+
+func (a *WorkbenchApp) renderComposableWorkspace(
+	c *ui.Context,
+	t *ui.Theme,
+	dt DerivedTheme,
+	snap *schema.UIWorkbenchSnapshot,
+	hasSnap bool,
+	rctx shell.RenderContext,
+) {
+	defaultSplit := shell.PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
+	if len(a.WindowBuffers) > 1 {
+		defaultSplit = a.WindowBuffers[1]
+	}
+	RenderWindowTree(c, t, dt, a.Windows, WindowRenderCallbacks{
+		DefaultSplitTo: func() shell.PaneBuffer { return defaultSplit },
+		NextBufferFor: func(cur shell.PaneBuffer) shell.PaneBuffer {
+			if len(a.WindowBuffers) == 0 {
+				return cur
+			}
+			for i, b := range a.WindowBuffers {
+				if b.BufferID == cur.BufferID {
+					return a.WindowBuffers[(i+1)%len(a.WindowBuffers)]
+				}
+			}
+			return a.WindowBuffers[0]
+		},
+		RenderBuffer: func(c *ui.Context, t *ui.Theme, _ DerivedTheme, _ shell.WindowID, buf shell.PaneBuffer) {
+			switch buf.BufferID {
+			case "builtin:transcript":
+				if a.Transcript != nil {
+					a.Transcript.Render(c, t, a.OnSendPrompt, a.OnCancelTurn)
+				} else {
+					ui.Text(c, "Transcript controller unavailable.").TextColor(t.TextMuted)
+				}
+			case "builtin:projection":
+				if a.Projection != nil {
+					a.Projection.Render(c, t, nil)
+				} else {
+					ui.Text(c, "Projection inspector unavailable.").TextColor(t.TextMuted)
+				}
+			case "slot:workbench.main":
+				for _, r := range a.Slots.Resolve("workbench.main") {
+					r.Render(rctx)
+				}
+			case "slot:workbench.inspector":
+				for _, r := range a.Slots.Resolve("workbench.inspector") {
+					r.Render(rctx)
+				}
+			default:
+				if strings.HasPrefix(buf.BufferID, "slot:") {
+					slotID := schema.SlotID(strings.TrimPrefix(buf.BufferID, "slot:"))
+					for _, r := range a.Slots.Resolve(slotID) {
+						r.Render(rctx)
+					}
+				} else if hasSnap {
+					RenderUIElement(c, snap.FrameTree, a.Slots, rctx)
+				}
+			}
+		},
 	})
 }
 

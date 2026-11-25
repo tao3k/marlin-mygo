@@ -30,7 +30,14 @@ import {
   type ScopedActionReceipt,
 } from "./index";
 
+import {
+  applyMarlinThemeTokens,
+  injectMarlinBaseStyles,
+} from "./theme";
+export * from "./ui";
+
 const MarlinPanelContext = createContext<PanelClient | null>(null);
+const MarlinThemeContext = createContext<MarlinThemeTokens | null>(null);
 
 export interface MarlinPanelProviderProps {
   pluginId: string;
@@ -39,9 +46,44 @@ export interface MarlinPanelProviderProps {
   children: ReactNode;
 }
 
+const DEFAULT_PARSED_THEME: MarlinThemeTokens = parseThemeTokens({});
+
+function readDocumentThemeTokens(overrides?: Record<string, string>): MarlinThemeTokens {
+  if (typeof document === "undefined" || !document.documentElement) {
+    return overrides ? parseThemeTokens(overrides) : DEFAULT_PARSED_THEME;
+  }
+  const inlineStyle = document.documentElement.style;
+  if (!inlineStyle || typeof inlineStyle.getPropertyValue !== "function") {
+    return overrides ? parseThemeTokens(overrides) : DEFAULT_PARSED_THEME;
+  }
+  let found = false;
+  const vars: Record<string, string> = {};
+  const keys = [
+    "--marlin-canvas",
+    "--marlin-ink",
+    "--marlin-bar",
+    "--marlin-accent",
+    "--marlin-info",
+    "--marlin-success",
+    "--marlin-warning",
+    "--marlin-muted",
+  ];
+  for (const k of keys) {
+    const v = inlineStyle.getPropertyValue(k).trim();
+    if (v) {
+      vars[k] = v;
+      found = true;
+    }
+  }
+  if (!found && !overrides) {
+    return DEFAULT_PARSED_THEME;
+  }
+  return parseThemeTokens({ ...vars, ...overrides });
+}
+
 /**
- * Provides a scoped `PanelClient` to React 19 plugin components using React 19's
- * native Context provider semantics.
+ * Provides a scoped `PanelClient`, injects Marlin's shared token-driven base
+ * stylesheet once, and automatically applies live `theme.live` host broadcasts.
  */
 export function MarlinPanelProvider({
   pluginId,
@@ -53,7 +95,23 @@ export function MarlinPanelProvider({
     () => createPanelClient({ pluginId, fetchImpl, bridge }),
     [pluginId, fetchImpl, bridge],
   );
-  return createElement(MarlinPanelContext, { value: client }, children);
+  const [theme, setTheme] = useState<MarlinThemeTokens>(() => readDocumentThemeTokens());
+
+  useEffect(() => {
+    injectMarlinBaseStyles();
+    return client.onEvent<Record<string, string>>("theme.live", (ev) => {
+      if (ev.payload && typeof ev.payload === "object") {
+        applyMarlinThemeTokens(ev.payload);
+        setTheme(parseThemeTokens(ev.payload));
+      }
+    });
+  }, [client]);
+
+  return createElement(
+    MarlinPanelContext,
+    { value: client },
+    createElement(MarlinThemeContext, { value: theme }, children),
+  );
 }
 
 /**
@@ -173,29 +231,15 @@ export function useMarlinAction<TArgs = unknown, TResult = unknown>(
 }
 
 /**
- * Reads Marlin host-injected CSS custom properties (`--marlin-*`) with safe
- * fallback defaults for both live WKWebView and SSR/test environments.
+ * Reads Marlin host-injected CSS custom properties (`--marlin-*`) and reacts
+ * live whenever the host broadcasts a `theme.live` update.
  */
 export function useMarlinTheme(overrides?: Record<string, string>): MarlinThemeTokens {
+  const ctxTheme = useContext(MarlinThemeContext);
   return useMemo(() => {
-    const vars: Record<string, string> = {};
-    if (typeof document !== "undefined" && typeof getComputedStyle === "function") {
-      const style = getComputedStyle(document.documentElement);
-      const keys = [
-        "--marlin-canvas",
-        "--marlin-ink",
-        "--marlin-bar",
-        "--marlin-accent",
-        "--marlin-info",
-        "--marlin-success",
-        "--marlin-warning",
-        "--marlin-muted",
-      ];
-      for (const k of keys) {
-        const v = style.getPropertyValue(k).trim();
-        if (v) vars[k] = v;
-      }
+    if (overrides) {
+      return readDocumentThemeTokens(overrides);
     }
-    return parseThemeTokens({ ...vars, ...overrides });
-  }, [overrides]);
+    return ctxTheme ?? readDocumentThemeTokens();
+  }, [ctxTheme, overrides]);
 }

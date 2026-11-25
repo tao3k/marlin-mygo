@@ -107,18 +107,23 @@ func TestVisualFrameSnapshotsAndContrastInvariants(t *testing.T) {
 		return app
 	}
 
-	mobile := NewMobileCompanionApp("iPhone Personal -> Desktop Studio")
-	mobile.SetPendingGates([]PendingGateView{
-		{GateID: "gate-m1", ToolName: "device.ios.notify.send", Prompt: "Approve notification?"},
+	mobileIOS := NewMobileCompanionAppForPlatform(MobilePlatformIOS, "iphone16", "iPhone 16 Pro · Desktop Host")
+	mobileIOS.SetPendingGates([]PendingGateView{
+		{GateID: "gate-m1", ToolName: "device.ios.notify.send", Prompt: "Approve evening reminder?"},
 	})
-	mobile.SetTab(MobileTabGates)
+	mobileIOS.SetTab(MobileTabGates)
+
+	mobileAndroid := NewMobileCompanionAppForPlatform(MobilePlatformAndroid, "pixel9", "Pixel 9 · Desktop Host")
+	mobileAndroid.SetThemePreset("paper")
+	mobileAndroid.SetTab(MobileTabChat)
 
 	scenes := []visualScene{
 		{name: "studio-desktop-dark-1340x860", width: 1340, height: 860, expectLit: false, view: buildStudio(StudioDarkPalette(), false).View},
 		{name: "studio-desktop-light-1340x860", width: 1340, height: 860, expectLit: true, view: buildStudio(StudioLightPalette(), false).View},
 		{name: "studio-desktop-narrow-680x440", width: 680, height: 440, expectLit: false, view: buildStudio(StudioDarkPalette(), false).View},
 		{name: "studio-gate-modal-1340x860", width: 1340, height: 860, expectLit: false, view: buildStudio(StudioDarkPalette(), true).View},
-		{name: "mobile-companion-390x844", width: 390, height: 844, expectLit: false, view: mobile.View},
+		{name: "mobile-ios-393x852", width: 393, height: 852, expectLit: false, view: mobileIOS.View},
+		{name: "mobile-android-light-412x915", width: 412, height: 915, expectLit: true, view: mobileAndroid.View},
 	}
 
 	for _, sc := range scenes {

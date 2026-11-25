@@ -53,7 +53,13 @@ type WebViewRuntime struct {
 // BroadcastTheme delivers updated `--marlin-*` CSS theme tokens via scoped
 // EmitPage events to all active untrusted WebView pages (zero eval, CSP-safe).
 func (r *WebViewRuntime) BroadcastTheme(mt schema.UITheme) {
-	payload, err := json.Marshal(ThemeTokensMap(mt))
+	r.BroadcastDerivedTheme(DeriveTheme("runtime", "Runtime", mt))
+}
+
+// BroadcastDerivedTheme delivers all 34 derived `--marlin-*` CSS custom
+// properties plus `data-appearance` and `data-theme-id` to every active WebView.
+func (r *WebViewRuntime) BroadcastDerivedTheme(dt DerivedTheme) {
+	payload, err := json.Marshal(DerivedThemeTokensMap(dt))
 	if err != nil {
 		return
 	}

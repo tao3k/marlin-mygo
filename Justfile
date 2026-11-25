@@ -5,10 +5,11 @@
 default:
     @just --list
 
-# Explicit, Tab-completable plugin, CI, and release subcommands: `just plugin <TAB>`, `just ci <TAB>`, `just release <TAB>`.
+# Explicit, Tab-completable plugin, CI, release, and web subcommands: `just plugin <TAB>`, `just ci <TAB>`, `just web <TAB>`.
 mod plugin 'just/plugin.just'
 mod ci 'just/ci.just'
 mod release 'just/release.just'
+mod web 'just/web.just'
 
 # Quick top-level macOS/desktop studio launches (also under `just plugin show-*`):
 show-agenda:

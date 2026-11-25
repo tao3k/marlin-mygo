@@ -4,7 +4,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./react": "./src/react.ts"
+    "./react": "./src/react.ts",
+    "./theme": "./src/theme.ts",
+    "./ui": "./src/ui.tsx"
   },
   "peerDependencies": {
     "react": ">=19.0.0"

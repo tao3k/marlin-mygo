@@ -4,10 +4,10 @@
 
 //go:build !js
 
-// Command marlin-mobile launches Marlin's compact, App-Store-2.5.2-compliant
-// Mobile Companion shell (iOS / Android / desktop preview at 390x844) with
-// remote Tier-0 Approval Gate review, proactive Orgize capture, and
-// declarative-only OTA packs.
+// Command marlin-mobile launches Marlin's authentic phone-first Mobile
+// Companion shell for iOS (iPhone 16 Pro 393x852, Apple HIG) and Android
+// (Pixel 9 412x915, Material 3) with App-Store-2.5.2-compliant declarative
+// OTA packs, Tier-0 Approval Gate review, and proactive capture routing.
 package main
 
 import (
@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -27,6 +28,9 @@ import (
 )
 
 func main() {
+	platformFlag := flag.String("platform", "ios", "mobile platform profile: ios | android")
+	deviceFlag := flag.String("device", "", "optional device viewport preset: iphone16 | iphone-se | pixel9")
+	themeFlag := flag.String("theme", "midnight", "initial curated theme preset: midnight | paper | doom-one | tokyo-night | catppuccin")
 	hostAddr := flag.String("host", "", "optional remote Rust marlin-agent-app-server gRPC address (e.g. tailnet:50051)")
 	token := flag.String("token", "marlin-dev-token", "Bearer token for remote Rust host")
 	caFile := flag.String("ca", "", "optional TLS CA PEM file for mTLS/TLS remote host")
@@ -38,7 +42,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	targetLabel := "iPhone Companion · Standalone Preview"
+	plat := mygoshell.MobilePlatformIOS
+	if strings.EqualFold(strings.TrimSpace(*platformFlag), "android") || runtime.GOOS == "android" {
+		plat = mygoshell.MobilePlatformAndroid
+	}
+	spec := mygoshell.BuiltinMobileDeviceSpec(plat, *deviceFlag)
+
+	targetLabel := fmt.Sprintf("%s · Standalone Preview", spec.Name)
 	var liveTarget *grpcwire.Target
 	if strings.TrimSpace(*hostAddr) != "" {
 		authHeader := *token
@@ -62,15 +72,23 @@ func main() {
 		}
 		defer dialed.Close()
 		liveTarget = dialed
-		targetLabel = fmt.Sprintf("iPhone Companion -> %s", *hostAddr)
+		targetLabel = fmt.Sprintf("%s -> %s", spec.Name, *hostAddr)
 	}
 
-	mobile := mygoshell.NewMobileCompanionApp(targetLabel)
-	mobile.Transcript.AppendUser("Check today's Org Agenda and pending approval gates.")
+	mobile := mygoshell.NewMobileCompanionAppForPlatform(spec.Platform, spec.ID, targetLabel)
+	mobile.SetThemePreset(*themeFlag)
+
+	mobile.AppendMobileMessage(true, "You", "Check today's Org Agenda and pending approval gates.", "9:40")
+	mobile.AppendMobileMessage(false, "Marlin", "3 Org tasks scheduled today. 1 Tier-0 notification gate is awaiting your approval.", "9:41")
+
+	gateTool := "device.ios.notify.send"
+	if spec.Platform == mygoshell.MobilePlatformAndroid {
+		gateTool = "device.android.notify.send"
+	}
 	mobile.SetPendingGates([]mygoshell.PendingGateView{
 		{
 			GateID:      "gate-mobile-1",
-			ToolName:    "device.ios.notify.send",
+			ToolName:    gateTool,
 			Prompt:      "Approve evening reminder dispatch from Desktop Agent?",
 			Description: "Tier-0 one-shot approval synced over mTLS gRPC.",
 		},
@@ -79,14 +97,14 @@ func main() {
 		{
 			PluginID: "tao3k.daily-planner-pack",
 			Version:  "0.1.0",
-			Summary:  "Obsidian Daily Planner theme + keymap overlay (0 executable code)",
+			Summary:  "Midnight Daily Planner theme + keymap overlay (0 executable code)",
 			Runtime:  schema.RuntimeDeclarative,
 			Active:   true,
 		},
 		{
 			PluginID: "tao3k.ios-personal-overlay",
 			Version:  "0.1.0",
-			Summary:  "Compact iOS focus layout & capture shortcuts",
+			Summary:  "Compact mobile focus layout & capture shortcuts",
 			Runtime:  schema.RuntimeDeclarative,
 		},
 		{
@@ -99,17 +117,22 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "Marlin Mobile Companion (390x844 Preview)",
-			Width:     390,
-			Height:    844,
-			MinWidth:  360,
-			MinHeight: 640,
-			Content:   ui.View(mobile.View),
+			Title:          fmt.Sprintf("Marlin Mobile — %s", spec.Name),
+			Width:          spec.LogicalWidth,
+			Height:         spec.LogicalHeight,
+			UseContentSize: true,
+			MinWidth:       375,
+			MinHeight:      667,
+			MaxWidth:       430,
+			MaxHeight:      932,
+			Content:        ui.View(mobile.View),
 		})
 		mobile.OnSendPrompt = func(prompt string) {
-			mobile.Transcript.AppendUser(prompt)
 			if liveTarget != nil {
 				log.Printf("[mobile] queued remote turn on session=%s: %s", *sessionID, prompt)
+				mobile.AppendMobileMessage(false, "Marlin", fmt.Sprintf("Sent to %s (session %s).", *hostAddr, *sessionID), "remote")
+			} else {
+				mobile.AppendMobileMessage(false, "Marlin", "Preview reply: "+prompt, "local")
 			}
 			win.Invalidate()
 		}

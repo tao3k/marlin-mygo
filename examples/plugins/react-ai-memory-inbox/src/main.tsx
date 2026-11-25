@@ -6,8 +6,15 @@ import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   MarlinPanelProvider,
+  PanelHeader,
+  PanelShell,
+  SegmentedControl,
+  StatStrip,
+  StatusBadge,
+  ToastBanner,
   useMarlinAction,
   useMarlinProjection,
+  type SemanticTone,
 } from "@tao3k/marlin-panel-sdk/react";
 import type { OrgizeAgentMemoryCardDto, OrgizeMemoryResponseDto } from "./memory_dto";
 import {
@@ -19,39 +26,46 @@ import {
 
 const TODAY_ISO = new Date().toISOString().slice(0, 10);
 
+const SEVERITY_OPTIONS = [
+  { key: "all", label: "All" },
+  { key: "action", label: "Action" },
+  { key: "suppressed", label: "Suppressed" },
+  { key: "info", label: "Info" },
+] as const;
+
 const INITIAL_MEMORY: OrgizeMemoryResponseDto = {
   schemaVersion: 1,
   stats: { totalRecords: 3, currentRecords: 3, actionCards: 2, suppressedCards: 1, infoCards: 0, evidence: 4 },
   cards: [
     {
       anchor: "mem-arch-react19",
-      title: "Prefer React 19 + @tao3k/marlin-panel-sdk/react for interactive desktop workflows",
-      effectiveTags: ["architecture", "frontend", "decision"],
+      title: "Use shared Marlin Design Tokens across GPU shell and WebView panels",
+      effectiveTags: ["architecture", "theme", "decision"],
       decision: {
         code: "PROMOTE_DECISION",
         kind: "current",
         severity: "action",
         title: "Durable Architecture Decision",
-        nextAction: "Promote into workspace Org datetree and link plugin guide",
+        nextAction: "Promote into workspace Org datetree and link theme guide",
       },
-      authority: [{ kind: "userConfirmed", label: "Explicit User Choice", message: "Confirmed in desktop & mobile runtime review" }],
+      authority: [{ kind: "userConfirmed", label: "Confirmed", message: "Aligned across dark, light, and Emacs preset themes" }],
       evidence: [
-        { kind: { code: "bench", label: "Perf Gate", family: "metric" }, value: "React 19 minified bundle stays well under 384 KiB ceiling" },
-        { kind: { code: "policy", label: "App Store", family: "security" }, value: "Mobile keeps zero-code declarative OTA + curated built-in UI" },
+        { kind: { code: "bench", label: "Perf", family: "metric" }, value: "React 19 minified bundle stays well under 384 KiB ceiling" },
+        { kind: { code: "policy", label: "Mobile", family: "security" }, value: "Mobile keeps zero-code declarative OTA + curated native UI" },
       ],
     },
     {
       anchor: "mem-orgize-authority",
-      title: "Never re-implement Org syntax parsing inside UI plugins; consume orgize DTOs",
+      title: "Keep Org syntax parsing authoritative in orgize / orgize-wasm",
       effectiveTags: ["orgize", "protocol"],
       decision: {
         code: "PROMOTE_RULE",
         kind: "current",
         severity: "action",
         title: "Single Parser Authority",
-        nextAction: "Attach to AGENT.md contract card for all planner plugins",
+        nextAction: "Attach to workspace contract card for planner panels",
       },
-      authority: [{ kind: "invariant", label: "Kernel Authority", message: "tao3k/orgize & orgize-wasm own all AST & DTO projections" }],
+      authority: [{ kind: "invariant", label: "Kernel", message: "orgize owns all AST and projection DTOs" }],
       evidence: [{ kind: { code: "dto", label: "Schema", family: "contract" }, value: "OrgizeAgendaViewResponseDto + OrgizeMemoryResponseDto" }],
     },
     {
@@ -65,7 +79,7 @@ const INITIAL_MEMORY: OrgizeMemoryResponseDto = {
         title: "Superseded Prototype Note",
         nextAction: "Mark superseded to avoid confusing coding agents",
       },
-      authority: [{ kind: "conflict", label: "Superseded", message: "Replaced by native React 19 + zero-dep core SDK split" }],
+      authority: [{ kind: "conflict", label: "Superseded", message: "Replaced by native React 19 + shared token SDK" }],
       evidence: [{ kind: { code: "note", label: "Audit", family: "review" }, value: "Eliminates preact/compat edge mismatches" }],
     },
   ],
@@ -83,6 +97,12 @@ function parseMemoryDTO(raw: unknown): OrgizeMemoryResponseDto | undefined {
   return undefined;
 }
 
+function severityTone(sev: string): SemanticTone {
+  if (sev === "action") return "accent";
+  if (sev === "suppressed") return "warning";
+  return "info";
+}
+
 export function AIMemoryInboxApp() {
   const memProj = useMarlinProjection("org.memory", INITIAL_MEMORY, parseMemoryDTO);
   const acceptAct = useMarlinAction("org.memory.accept");
@@ -92,12 +112,21 @@ export function AIMemoryInboxApp() {
 
   const [severity, setSeverity] = useState<MemorySeverityFilter>("all");
   const [query, setQuery] = useState("");
-  const [receiptMsg, setReceiptMsg] = useState("Ready to triage orgize Agent Memory cards.");
+  const [statusMsg, setStatusMsg] = useState("");
 
   const summary = useMemo(() => summarizeMemoryCards(memProj.data.cards), [memProj.data.cards]);
   const visible = useMemo(
     () => filterMemoryCards(memProj.data.cards, severity, query),
     [memProj.data.cards, severity, query],
+  );
+  const stats = useMemo(
+    () => [
+      { label: "Pending", value: summary.total },
+      { label: "Action", value: summary.actionCount },
+      { label: "Suppressed", value: summary.suppressedCount },
+      { label: "Citations", value: summary.evidenceCount },
+    ],
+    [summary],
   );
 
   function removeCard(card: OrgizeAgentMemoryCardDto) {
@@ -112,7 +141,7 @@ export function AIMemoryInboxApp() {
     const r2 = await captureAct.submit(buildMemoryDatetreeCapture(card, TODAY_ISO));
     if (r1.admitted && r2.admitted) {
       removeCard(card);
-      setReceiptMsg(`Accepted "${card.title}" into Org Datetree (receipt: ${r2.receiptId || "admitted"})`);
+      setStatusMsg(`Saved "${card.title}" to Datetree`);
     }
   }
 
@@ -120,7 +149,7 @@ export function AIMemoryInboxApp() {
     const rcpt = await supersedeAct.submit({ anchor: card.anchor, title: card.title });
     if (rcpt.admitted) {
       removeCard(card);
-      setReceiptMsg(`Marked "${card.title}" superseded (receipt: ${rcpt.receiptId || "admitted"})`);
+      setStatusMsg(`Marked "${card.title}" superseded`);
     }
   }
 
@@ -128,77 +157,72 @@ export function AIMemoryInboxApp() {
     const rcpt = await dismissAct.submit({ anchor: card.anchor, title: card.title });
     if (rcpt.admitted) {
       removeCard(card);
-      setReceiptMsg(`Dismissed "${card.title}"`);
+      setStatusMsg(`Dismissed "${card.title}"`);
     }
   }
 
   return (
-    <div>
-      <header>
-        <div>
-          <strong>AI Knowledge &amp; Memory Triage Inbox</strong>
-          <div className="subtitle">React 19 · Consumes tao3k/orgize OrgizeMemoryResponseDto</div>
-        </div>
-        <div className="subtitle">{summary.evidenceCount} verified evidence items</div>
-      </header>
+    <PanelShell>
+      <PanelHeader
+        title="Memory Inbox"
+        caption={`${summary.total} pending · ${summary.evidenceCount} verified citations`}
+      />
 
-      <div className="stats">
-        <div className="stat"><strong>{summary.total}</strong><span className="subtitle">Pending Cards</span></div>
-        <div className="stat"><strong>{summary.actionCount}</strong><span className="subtitle">Action Required</span></div>
-        <div className="stat"><strong>{summary.suppressedCount}</strong><span className="subtitle">Suppressed</span></div>
-        <div className="stat"><strong>{summary.evidenceCount}</strong><span className="subtitle">Evidence Citations</span></div>
-      </div>
+      <StatStrip items={stats} />
 
-      <div className="controls">
-        {(["all", "action", "suppressed", "info"] as MemorySeverityFilter[]).map((sev) => (
-          <button
-            key={sev}
-            type="button"
-            className={severity === sev ? "active" : ""}
-            onClick={() => setSeverity(sev)}
-          >
-            {sev.toUpperCase()}
-          </button>
-        ))}
+      <div className="m-row-gap" style={{ marginBottom: 14 }}>
+        <SegmentedControl
+          options={SEVERITY_OPTIONS}
+          value={severity}
+          onChange={setSeverity}
+        />
         <input
+          className="m-input"
+          style={{ flex: 1, minWidth: 180 }}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter by title, tag, or nextAction..."
+          placeholder="Search memory cards, tags, or next action..."
         />
       </div>
 
-      {visible.map((card, i) => (
-        <article key={card.anchor ?? `${card.title}-${i}`} className={`card ${card.decision.severity}`}>
-          <div>
-            <span className="badge">{card.decision.severity.toUpperCase()}</span>
-            <strong>{card.title}</strong>
-          </div>
-          <div className="subtitle" style={{ marginTop: 4 }}>
-            Next: {card.decision.nextAction} · :{card.effectiveTags.join(":")}:
-          </div>
-          {card.authority.map((a, idx) => (
-            <div className="subtitle" key={idx}>Authority [{a.label}]: {a.message}</div>
-          ))}
-          {card.evidence.map((ev, idx) => (
-            <div className="evidence" key={idx}>[{ev.kind.label}] {ev.value}</div>
-          ))}
-          <div className="actions">
-            <button className="accept" type="button" onClick={() => void handleAccept(card)}>
-              Accept -&gt; Datetree
-            </button>
-            <button className="supersede" type="button" onClick={() => void handleSupersede(card)}>
-              Supersede
-            </button>
-            <button type="button" onClick={() => void handleDismiss(card)}>
-              Dismiss
-            </button>
-          </div>
-        </article>
-      ))}
+      {visible.length === 0 ? (
+        <div className="m-empty">No matching memory cards.</div>
+      ) : (
+        visible.map((card, i) => {
+          const tone = severityTone(card.decision.severity);
+          return (
+            <article key={card.anchor ?? `${card.title}-${i}`} className={`m-item-card tone-${tone}`}>
+              <div className="m-row-gap" style={{ marginBottom: 4 }}>
+                <StatusBadge tone={tone}>{card.decision.severity}</StatusBadge>
+                <strong>{card.title}</strong>
+              </div>
+              <div className="m-caption">
+                {card.decision.nextAction} · :{card.effectiveTags.join(":")}:
+              </div>
+              {card.evidence.map((ev, idx) => (
+                <div className="m-callout" key={idx}>
+                  <strong>{ev.kind.label}</strong> — {ev.value}
+                </div>
+              ))}
+              <div className="m-row-gap" style={{ marginTop: 10 }}>
+                <button className="m-btn m-btn-soft-success" type="button" onClick={() => void handleAccept(card)}>
+                  Accept -&gt; Datetree
+                </button>
+                <button className="m-btn m-btn-soft-warning" type="button" onClick={() => void handleSupersede(card)}>
+                  Supersede
+                </button>
+                <button className="m-btn m-btn-ghost" type="button" onClick={() => void handleDismiss(card)}>
+                  Dismiss
+                </button>
+              </div>
+            </article>
+          );
+        })
+      )}
 
-      <div className="receipt">{receiptMsg}</div>
-    </div>
+      <ToastBanner message={statusMsg} onDismiss={() => setStatusMsg("")} />
+    </PanelShell>
   );
 }
 

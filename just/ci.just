@@ -73,3 +73,10 @@ plugin-admission-gate scale="2.5":
 # Build Rust marlin-mygo-host and run real cross-repo TLS 1.3 + Sidecar + Turso replay E2E.
 e2e-rust core="../..":
     @just e2e-rust {{core}}
+
+# Build static-deployable WebAssembly frontend bundle (`GOOS=js GOARCH=wasm`).
+web-wasm-build:
+    @just web build ./dist/web-ci
+    test -s ./dist/web-ci/marlin-web.wasm
+    test -s ./dist/web-ci/wasm_exec.js
+    test -s ./dist/web-ci/index.html

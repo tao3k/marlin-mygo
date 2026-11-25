@@ -295,7 +295,7 @@ func main() {
 		ID:    "studio.preferences",
 		Title: "Marlin Studio Preferences (Cmd+,)",
 		Fields: []schema.FieldSpec{
-			{Key: "theme", Label: "Appearance", Kind: schema.FieldEnum, EnumValues: []string{"obsidian", "paper"}, Default: "obsidian"},
+			{Key: "theme", Label: "Theme Preset", Kind: schema.FieldEnum, EnumValues: []string{"midnight", "paper", "doom-one", "tokyo-night", "catppuccin"}, Default: "midnight"},
 			{Key: "focus_min", Label: "Focus Block Minutes", Kind: schema.FieldInt, MinInt: 5, MaxInt: 90, Default: 25},
 			{Key: "lazy_cap", Label: "Max Active Lazy Plugins", Kind: schema.FieldInt, MinInt: 1, MaxInt: 32, Default: *maxActiveLazy},
 		},
@@ -377,31 +377,53 @@ func main() {
 		federation.ProbeAll(ctx, 2*time.Second)
 		return nil
 	}
-	var themeLight atomic.Bool
-	var wbGen atomic.Uint64
+	var (
+		themeMu     sync.RWMutex
+		activeTheme = mygoshell.ThemeByID("midnight")
+		wbGen       atomic.Uint64
+	)
 	wbGen.Store(1)
-	applyStudioTheme := func(light bool) {
-		themeLight.Store(light)
-		th := mygoshell.StudioDarkPalette()
-		if light {
-			th = mygoshell.StudioLightPalette()
-		}
+	applyThemePreset := func(preset mygoshell.ThemePreset) {
+		themeMu.Lock()
+		activeTheme = preset
+		themeMu.Unlock()
+		dt := mygoshell.DeriveTheme(preset.ID, preset.Name, preset.Base)
 		if cur, ok := wb.Snapshot(); ok {
 			next := *cur
 			next.Generation = wbGen.Add(1)
-			next.Theme = th
+			next.Theme = preset.Base
 			_ = wb.AdmitSnapshot(next)
 		}
-		wvRuntime.BroadcastTheme(th)
+		wvRuntime.BroadcastDerivedTheme(dt)
 	}
-	app.IsLightThemeFn = themeLight.Load
-	app.OnToggleTheme = func() {
-		applyStudioTheme(!themeLight.Load())
+	app.ActiveThemeNameFn = func() string {
+		themeMu.RLock()
+		defer themeMu.RUnlock()
+		return activeTheme.Name
+	}
+	app.OnCycleTheme = func() {
+		themeMu.RLock()
+		curID := activeTheme.ID
+		themeMu.RUnlock()
+		applyThemePreset(mygoshell.NextThemePreset(curID))
 	}
 	app.OnSaveSettings = func(vals map[string]any) {
-		if mode, ok := vals["theme"].(string); ok {
-			applyStudioTheme(mode == "paper")
+		if id, ok := vals["theme"].(string); ok {
+			applyThemePreset(mygoshell.ThemeByID(id))
 		}
+	}
+
+	// Emacs-style composable window tree & built-in buffer catalog.
+	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace Panel", Kind: "webview"}
+	bufDock := shell.PaneBuffer{BufferID: "slot:workbench.inspector", Title: "Focus Clock", Kind: "wasm-gpu"}
+	bufChat := shell.PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
+	bufProj := shell.PaneBuffer{BufferID: "builtin:projection", Title: "Projection Inspector", Kind: "native-gpu"}
+	winTree := shell.NewWindowTree(bufMain)
+	winTree.ApplyBuiltinPerspective("focus", bufMain, bufDock, bufChat, bufProj)
+	app.Windows = winTree
+	app.WindowBuffers = []shell.PaneBuffer{bufMain, bufChat, bufProj, bufDock}
+	app.OnSelectPerspective = func(name string) {
+		winTree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
 	}
 	mktUI := mygoshell.NewMarketplaceController()
 	app.Marketplace = mktUI

@@ -1,0 +1,232 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+package mygoshell
+
+import (
+	"sync"
+
+	"github.com/egoist/mygo/ui"
+
+	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/shell"
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+)
+
+// ShellFormFactor controls whether AdaptiveShell renders Desktop Emacs multi-pane
+// chrome, iOS HIG phone chrome, Android Material 3 phone chrome, or adapts
+// automatically to the live viewport width (`< 720px` -> phone, `>= 720px` -> desktop).
+type ShellFormFactor string
+
+const (
+	FormFactorAuto    ShellFormFactor = "auto"
+	FormFactorDesktop ShellFormFactor = "desktop"
+	FormFactorIOS     ShellFormFactor = "ios"
+	FormFactorAndroid ShellFormFactor = "android"
+
+	DefaultCompactBreakpoint = 720
+)
+
+// AdaptiveShellConfig configures a single unified Marlin UI application that runs
+// identically across macOS/Linux/Windows Desktop, iOS, Android, and Web (WASM).
+type AdaptiveShellConfig struct {
+	BrandTitle       string
+	BrandSubtitle    string
+	InitialThemeID   string
+	FormFactor       ShellFormFactor
+	MobilePlatform   MobilePlatform
+	CompactThreshold float32
+	Targets          *transport.TargetRegistry
+	Slots            *shell.SlotRegistry
+	Workbench        *shell.WorkbenchController
+	Projection       *ProjectionController
+	OnThemeChange    func(DerivedTheme)
+}
+
+// AdaptiveShell is the single high-level library facade uniting Marlin's Desktop
+// Emacs WindowTree shell, iOS/Android Mobile Companion shell, and 34-token
+// DerivedTheme engine so apps target Desktop, iOS, Android, and Web from one API.
+type AdaptiveShell struct {
+	Desktop          *WorkbenchApp
+	Mobile           *MobileCompanionApp
+	Windows          *shell.WindowTree
+	CompactThreshold float32
+
+	mu         sync.RWMutex
+	formFactor ShellFormFactor
+	theme      ThemePreset
+	wbGen      uint64
+	onTheme    func(DerivedTheme)
+}
+
+// NewAdaptiveShell constructs a complete 4-target Marlin shell sharing one
+// TranscriptController, ProjectionController, WindowTree, and 5-theme engine.
+func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
+	if cfg.Targets == nil {
+		cfg.Targets = transport.NewTargetRegistry()
+	}
+	if cfg.Slots == nil {
+		cfg.Slots = shell.NewSlotRegistry()
+	}
+	if cfg.Workbench == nil {
+		cfg.Workbench = shell.NewWorkbenchController(cfg.Slots)
+	}
+	if cfg.Projection == nil {
+		cfg.Projection = NewProjectionController(ProjectionSnapshot{})
+	}
+	if cfg.CompactThreshold <= 0 {
+		cfg.CompactThreshold = DefaultCompactBreakpoint
+	}
+	if cfg.FormFactor == "" {
+		cfg.FormFactor = FormFactorAuto
+	}
+	if cfg.MobilePlatform == "" {
+		cfg.MobilePlatform = MobilePlatformIOS
+	}
+	preset := ThemeByID(cfg.InitialThemeID)
+
+	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace", Kind: "panel"}
+	bufDock := shell.PaneBuffer{BufferID: "slot:workbench.inspector", Title: "Focus Dock", Kind: "wasm-gpu"}
+	bufChat := shell.PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
+	bufProj := shell.PaneBuffer{BufferID: "builtin:projection", Title: "Projection", Kind: "native-gpu"}
+
+	tree := shell.NewWindowTree(bufMain)
+	tree.ApplyBuiltinPerspective("split", bufMain, bufDock, bufChat, bufProj)
+
+	transcript := NewTranscriptController()
+	desktop := NewWorkbenchApp(cfg.Targets, cfg.Slots, cfg.Workbench)
+	desktop.BrandTitle = cfg.BrandTitle
+	if desktop.BrandTitle == "" {
+		desktop.BrandTitle = "Marlin"
+	}
+	desktop.BrandSubtitle = cfg.BrandSubtitle
+	if desktop.BrandSubtitle == "" {
+		desktop.BrandSubtitle = "Unified Desktop · iOS · Android · Web"
+	}
+	desktop.Transcript = transcript
+	desktop.Projection = cfg.Projection
+	desktop.Windows = tree
+	desktop.WindowBuffers = []shell.PaneBuffer{bufMain, bufChat, bufProj, bufDock}
+	desktop.OnSelectPerspective = func(name string) {
+		tree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
+	}
+
+	mobile := NewMobileCompanionAppForPlatform(cfg.MobilePlatform, "", cfg.BrandTitle)
+	mobile.Transcript = transcript
+	mobile.SetThemePreset(preset.ID)
+
+	as := &AdaptiveShell{
+		Desktop:          desktop,
+		Mobile:           mobile,
+		Windows:          tree,
+		CompactThreshold: cfg.CompactThreshold,
+		formFactor:       cfg.FormFactor,
+		theme:            preset,
+		wbGen:            1,
+		onTheme:          cfg.OnThemeChange,
+	}
+
+	desktop.ActiveThemeNameFn = func() string {
+		as.mu.RLock()
+		defer as.mu.RUnlock()
+		return as.theme.Name
+	}
+	desktop.OnCycleTheme = func() {
+		as.CycleTheme()
+	}
+
+	// Ensure workbench starts with the initial theme snapshot if empty.
+	if _, ok := cfg.Workbench.Snapshot(); !ok {
+		_ = cfg.Workbench.AdmitSnapshot(schema.UIWorkbenchSnapshot{
+			Generation:  1,
+			ProfileName: "adaptive-" + preset.ID,
+			Theme:       preset.Base,
+			FrameTree:   schema.UIElement{Kind: schema.ElemSlot, SlotID: "workbench.main"},
+		})
+	}
+	return as
+}
+
+// SetFormFactor overrides automatic viewport adaptation (e.g. force iOS or Android).
+func (a *AdaptiveShell) SetFormFactor(ff ShellFormFactor) {
+	a.mu.Lock()
+	a.formFactor = ff
+	a.mu.Unlock()
+	if ff == FormFactorIOS {
+		a.Mobile.SwitchPlatform(MobilePlatformIOS)
+	} else if ff == FormFactorAndroid {
+		a.Mobile.SwitchPlatform(MobilePlatformAndroid)
+	}
+}
+
+// FormFactor returns the current form-factor policy.
+func (a *AdaptiveShell) FormFactor() ShellFormFactor {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.formFactor
+}
+
+// ApplyThemePreset applies one curated theme preset across Desktop, Mobile, and
+// any registered WebView callback simultaneously.
+func (a *AdaptiveShell) ApplyThemePreset(id string) DerivedTheme {
+	preset := ThemeByID(id)
+	a.mu.Lock()
+	a.theme = preset
+	a.wbGen++
+	gen := a.wbGen
+	cb := a.onTheme
+	a.mu.Unlock()
+
+	dt := DeriveTheme(preset.ID, preset.Name, preset.Base)
+	if a.Desktop != nil && a.Desktop.Workbench != nil {
+		if cur, ok := a.Desktop.Workbench.Snapshot(); ok {
+			next := *cur
+			next.Generation = gen
+			next.Theme = preset.Base
+			_ = a.Desktop.Workbench.AdmitSnapshot(next)
+		}
+	}
+	if a.Mobile != nil {
+		a.Mobile.SetThemePreset(preset.ID)
+	}
+	if cb != nil {
+		cb(dt)
+	}
+	return dt
+}
+
+// CycleTheme advances Desktop + Mobile simultaneously to the next curated theme.
+func (a *AdaptiveShell) CycleTheme() DerivedTheme {
+	a.mu.RLock()
+	curID := a.theme.ID
+	a.mu.RUnlock()
+	return a.ApplyThemePreset(NextThemePreset(curID).ID)
+}
+
+// EffectiveFormFactor resolves which shell renders at viewportWidth.
+func (a *AdaptiveShell) EffectiveFormFactor(viewportWidth float32) ShellFormFactor {
+	ff := a.FormFactor()
+	if ff != FormFactorAuto {
+		return ff
+	}
+	if viewportWidth > 0 && viewportWidth < a.CompactThreshold {
+		if a.Mobile != nil && a.Mobile.Platform == MobilePlatformAndroid {
+			return FormFactorAndroid
+		}
+		return FormFactorIOS
+	}
+	return FormFactorDesktop
+}
+
+// View is the single ui.View callback passed to mygo.NewWindow on Desktop, iOS,
+// Android, or Web (GOOS=js GOARCH=wasm).
+func (a *AdaptiveShell) View(c *ui.Context) {
+	w, _ := c.Size()
+	switch a.EffectiveFormFactor(w) {
+	case FormFactorIOS, FormFactorAndroid:
+		a.Mobile.View(c)
+	default:
+		a.Desktop.View(c)
+	}
+}
