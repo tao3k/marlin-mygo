@@ -46,6 +46,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	slashFn := tc.OnSlashCommand
 	compState := tc.Composer
 	voiceCtrl := tc.Voice
+	ctxUsage := tc.contextUsage
+	streamMetrics := tc.streamMetrics
 	modelPickerOpen := tc.modelPickerOpen
 	modelPickerQuery := tc.modelPickerQuery
 	hasThinking := false
@@ -90,6 +92,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	if voiceCtrl != nil {
 		voiceSnap = voiceCtrl.Snapshot()
 	}
+	streamLbl := streamMetrics.Label()
+	ctxLbl := ctxUsage.Label()
 
 	var (
 		toggleRow         = -1
@@ -160,6 +164,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				if ApplePillButton(c, "transcript-find", "Find", BtnGlass, dt, svgIconSearch, true).Clicked() {
 					openSearchNow = true
 				}
+			}
+			if streamLbl != "" {
+				AppleBadgePill(c, streamLbl, dt.Info, dt)
 			}
 			if inFlight {
 				AppleBadgePill(c, "STREAMING", dt.Warning, dt)
@@ -478,6 +485,15 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				}
 				if ApplePillButton(c, "transcript-deep-think", "Deep Think", thinkVar, dt, svgIconSparkles, true).Clicked() {
 					toggleThink = true
+				}
+				if ctxLbl != "" {
+					ctxTone := dt.InkMuted
+					if frac := ctxUsage.Fraction(); frac >= 0.90 {
+						ctxTone = dt.Danger
+					} else if frac >= 0.75 {
+						ctxTone = dt.Warning
+					}
+					AppleBadgePill(c, ctxLbl, ctxTone, dt)
 				}
 				ui.Spacer(c)
 				if inFlight && onCancel != nil {

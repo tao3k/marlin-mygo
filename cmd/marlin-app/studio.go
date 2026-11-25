@@ -103,6 +103,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 	}
 
 	var stopLiveSession func()
+	var stopVoiceCapture func()
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 
@@ -171,6 +172,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				}
 			}()
 		}
+		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
 			case "studio.open-auth":
@@ -296,6 +298,9 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	if err := mygo.App.Run(); err != nil {
 		return err
+	}
+	if stopVoiceCapture != nil {
+		stopVoiceCapture()
 	}
 	if stopLiveSession != nil {
 		stopLiveSession()

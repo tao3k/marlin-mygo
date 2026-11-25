@@ -140,6 +140,8 @@ type TranscriptController struct {
 	lastCopiedKey string
 	Composer      *composer.State
 	Voice         *composer.VoiceController
+	contextUsage  composer.ContextUsage
+	streamMetrics *composer.StreamMetrics
 
 	// Thin Backend-Delegated Callbacks (Rust owns search index, context mentions, and CAS upload).
 	OnCopyCode        func(code string)
@@ -197,6 +199,7 @@ func NewTranscriptController() *TranscriptController {
 		autoFollow:    true,
 		Composer:      composer.NewState(composer.DefaultAttachmentPolicy()),
 		Voice:         composer.NewVoiceController(),
+		streamMetrics: &composer.StreamMetrics{},
 		thumbs:        NewAttachmentThumbCache(32),
 	}
 }
@@ -433,6 +436,9 @@ func (tc *TranscriptController) ApplyCancellationReceipt(receipt CancellationRec
 	if tc.activeTurn == cp.TurnOrdinal {
 		tc.inFlight = false
 	}
+	if tc.streamMetrics != nil {
+		tc.streamMetrics.Finish()
+	}
 	tc.updateRowHeightLocked(row)
 	return row
 }
@@ -443,6 +449,9 @@ func (tc *TranscriptController) BeginAssistantTurn(turnOrdinal uint64) int {
 	defer tc.mu.Unlock()
 	tc.activeTurn = turnOrdinal
 	tc.inFlight = true
+	if tc.streamMetrics != nil {
+		tc.streamMetrics.Begin()
+	}
 	if row, ok := tc.turnRow[turnOrdinal]; ok {
 		tc.entries[row].Streaming = true
 		return row
@@ -487,6 +496,9 @@ func (tc *TranscriptController) ApplyCheckpoint(turnOrdinal uint64, eventID, tex
 	}
 	tc.activeTurn = turnOrdinal
 	tc.inFlight = true
+	if tc.streamMetrics != nil {
+		tc.streamMetrics.RecordDelta(textDelta)
+	}
 	tc.entries[row].Text += textDelta
 	tc.entries[row].Streaming = true
 	tc.entries[row].refreshLabels()
@@ -507,6 +519,9 @@ func (tc *TranscriptController) CompleteTurn(turnOrdinal uint64, outcomeLabel st
 	}
 	if tc.activeTurn == turnOrdinal {
 		tc.inFlight = false
+	}
+	if tc.streamMetrics != nil {
+		tc.streamMetrics.Finish()
 	}
 }
 

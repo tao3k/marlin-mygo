@@ -494,3 +494,34 @@ func TestVoiceRecordingBarModelPickerEffortAndESCDismiss(t *testing.T) {
 		t.Fatal("expected DismissTopOverlay to close Model Picker")
 	}
 }
+
+func TestTranscriptContextBudgetAndLiveStreamMetrics(t *testing.T) {
+	tc := mygoshell.NewTranscriptController()
+	tc.SetContextUsage(160_000, 200_000)
+
+	theme := ui.DarkTheme()
+	tt := ui.NewTester(func(c *ui.Context) {
+		tc.Render(c, theme, nil, nil)
+	}, 1100, 720)
+	tt.Frame()
+
+	if !tt.HasText("160K / 200K · 80%") {
+		t.Fatalf("expected context budget pill '160K / 200K · 80%%', got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	tc.BeginAssistantTurn(1)
+	tc.ApplyCheckpoint(1, "ev-tok-1", "Streaming tokens from Rust AppServer runtime with O(log N) Fenwick heights.")
+	tt.Frame()
+	if !tt.HasText("STREAMING") || !tt.HasText("tok/s") {
+		t.Fatalf("expected live streaming speed pill ('tok/s') while streaming, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	tc.CompleteTurn(1, "COMPLETED")
+	tt.Frame()
+	if !tt.HasText("IDLE") || !tt.HasText("tok/s") {
+		t.Fatalf("expected frozen throughput pill preserved after CompleteTurn, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if lbl := tc.StreamMetricsLabel(); !strings.Contains(lbl, "tok/s") {
+		t.Fatalf("expected StreamMetricsLabel to contain tok/s, got %q", lbl)
+	}
+}

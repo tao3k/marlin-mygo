@@ -328,3 +328,32 @@ func (tc *TranscriptController) StepSearchHit(delta int) {
 	tc.mu.Unlock()
 	tc.JumpToRow(row)
 }
+
+// SetContextUsage updates the backend-reported prompt/session token budget pill.
+func (tc *TranscriptController) SetContextUsage(usedTokens, maxTokens int) {
+	if usedTokens < 0 {
+		usedTokens = 0
+	}
+	if maxTokens < 0 {
+		maxTokens = 0
+	}
+	tc.mu.Lock()
+	tc.contextUsage = composer.ContextUsage{UsedTokens: usedTokens, MaxTokens: maxTokens}
+	tc.mu.Unlock()
+}
+
+// ContextUsage returns the current backend-reported context window utilization.
+func (tc *TranscriptController) ContextUsage() composer.ContextUsage {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.contextUsage
+}
+
+// StreamMetricsLabel returns the formatted live or frozen turn throughput badge
+// (e.g. "48 tok/s · 2.4s") or empty string before any streamed checkpoint arrives.
+func (tc *TranscriptController) StreamMetricsLabel() string {
+	tc.mu.RLock()
+	sm := tc.streamMetrics
+	tc.mu.RUnlock()
+	return sm.Label()
+}

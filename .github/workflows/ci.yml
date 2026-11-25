@@ -75,6 +75,7 @@ jobs:
           restore-keys: |
             wazero-aot-${{ runner.os }}-
       - run: bun install --frozen-lockfile
+      - run: just check-file-size
       - run: just ci go-unit-and-build
 
   go-race-detector:
