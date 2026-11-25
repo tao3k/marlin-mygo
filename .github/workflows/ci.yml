@@ -91,7 +91,7 @@ jobs:
       - run: just ci go-race
 
   go-fuzz-smoke:
-    name: Go Fuzz Smoke Suite (11 Protocol & Boundary Targets)
+    name: Go Fuzz Smoke Suite (14 Protocol & Boundary Targets)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

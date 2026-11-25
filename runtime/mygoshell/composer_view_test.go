@@ -9,9 +9,12 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/control/transport"
@@ -322,5 +325,81 @@ func TestSessionSearchBarAndMultiSessionSidebar(t *testing.T) {
 	}
 	if tc.IsSearchOpen() {
 		t.Fatal("expected session search bar closed after DismissTopOverlay")
+	}
+}
+
+func TestAttachmentThumbCacheDragDropAndMobileSheetLightbox(t *testing.T) {
+	// 1. Verify GPU Thumbnail Cache + Native OS Drag-and-Drop (FileList + raw PNG transfer).
+	tc := mygoshell.NewTranscriptController()
+	pngBytes := makeTestPNG(t, 128, 96)
+	dir := t.TempDir()
+	droppedFile := filepath.Join(dir, "dropped.go")
+	if err := os.WriteFile(droppedFile, []byte("package drop\nfunc Ok() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fileData, err := transfer.FileData(droppedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, errs := tc.HandleDroppedTransfer(transfer.Drop{Data: fileData})
+	if len(refs) != 1 || len(errs) != 0 || refs[0].Kind != composer.AttachmentCode {
+		t.Fatalf("expected dropped .go file staged cleanly, got refs=%+v errs=%v", refs, errs)
+	}
+
+	pngDrop := transfer.Drop{Data: transfer.New(transfer.NewItem(transfer.Bytes(transfer.PNG, pngBytes)))}
+	imgRefs, imgErrs := tc.HandleDroppedTransfer(pngDrop)
+	if len(imgRefs) != 1 || len(imgErrs) != 0 || imgRefs[0].Width != 128 || imgRefs[0].Height != 96 {
+		t.Fatalf("expected dropped PNG image staged cleanly, got refs=%+v errs=%v", imgRefs, imgErrs)
+	}
+	if tc.CachedThumbnail(imgRefs[0].SHA256Hex) == nil {
+		t.Fatal("expected pre-decoded GPU ImageSource cached for dropped PNG attachment")
+	}
+
+	// 2. Verify MobileCompanionApp (iOS/Android) Photo/Camera/File hooks, compact bottom-sheet Lightbox, and attachment submit.
+	mob := mygoshell.NewMobileCompanionAppForPlatform(mygoshell.MobilePlatformIOS, "iphone16", "")
+	mob.Transcript = tc
+	var photoClicks, cameraClicks, docClicks int
+	var mobSubmitted []composer.TurnSubmission
+	mob.OnPickPhoto = func() { photoClicks++ }
+	mob.OnTakePhoto = func() { cameraClicks++ }
+	mob.OnPickDocument = func() { docClicks++ }
+	tc.OnSubmitTurn = func(sub composer.TurnSubmission) { mobSubmitted = append(mobSubmitted, sub) }
+
+	tt := ui.NewTester(mob.View, 393, 852)
+	tt.Frame()
+
+	for _, btn := range []string{"Photo", "Camera", "File"} {
+		if err := tt.Click(btn); err != nil {
+			t.Fatalf("click mobile %q button failed: %v", btn, err)
+		}
+	}
+	if photoClicks != 1 || cameraClicks != 1 || docClicks != 1 {
+		t.Fatalf("expected mobile capture hooks fired once each, got photo=%d camera=%d doc=%d", photoClicks, cameraClicks, docClicks)
+	}
+
+	// Tap staged image chip in mobile Chat -> opens thumb-friendly bottom-sheet Lightbox!
+	if err := tt.Click("Inspect dropped-image.png"); err != nil {
+		t.Fatalf("click Inspect dropped-image.png on mobile failed: %v", err)
+	}
+	tt.Frame()
+	if !tc.IsAttachmentPreviewOpen() || !tt.HasText("MAGIC VERIFIED · FAIL-CLOSED") || !tt.HasText("Verified Raster Image · 128 x 96 px") {
+		t.Fatalf("expected mobile bottom-sheet Lightbox, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Done"); err != nil {
+		t.Fatalf("click Done on mobile Lightbox sheet failed: %v", err)
+	}
+	tt.Frame()
+	if tc.IsAttachmentPreviewOpen() {
+		t.Fatal("expected mobile Lightbox sheet closed after Done")
+	}
+
+	// Tap Send on mobile -> submits staged multimodal attachments and resets composer!
+	if err := tt.Click("Send"); err != nil {
+		t.Fatalf("click Send on mobile failed: %v", err)
+	}
+	tt.Frame()
+	if len(mobSubmitted) != 1 || len(mobSubmitted[0].Attachments) != 2 {
+		t.Fatalf("expected mobile submit with 2 multimodal attachments, got %+v", mobSubmitted)
 	}
 }

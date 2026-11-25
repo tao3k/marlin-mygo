@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/device"
@@ -101,10 +102,11 @@ const (
 // MobileMessage represents one touch-friendly chat bubble inside the mobile
 // Chat tab (replacing desktop-density transcript chrome on phones).
 type MobileMessage struct {
-	FromUser bool
-	Sender   string
-	Text     string
-	Meta     string
+	FromUser    bool
+	Sender      string
+	Text        string
+	Meta        string
+	Attachments []composer.AttachmentRef
 }
 
 // MobileDeclarativePack represents an App-Store-2.5.2-compliant declarative
@@ -134,6 +136,9 @@ type MobileCompanionApp struct {
 	OnGateDecision  func(gateID string, approve bool)
 	OnQuickCapture    func(channel, text string)
 	OnActivatePack    func(pluginID string) error
+	OnPickPhoto       func() // iOS PHPicker / Android Photo Picker
+	OnTakePhoto       func() // iOS Camera / Android CameraX
+	OnPickDocument    func() // iOS UIDocumentPicker / Android SAF
 	DeviceBridge      *device.Bridge
 	LastStatusLine    string
 	mu                sync.Mutex
@@ -382,6 +387,13 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		selectThemeID    string
 		cycleThemeNow    bool
 		togglePlatformTo MobilePlatform
+		pickPhotoNow     bool
+		takePhotoNow     bool
+		pickDocNow       bool
+		removeAttID      string
+		openPreviewAtt   *composer.AttachmentRef
+		closePreviewNow  bool
+		submittedMobTurn *composer.TurnSubmission
 	)
 
 	ui.Column(c.Key("mobile-screen")).Fill().MinWidth(0).MinHeight(0).
@@ -396,7 +408,7 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Padding(12, 16, 10, 16).Gap(12).AlignItems(ui.Stretch).Clip().Children(func() {
 			switch tab {
 			case MobileTabChat:
-				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, &submitPrompt)
+				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, &submitPrompt, &submittedMobTurn, &pickPhotoNow, &takePhotoNow, &pickDocNow, &removeAttID, &openPreviewAtt)
 
 			case MobileTabGates:
 				m.renderGatesTab(c, t, dt, dev, gates, &decideGateID, &decideApprove)
@@ -422,6 +434,13 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 				m.authOpen = false
 			})
 		})
+	}
+	if m.Transcript != nil {
+		if att, open := m.Transcript.PreviewedAttachment(); open {
+			RenderMobileAttachmentSheet(c, dt, att, m.Transcript.CachedThumbnail(att.SHA256Hex), m.Transcript.OnCopyCode, func() {
+				closePreviewNow = true
+			})
+		}
 	}
 
 	// Commit state transitions atomically outside layout closures.
@@ -461,7 +480,44 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	if togglePlatformTo != "" {
 		m.SwitchPlatform(togglePlatformTo)
 	}
-	if submitPrompt != "" {
+	if openPreviewAtt != nil && m.Transcript != nil {
+		m.Transcript.OpenAttachmentPreview(*openPreviewAtt)
+	}
+	if closePreviewNow && m.Transcript != nil {
+		m.Transcript.CloseAttachmentPreview()
+	}
+	if removeAttID != "" && m.Transcript != nil && m.Transcript.Composer != nil {
+		m.Transcript.Composer.RemoveAttachment(removeAttID)
+	}
+	if pickPhotoNow && m.OnPickPhoto != nil {
+		m.OnPickPhoto()
+	}
+	if takePhotoNow && m.OnTakePhoto != nil {
+		m.OnTakePhoto()
+	}
+	if pickDocNow && m.OnPickDocument != nil {
+		m.OnPickDocument()
+	}
+	if submittedMobTurn != nil {
+		refs := make([]composer.AttachmentRef, 0, len(submittedMobTurn.Attachments))
+		for _, att := range submittedMobTurn.Attachments {
+			refs = append(refs, att.Ref)
+		}
+		m.mu.Lock()
+		m.messages = append(m.messages, MobileMessage{
+			FromUser:    true,
+			Sender:      "You",
+			Text:        submittedMobTurn.Prompt,
+			Meta:        fmt.Sprintf("sent · %d attachment(s)", len(refs)),
+			Attachments: refs,
+		})
+		m.mu.Unlock()
+		if m.Transcript != nil && m.Transcript.OnSubmitTurn != nil {
+			m.Transcript.OnSubmitTurn(*submittedMobTurn)
+		} else if m.OnSendPrompt != nil && strings.TrimSpace(submittedMobTurn.Prompt) != "" {
+			m.OnSendPrompt(submittedMobTurn.Prompt)
+		}
+	} else if submitPrompt != "" {
 		m.AppendMobileMessage(true, "You", submitPrompt, "sent")
 		if m.OnSendPrompt != nil {
 			m.OnSendPrompt(submitPrompt)
@@ -587,6 +643,12 @@ func (m *MobileCompanionApp) renderChatTab(
 	msgs []MobileMessage,
 	chatDraft *string,
 	submitPrompt *string,
+	submittedTurn **composer.TurnSubmission,
+	pickPhotoNow *bool,
+	takePhotoNow *bool,
+	pickDocNow *bool,
+	removeAttID *string,
+	openPreviewAtt **composer.AttachmentRef,
 ) {
 	// Message feed with authentic iMessage / Apple Intelligence asymmetric bubbles.
 	ui.Column(c).Grow(1).MinHeight(0).Gap(12).AlignItems(ui.Stretch).Children(func() {
@@ -603,7 +665,21 @@ func (m *MobileCompanionApp) renderChatTab(
 						Gradient(topCol, toColor(dt.Accent), 180).
 						InsetShadow(0, 1, 0, 0, ui.RGBA(255, 255, 255, 0.24)).
 						Shadow(0, 6, 18, -4, rgbaFromRGB(dt.Accent, 0.36)).Children(func() {
-						ui.Text(c, msg.Text).FontSize(14).LineHeight(1.36).TextColor(toColor(dt.InkOnAccent))
+						if msg.Text != "" {
+							ui.Text(c, msg.Text).FontSize(14).LineHeight(1.36).TextColor(toColor(dt.InkOnAccent))
+						}
+						if len(msg.Attachments) > 0 {
+							for _, att := range msg.Attachments {
+								var thumb ui.ImageSource
+								if m.Transcript != nil {
+									thumb = m.Transcript.CachedThumbnail(att.SHA256Hex)
+								}
+								AttachmentCardChip(c, dt, att, thumb, false, func(ref composer.AttachmentRef) {
+									cp := ref
+									*openPreviewAtt = &cp
+								}, nil)
+							}
+						}
 						if msg.Meta != "" {
 							ui.Text(c, msg.Meta).FontSize(10).FontWeight(500).TextColor(ui.RGBA(dt.InkOnAccent.R, dt.InkOnAccent.G, dt.InkOnAccent.B, 0.78))
 						}
@@ -636,8 +712,39 @@ func (m *MobileCompanionApp) renderChatTab(
 		}
 		ui.Spacer(c)
 
-		// Apple HIG Tinted quick-suggestion capsules above the floating composer pill.
-		ui.Row(c).Gap(8).Children(func() {
+		// Shared multimodal attachment strip above the phone composer pill.
+		var stagedAtts []composer.AttachmentRef
+		if m.Transcript != nil && m.Transcript.Composer != nil {
+			stagedAtts = m.Transcript.Composer.Snapshot().Attachments
+		}
+		if len(stagedAtts) > 0 {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				for _, att := range stagedAtts {
+					AttachmentCardChip(c, dt, att, m.Transcript.CachedThumbnail(att.SHA256Hex), true, func(ref composer.AttachmentRef) {
+						cp := ref
+						*openPreviewAtt = &cp
+					}, func(id string) { *removeAttID = id })
+				}
+			})
+		}
+
+		// Native mobile media capture hooks (Photo / Camera / File) + quick-suggestion capsules.
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			if m.OnPickPhoto != nil {
+				if ApplePillButton(c, "mob-att-photo", "Photo", BtnGlass, dt, svgIconImage, true).Clicked() {
+					*pickPhotoNow = true
+				}
+			}
+			if m.OnTakePhoto != nil {
+				if ApplePillButton(c, "mob-att-camera", "Camera", BtnGlass, dt, svgIconEye, true).Clicked() {
+					*takePhotoNow = true
+				}
+			}
+			if m.OnPickDocument != nil {
+				if ApplePillButton(c, "mob-att-doc", "File", BtnGlass, dt, svgIconPaperclip, true).Clicked() {
+					*pickDocNow = true
+				}
+			}
 			for _, chip := range []struct{ key, label, prompt string }{
 				{"chip-agenda", "Today's Agenda", "Summarize today's Org Agenda and next time block."},
 				{"chip-gates", "Check Gates", "List pending Tier-0 approval gates across devices."},
@@ -656,7 +763,13 @@ func (m *MobileCompanionApp) renderChatTab(
 				Placeholder("Message Marlin...").
 				FontSize(14).TextColor(toColor(dt.Ink)).Grow(1).Padding(6, 2)
 			if AppleCircleIconButton(c, "mob-chat-send", "Send", svgIconArrowUp, 34, dt).Clicked() {
-				if trimmed := strings.TrimSpace(*chatDraft); trimmed != "" {
+				if len(stagedAtts) > 0 && m.Transcript != nil && m.Transcript.Composer != nil {
+					if sub, ok := m.Transcript.Composer.BuildAndResetSubmission(*chatDraft); ok {
+						cp := sub
+						*submittedTurn = &cp
+						*chatDraft = ""
+					}
+				} else if trimmed := strings.TrimSpace(*chatDraft); trimmed != "" {
 					*submitPrompt = trimmed
 					*chatDraft = ""
 				}

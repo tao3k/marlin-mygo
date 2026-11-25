@@ -141,7 +141,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 					return
 				}
 				if len(paths) > 0 {
-					_, _ = composer.StageLocalFiles(transcript.Composer, paths)
+					_, _ = transcript.StageLocalFiles(paths)
 					win.Invalidate()
 				}
 			}()

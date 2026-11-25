@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
@@ -261,7 +262,8 @@ type TranscriptController struct {
 	OnSearchSession   func(query string) []SessionSearchHit
 
 	// Thin Cmd+F Find-in-Session state & Attachment Preview Lightbox state.
-	previewAtt      *composer.AttachmentRef
+	previewAtt *composer.AttachmentRef
+	thumbs     *AttachmentThumbCache
 
 	// Thin Cmd+F Session Search UI state (hits supplied exclusively by OnSearchSession).
 	searchOpen      bool
@@ -292,16 +294,72 @@ func NewTranscriptController() *TranscriptController {
 		wrapCols:      defaultTranscriptWrapCols,
 		autoFollow:    true,
 		Composer:      composer.NewState(composer.DefaultAttachmentPolicy()),
+		thumbs:        NewAttachmentThumbCache(32),
 	}
 }
 
-// AttachFile validates, SHA-256 hashes, and stages one multimodal attachment
-// (image/PDF/audio/code/text) into the composer bar with fail-closed security checks.
+// AttachFile validates, SHA-256 hashes, decodes GPU image thumbnail once (if
+// raster image), and stages one multimodal attachment with fail-closed checks.
 func (tc *TranscriptController) AttachFile(in composer.AttachmentInput) (composer.AttachmentRef, error) {
 	if tc.Composer == nil {
 		tc.Composer = composer.NewState(composer.DefaultAttachmentPolicy())
 	}
-	return tc.Composer.AddAttachment(in)
+	ref, err := tc.Composer.AddAttachment(in)
+	if err != nil {
+		return composer.AttachmentRef{}, err
+	}
+	if ref.Kind == composer.AttachmentImage && tc.thumbs != nil {
+		tc.thumbs.PutBytes(ref.SHA256Hex, in.Data)
+	}
+	return ref, nil
+}
+
+// StageLocalFiles reads local file paths with fail-closed byte caps, caches
+// decoded GPU image thumbnails once, and stages each admitted attachment.
+func (tc *TranscriptController) StageLocalFiles(paths []string) ([]composer.AttachmentRef, []error) {
+	if tc.Composer == nil {
+		tc.Composer = composer.NewState(composer.DefaultAttachmentPolicy())
+	}
+	refs, errs := composer.StageLocalFiles(tc.Composer, paths)
+	if tc.thumbs != nil {
+		for _, ref := range refs {
+			if ref.Kind == composer.AttachmentImage {
+				if staged, ok := tc.Composer.StagedByID(ref.ID); ok {
+					tc.thumbs.PutBytes(ref.SHA256Hex, staged.Data)
+				}
+			}
+		}
+	}
+	return refs, errs
+}
+
+// HandleDroppedTransfer ingests a native OS drag-and-drop transfer payload
+// (FileList local files or raw PNG image bytes) through the fail-closed pipeline.
+func (tc *TranscriptController) HandleDroppedTransfer(drop transfer.Drop) ([]composer.AttachmentRef, []error) {
+	if files, err := drop.Data.Files(); err == nil && len(files) > 0 {
+		return tc.StageLocalFiles(files)
+	}
+	if pngBytes, err := drop.Data.Read(transfer.PNG); err == nil && len(pngBytes) > 0 {
+		ref, aErr := tc.AttachFile(composer.AttachmentInput{
+			Filename: "dropped-image.png",
+			MIMEType: "image/png",
+			Data:     pngBytes,
+		})
+		if aErr != nil {
+			return nil, []error{aErr}
+		}
+		return []composer.AttachmentRef{ref}, nil
+	}
+	return nil, nil
+}
+
+// CachedThumbnail returns the pre-decoded GPU ui.ImageSource for an attachment
+// SHA-256 digest (or nil if non-image / not cached).
+func (tc *TranscriptController) CachedThumbnail(sha256Hex string) ui.ImageSource {
+	if tc == nil || tc.thumbs == nil {
+		return nil
+	}
+	return tc.thumbs.Get(sha256Hex)
 }
 
 // AppendUserWithAttachments appends a user turn carrying multimodal attachment
@@ -950,6 +1008,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		pasteAttClicked  bool
 		openPreviewAtt   *composer.AttachmentRef
 		closePreviewNow  bool
+		droppedPayload   *transfer.Drop
 		copiedKey        string
 		copiedCode       string
 	)
@@ -1023,7 +1082,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 								if len(entry.Attachments) > 0 {
 									ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 										for _, att := range entry.Attachments {
-											AttachmentCardChip(c, dt, att, false, func(ref composer.AttachmentRef) {
+											AttachmentCardChip(c, dt, att, tc.CachedThumbnail(att.SHA256Hex), false, func(ref composer.AttachmentRef) {
 												cp := ref
 												openPreviewAtt = &cp
 											}, nil)
@@ -1154,11 +1213,27 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			})
 		}
 
-		// 2-row T3 Chat / DeepSeek floating glass capsule composer.
-		ui.Column(c).Gap(6).Padding(8, 10, 6, 12).Radius(20).
+		// 2-row T3 Chat / DeepSeek floating glass capsule composer with native OS Drag-and-Drop.
+		dropOpts := transfer.DropOptions{
+			Formats: []transfer.Format{transfer.FileList, transfer.PNG},
+		}
+		composerBox := ui.Column(c.Key("transcript-composer-dropzone")).Gap(6).Padding(8, 10, 6, 12).Radius(20).
 			Background(toColor(dt.SurfaceElevated)).
 			Border(1, glassBorderColor(dt)).
-			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).Children(func() {
+			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt))
+		_, dragHover := ui.DataDragOver(composerBox, dropOpts)
+		if dragHover {
+			composerBox.Border(2, toColor(dt.Accent))
+		}
+		if dropped, ok := ui.DropData(composerBox, dropOpts); ok {
+			cp := dropped
+			droppedPayload = &cp
+		}
+		composerBox.Children(func() {
+			if dragHover {
+				ui.Text(c, "Drop image, PDF, audio, or code to attach (fail-closed verified)").
+					FontSize(11.5).FontWeight(700).TextColor(toColor(dt.Accent))
+			}
 			// Inline `/` Slash Command or `@` Context Mention autocomplete popup.
 			if compState != nil {
 				if slashMatches := compState.MatchSlashCommands(draft); len(slashMatches) > 0 {
@@ -1187,7 +1262,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			if len(compSnap.Attachments) > 0 {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					for _, att := range compSnap.Attachments {
-						AttachmentCardChip(c, dt, att, true, func(ref composer.AttachmentRef) {
+						AttachmentCardChip(c, dt, att, tc.CachedThumbnail(att.SHA256Hex), true, func(ref composer.AttachmentRef) {
 							cp := ref
 							openPreviewAtt = &cp
 						}, func(id string) { removeAttID = id })
@@ -1254,7 +1329,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	})
 
 	if activePreview != nil {
-		RenderAttachmentPreviewModal(c, dt, *activePreview, func(snippet string) {
+		RenderAttachmentPreviewModal(c, dt, *activePreview, tc.CachedThumbnail(activePreview.SHA256Hex), func(snippet string) {
 			copiedKey = "preview-" + activePreview.ID
 			copiedCode = snippet
 		}, func() {
@@ -1311,6 +1386,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		} else if slashFn != nil {
 			slashFn(*pickedSlash)
 		}
+	}
+	if droppedPayload != nil {
+		_, _ = tc.HandleDroppedTransfer(*droppedPayload)
 	}
 	if pickAttClicked && pickAttFn != nil {
 		pickAttFn()

@@ -7,12 +7,74 @@ package mygoshell
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
+
+// AttachmentThumbCache caches decoded GPU ui.ImageSource handles keyed by
+// SHA-256 hex digest with a strict FIFO capacity bound so 120Hz UI frames
+// render real raster image thumbnails with zero per-frame decoding or allocations.
+type AttachmentThumbCache struct {
+	mu    sync.RWMutex
+	max   int
+	order []string
+	items map[string]ui.ImageSource
+}
+
+// NewAttachmentThumbCache creates a bounded GPU thumbnail cache (default 32 images).
+func NewAttachmentThumbCache(capacity int) *AttachmentThumbCache {
+	if capacity <= 0 {
+		capacity = 32
+	}
+	return &AttachmentThumbCache{
+		max:   capacity,
+		items: make(map[string]ui.ImageSource, capacity),
+	}
+}
+
+// PutBytes decodes raster image bytes once via ui.DecodeImage and caches the GPU handle.
+func (c *AttachmentThumbCache) PutBytes(sha256Hex string, raw []byte) bool {
+	if c == nil || sha256Hex == "" || len(raw) == 0 {
+		return false
+	}
+	c.mu.RLock()
+	_, exists := c.items[sha256Hex]
+	c.mu.RUnlock()
+	if exists {
+		return true
+	}
+	src, err := ui.DecodeImage(raw)
+	if err != nil || src == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.items[sha256Hex]; exists {
+		return true
+	}
+	if len(c.order) >= c.max {
+		evict := c.order[0]
+		c.order = c.order[1:]
+		delete(c.items, evict)
+	}
+	c.items[sha256Hex] = src
+	c.order = append(c.order, sha256Hex)
+	return true
+}
+
+// Get returns the cached decoded GPU ImageSource for sha256Hex, or nil if absent.
+func (c *AttachmentThumbCache) Get(sha256Hex string) ui.ImageSource {
+	if c == nil || sha256Hex == "" {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.items[sha256Hex]
+}
 
 // Pre-parsed multimodal attachment & search vector icons (zero per-frame alloc).
 var (
@@ -65,6 +127,7 @@ func AttachmentCardChip(
 	c *ui.Context,
 	dt DerivedTheme,
 	att composer.AttachmentRef,
+	thumb ui.ImageSource,
 	removable bool,
 	onPreview func(composer.AttachmentRef),
 	onRemove func(id string),
@@ -86,9 +149,13 @@ func AttachmentCardChip(
 		Border(1, rgbaFromRGB(tone, 0.32)).Children(func() {
 		bodyBtn := ui.ButtonBase(c.Key("att-inspect-"+att.ID)).Label("Inspect "+att.Name).
 			Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Padding(5).Radius(8).Background(rgbaFromRGB(tone, 0.14)).Children(func() {
-				ui.Icon(c, icon).Size(14, 14).TextColor(toColor(tone))
-			})
+			if att.Kind == composer.AttachmentImage && thumb != nil {
+				ui.Image(c, thumb).Size(28, 28).Radius(6).Clip()
+			} else {
+				ui.Row(c).Padding(5).Radius(8).Background(rgbaFromRGB(tone, 0.14)).Children(func() {
+					ui.Icon(c, icon).Size(14, 14).TextColor(toColor(tone))
+				})
+			}
 			ui.Column(c).Gap(1).Children(func() {
 				ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, att.Name).FontSize(11.5).FontWeight(700).TextColor(toColor(dt.Ink))
@@ -117,13 +184,13 @@ func AttachmentCardChip(
 }
 
 // RenderAttachmentPreviewModal paints a Tier-0 read-only Attachment Preview
-// Lightbox above workspace panes, showing fail-closed magic verification
-// metadata, content-addressed CAS URI, image resolution card, or numbered
-// source-code preview with 1-click Copy Snippet.
+// Lightbox above workspace panes, showing real cached GPU raster previews,
+// audio waveform visualization, PDF security card, or numbered code preview.
 func RenderAttachmentPreviewModal(
 	c *ui.Context,
 	dt DerivedTheme,
 	att composer.AttachmentRef,
+	thumb ui.ImageSource,
 	onCopy func(string),
 	onClose func(),
 ) {
@@ -156,56 +223,7 @@ func RenderAttachmentPreviewModal(
 				}
 			})
 
-			// Body preview by multimodal kind
-			switch att.Kind {
-			case composer.AttachmentImage:
-				ui.Column(c).Padding(16).Gap(6).Radius(12).AlignItems(ui.Center).
-					Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-					ui.Icon(c, svgIconImage).Size(32, 32).TextColor(toColor(dt.Accent))
-					ui.Textf(c, "Verified Raster Image · %d x %d px", att.Width, att.Height).
-						FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
-					ui.Textf(c, "SHA-256: %s", att.SHA256Hex).FontSize(10.5).TextColor(toColor(dt.InkMuted))
-				})
-			case composer.AttachmentCode, composer.AttachmentText:
-				ui.Column(c).Padding(10, 12).Gap(6).Radius(12).
-					Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-						ui.Textf(c, "SOURCE PREVIEW · %d lines", att.LineCount).
-							FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
-						ui.Spacer(c)
-						if onCopy != nil && att.PreviewText != "" {
-							if ApplePillButton(c, "att-preview-copy", "Copy Snippet", BtnTinted, dt, svgIconClipboard, true).Clicked() {
-								onCopy(att.PreviewText)
-							}
-						}
-					})
-					lines := strings.Split(att.PreviewText, "\n")
-					limit := min(len(lines), 16)
-					for i := 0; i < limit; i++ {
-						ui.Textf(c, "%2d | %s", i+1, lines[i]).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.Ink))
-					}
-				})
-			case composer.AttachmentPDF:
-				ui.Column(c).Padding(14).Gap(6).Radius(12).
-					Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, svgIconFileText).Size(20, 20).TextColor(toColor(dt.Warning))
-						ui.Text(c, "Verified %PDF- Document Artifact").FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
-					})
-					ui.Text(c, "Staged for content-addressed Rust AppServer ingestion without frontend PDF script execution.").
-						FontSize(11.5).TextColor(toColor(dt.InkSecondary))
-				})
-			case composer.AttachmentAudio:
-				ui.Column(c).Padding(14).Gap(6).Radius(12).
-					Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, svgIconMic).Size(20, 20).TextColor(toColor(dt.Success))
-						ui.Textf(c, "Verified Audio Clip (%s)", att.MIMEType).FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
-					})
-					ui.Text(c, "Ready for Rust multimodal audio transcription / reasoning pipeline.").
-						FontSize(11.5).TextColor(toColor(dt.InkSecondary))
-				})
-			}
+			renderAttachmentPreviewBody(c, dt, att, thumb, 360, 210, 16, onCopy)
 
 			// Footer status
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
@@ -219,6 +237,127 @@ func RenderAttachmentPreviewModal(
 			})
 		})
 	})
+}
+
+// RenderMobileAttachmentSheet paints a thumb-friendly iOS/Android bottom-sheet
+// Attachment Preview Lightbox with grabber bar, GPU thumbnail, or code preview.
+func RenderMobileAttachmentSheet(
+	c *ui.Context,
+	dt DerivedTheme,
+	att composer.AttachmentRef,
+	thumb ui.ImageSource,
+	onCopy func(string),
+	onClose func(),
+) {
+	_, kindLabel, tone := attachmentVisualMeta(att.Kind, dt)
+	ui.Column(c.Key("mob-att-sheet-backdrop")).Absolute().Top(0).Right(0).Bottom(0).Left(0).ZIndex(960).
+		Background(ui.RGBA(8, 10, 16, 0.62)).
+		AlignItems(ui.Stretch).Justify(ui.End).Children(func() {
+		ui.Column(c.Key("mob-att-sheet")).Padding(12, 16, 20, 16).Gap(10).Radius(22, 22, 0, 0).
+			Background(toColor(dt.SurfaceElevated)).
+			BorderWidth(1, 1, 0, 1).BorderColor(rgbaFromRGB(tone, 0.40)).
+			AlignItems(ui.Stretch).Children(func() {
+			// Native sheet grabber pill
+			ui.Row(c).Justify(ui.Center).Children(func() {
+				ui.Box(c).Size(36, 4).Radius(2).Background(toColor(dt.BorderStrong))
+			})
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Gap(2).Grow(1).Children(func() {
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, att.Name).FontSize(14).FontWeight(700).TextColor(toColor(dt.Ink)).MaxLines(1)
+						AppleBadgePill(c, kindLabel, tone, dt)
+					})
+					ui.Textf(c, "%s · %s · #%s", att.MIMEType, composer.FormatByteSize(att.ByteSize), att.ShortDigest()).
+						FontSize(10.5).TextColor(toColor(dt.InkMuted))
+				})
+				if ApplePillButton(c, "mob-att-done", "Done", BtnTinted, dt, nil, true).Clicked() && onClose != nil {
+					onClose()
+				}
+			})
+			AppleBadgePill(c, "MAGIC VERIFIED · FAIL-CLOSED", dt.Success, dt)
+			renderAttachmentPreviewBody(c, dt, att, thumb, 300, 170, 8, onCopy)
+		})
+	})
+}
+
+func renderAttachmentPreviewBody(
+	c *ui.Context,
+	dt DerivedTheme,
+	att composer.AttachmentRef,
+	thumb ui.ImageSource,
+	imgW, imgH float32,
+	maxLines int,
+	onCopy func(string),
+) {
+	switch att.Kind {
+	case composer.AttachmentImage:
+		ui.Column(c).Padding(14).Gap(8).Radius(12).AlignItems(ui.Center).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			if thumb != nil {
+				ui.Image(c, thumb).Width(imgW).Height(imgH).Radius(10).Clip()
+			} else {
+				ui.Icon(c, svgIconImage).Size(32, 32).TextColor(toColor(dt.Accent))
+			}
+			ui.Textf(c, "Verified Raster Image · %d x %d px", att.Width, att.Height).
+				FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+			ui.Textf(c, "SHA-256: %s", att.SHA256Hex).FontSize(10.5).TextColor(toColor(dt.InkMuted))
+		})
+	case composer.AttachmentCode, composer.AttachmentText:
+		ui.Column(c).Padding(10, 12).Gap(6).Radius(12).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Textf(c, "SOURCE PREVIEW · %d lines", att.LineCount).
+					FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+				ui.Spacer(c)
+				if onCopy != nil && att.PreviewText != "" {
+					if ApplePillButton(c, "att-preview-copy", "Copy Snippet", BtnTinted, dt, svgIconClipboard, true).Clicked() {
+						onCopy(att.PreviewText)
+					}
+				}
+			})
+			lines := strings.Split(att.PreviewText, "\n")
+			limit := min(len(lines), maxLines)
+			for i := 0; i < limit; i++ {
+				ui.Textf(c, "%2d | %s", i+1, lines[i]).FontSize(11.5).LineHeight(1.35).TextColor(toColor(dt.Ink))
+			}
+		})
+	case composer.AttachmentPDF:
+		ui.Column(c).Padding(14).Gap(8).Radius(12).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, svgIconFileText).Size(20, 20).TextColor(toColor(dt.Warning))
+				ui.Text(c, "Verified %PDF- Document Artifact").FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+			})
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				AppleBadgePill(c, "HEADER %PDF-", dt.Warning, dt)
+				AppleBadgePill(c, "NO FRONTEND JS EXEC", dt.Success, dt)
+				AppleBadgePill(c, composer.FormatByteSize(att.ByteSize), dt.Info, dt)
+			})
+			ui.Text(c, "Staged for content-addressed Rust AppServer ingestion without frontend PDF script execution.").
+				FontSize(11.5).TextColor(toColor(dt.InkSecondary))
+		})
+	case composer.AttachmentAudio:
+		ui.Column(c).Padding(14).Gap(8).Radius(12).
+			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, svgIconMic).Size(20, 20).TextColor(toColor(dt.Success))
+				ui.Textf(c, "Verified Audio Clip (%s)", att.MIMEType).FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+			})
+			// Deterministic zero-alloc audio waveform bars derived from CAS digest.
+			ui.Row(c).Height(28).Gap(3).AlignItems(ui.Center).Children(func() {
+				for i := 0; i < 24; i++ {
+					b := byte(i*17 + 9)
+					if i < len(att.SHA256Hex) {
+						b = att.SHA256Hex[i]
+					}
+					h := float32(6 + (int(b) % 20))
+					ui.Box(c).Size(4, h).Radius(2).Background(rgbaFromRGB(dt.Success, 0.72))
+				}
+			})
+			ui.Text(c, "Ready for Rust multimodal audio transcription / reasoning pipeline.").
+				FontSize(11.5).TextColor(toColor(dt.InkSecondary))
+		})
+	}
 }
 
 // ContextMentionChip renders one structured `@` context pill above the composer.

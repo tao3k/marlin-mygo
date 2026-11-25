@@ -202,6 +202,18 @@ func (s *State) UpdateAttachmentStatus(id string, status AttachmentStatus, progr
 	}
 }
 
+// StagedByID returns a copy of the staged attachment matching id if present.
+func (s *State) StagedByID(id string) (StagedAttachment, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, att := range s.attachments {
+		if att.Ref.ID == id {
+			return att, true
+		}
+	}
+	return StagedAttachment{}, false
+}
+
 // AddMention appends a deduplicated `@` context mention chip.
 func (s *State) AddMention(m ContextMention) {
 	if strings.TrimSpace(m.Target) == "" {
