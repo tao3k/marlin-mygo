@@ -256,7 +256,7 @@ func TestBuiltInMyGoGPUMarketplaceInstallUpgradeRollbackDisableEndToEnd(t *testi
 		t.Fatalf("clicking Marketplace button failed: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("MARLIN MARKETPLACE (HOST TIER-0)") || !tt.HasText("VERIFIED · tao3k.official") || !tt.HasText("scopes:[theme.live]  actions:[theme.apply]") {
+	if !tt.HasText("MARLIN UI MARKETPLACE (HOST TIER-0)") || !tt.HasText("VERIFIED · tao3k.official") || !tt.HasText("scopes:[theme.live]  actions:[theme.apply]") {
 		t.Fatalf("expected verified Tier-0 Marketplace catalog card, got %q", strings.Join(tt.Texts(), " | "))
 	}
 

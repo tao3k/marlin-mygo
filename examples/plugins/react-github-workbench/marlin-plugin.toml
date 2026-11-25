@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Developer Tools Flagship Plugin (React 19 TSX):
+# GitHub Workbench — Pull Requests, Issues, and GitHub Actions CI telemetry
+# with action-gated review approval, local checkout, and workflow re-runs.
+id = "tao3k.github-workbench"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_github_workspace]
+kind = "projection.read"
+surface = "github.workspace"
+
+[capabilities.read_session]
+kind = "projection.read"
+surface = "session.summary"
+
+[contributions.github_workbench_panel]
+kind = "ui-panel"
+requires = ["read_github_workspace", "read_session"]
+
+[contributions.github_workbench_panel.panel]
+runtime = "webview-untrusted"
+slot_id = "workbench.main"
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = ["github.workspace", "session.summary"]
+declared_actions = [
+  "github.pr.review",
+  "github.pr.checkout",
+  "github.checks.rerun",
+  "github.issue.triage",
+]
+activation = "on-topic"
+triggers = ["github.workspace"]
+idle_unload_sec = 600

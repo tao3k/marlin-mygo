@@ -102,6 +102,76 @@ func (kt *KeyTrie) Lookup(activeMode KeyScope, seq []string) (MatchKind, Binding
 	return kt.lookupScope(ScopeGlobal, seq)
 }
 
+// KeyHint describes one next-key candidate surfaced by a Which-Key / Hydra HUD
+// for an active chord prefix (e.g. "SPC", "SPC w", or "C-x").
+type KeyHint struct {
+	Key         string
+	IsPrefix    bool
+	ChildCount  int
+	ActionKind  string
+	CommandName string
+}
+
+// Hints returns the deterministic, sorted next-key candidates under prefix in
+// activeMode merged with ScopeGlobal (activeMode takes precedence on clashes).
+func (kt *KeyTrie) Hints(activeMode KeyScope, prefix []string) []KeyHint {
+	if kt == nil {
+		return nil
+	}
+	merged := make(map[string]KeyHint)
+	collect := func(scope KeyScope, overwrite bool) {
+		if int(scope) >= len(kt.roots) || kt.roots[scope] == nil {
+			return
+		}
+		cur := kt.roots[scope]
+		for _, tok := range prefix {
+			next, ok := cur.children[tok]
+			if !ok {
+				return
+			}
+			cur = next
+		}
+		for k, child := range cur.children {
+			if _, exists := merged[k]; exists && !overwrite {
+				continue
+			}
+			h := KeyHint{Key: k}
+			if child.terminal != nil {
+				h.ActionKind = child.terminal.ActionKind
+				h.CommandName = child.terminal.CommandName
+			} else if len(child.children) > 0 {
+				h.IsPrefix = true
+				h.ChildCount = len(child.children)
+			}
+			merged[k] = h
+		}
+	}
+	collect(ScopeGlobal, true)
+	if activeMode != ScopeGlobal && activeMode != 0 {
+		collect(activeMode, true)
+	}
+	out := make([]KeyHint, 0, len(merged))
+	for _, h := range merged {
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b KeyHint) int {
+		if a.IsPrefix != b.IsPrefix {
+			if a.IsPrefix {
+				return -1
+			}
+			return 1
+		}
+		if a.Key < b.Key {
+			return -1
+		}
+		if a.Key > b.Key {
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
 func (kt *KeyTrie) lookupScope(scope KeyScope, seq []string) (MatchKind, Binding) {
 	if int(scope) >= len(kt.roots) || kt.roots[scope] == nil || len(seq) == 0 {
 		return MatchNone, Binding{}

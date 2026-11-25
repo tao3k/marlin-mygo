@@ -106,6 +106,7 @@ type WorkbenchApp struct {
 	rankedBuf         []input.RankedCommand
 	activeChord       []string
 	activeKeyMode     input.KeyScope
+	whichKeyOpen      bool
 	gateOpen          bool
 	pendingGate       *PendingGateView
 	cachedThemeKey     schema.UITheme
@@ -278,6 +279,10 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		if a.OnCycleTheme != nil {
 			a.OnCycleTheme()
 		}
+	case shell.CmdStudioToggleWhichKey:
+		a.mu.Lock()
+		a.whichKeyOpen = !a.whichKeyOpen
+		a.mu.Unlock()
 	default:
 		if strings.HasPrefix(commandName, "edit.") && a.OnEditCommand != nil {
 			a.OnEditCommand(commandName)
@@ -527,11 +532,111 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 					}
 				}
 			})
+			a.renderWhichKeyHUD(c, t, dt)
 		})
 	})
 
 	// Overlays painted last so they float above any embedded ui.WebView plugin.
 	a.renderOverlays(c, t)
+}
+
+func (a *WorkbenchApp) renderWhichKeyHUD(c *ui.Context, t *ui.Theme, dt DerivedTheme) {
+	if a.KeyTrie == nil {
+		return
+	}
+	a.mu.Lock()
+	chord := append([]string(nil), a.activeChord...)
+	mode := a.activeKeyMode
+	if mode == 0 {
+		mode = input.ScopeNormal
+	}
+	openCheatsheet := a.whichKeyOpen
+	a.mu.Unlock()
+
+	if len(chord) == 0 && !openCheatsheet && mode != input.ScopeInsert {
+		return
+	}
+
+	var clickedToken string
+	var closeSheet bool
+
+	ui.Column(c).Padding(8, 12).Gap(6).
+		Background(toColor(dt.SurfaceElevated)).
+		BorderWidth(1, 0, 0, 0).BorderColor(toColor(dt.Border)).Children(func() {
+		if len(chord) > 0 {
+			hints := a.KeyTrie.Hints(mode, chord)
+			prefixLabel := strings.Join(chord, " ")
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				AppleBadgePill(c, "WHICH-KEY · "+prefixLabel+" …", dt.Warning, dt)
+				ui.Text(c, "Select next key or press ESC to cancel").FontSize(11).TextColor(toColor(dt.InkMuted))
+				ui.Spacer(c)
+				if ApplePillButton(c, "wk-cancel", "Cancel", BtnGlass, dt, nil, true).Clicked() {
+					closeSheet = true
+				}
+			})
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				limit := min(len(hints), 9)
+				for i := 0; i < limit; i++ {
+					h := hints[i]
+					desc := h.CommandName
+					if h.IsPrefix {
+						desc = fmt.Sprintf("+%s (%d)", whichKeyGroupName(h.Key), h.ChildCount)
+					}
+					label := fmt.Sprintf("[%s] %s", h.Key, desc)
+					if ApplePillButton(c, "wk-"+h.Key, label, BtnGlass, dt, nil, true).Clicked() {
+						clickedToken = h.Key
+					}
+				}
+			})
+			return
+		}
+
+		if mode == input.ScopeInsert && !openCheatsheet {
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				AppleBadgePill(c, "EMACS EDIT · INSERT", dt.Success, dt)
+				ui.Text(c, "C-n next  ·  C-p prev  ·  C-f/C-b char  ·  C-a/C-e line  ·  M-f/M-b word  ·  C-k kill  ·  C-y yank  ·  ESC/C-g Normal").
+					FontSize(11).TextColor(toColor(dt.InkSecondary))
+			})
+			return
+		}
+
+		// Full Dual-Layout Cheatsheet (toggled via SPC ?)
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			AppleBadgePill(c, "DUAL KEYMAP CHEATSHEET", dt.Accent, dt)
+			ui.Text(c, "Layout 1: SPC Normal Leader  |  Layout 2: Emacs Insert/Edit").
+				FontSize(11).TextColor(toColor(dt.InkMuted))
+			ui.Spacer(c)
+			if ApplePillButton(c, "wk-close-sheet", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
+				closeSheet = true
+			}
+		})
+		ui.Text(c, "NORMAL (SPC):  SPC w [v/s/d/z/o/=/b/x] windows  ·  SPC p [1-4] perspectives  ·  SPC m marketplace  ·  SPC i inspect  ·  SPC t t theme  ·  i/a -> Insert").
+			FontSize(11).TextColor(toColor(dt.Ink))
+		ui.Text(c, "INSERT (EMACS):  C-n/C-p line  ·  C-f/C-b char  ·  C-a/C-e bol/eol  ·  M-f/M-b word  ·  C-d/C-h del  ·  C-k kill  ·  C-y yank  ·  C-x [0/1/2/3/o]  ·  ESC/C-g -> Normal").
+			FontSize(11).TextColor(toColor(dt.InkSecondary))
+	})
+
+	if closeSheet {
+		a.mu.Lock()
+		a.activeChord = a.activeChord[:0]
+		a.whichKeyOpen = false
+		a.mu.Unlock()
+	} else if clickedToken != "" {
+		a.HandleActiveKeyToken(clickedToken)
+	}
+}
+
+func whichKeyGroupName(k string) string {
+	switch k {
+	case "w":
+		return "window"
+	case "p":
+		return "perspective"
+	case "t":
+		return "theme"
+	default:
+		return "group"
+	}
 }
 
 func (a *WorkbenchApp) renderTargetSidebar(c *ui.Context, t *ui.Theme) {

@@ -18,6 +18,7 @@ const (
 	CmdStudioOpenPalette     = "studio.open-palette"
 	CmdStudioOpenGate        = "studio.open-gate"
 	CmdStudioCycleTheme      = "studio.cycle-theme"
+	CmdStudioToggleWhichKey  = "studio.toggle-which-key"
 
 	// Classic Emacs editing & navigation commands active in Insert/Edit mode (ScopeInsert).
 	CmdEditNextLine           = "edit.next-line"
@@ -62,6 +63,7 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "g"}, ActionKind: "studio", CommandName: CmdStudioOpenGate},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "t", "t"}, ActionKind: "studio", CommandName: CmdStudioCycleTheme},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", ":"}, ActionKind: "studio", CommandName: CmdStudioOpenPalette},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "?"}, ActionKind: "studio", CommandName: CmdStudioToggleWhichKey},
 
 		// Transition from Normal/Leader mode into Emacs Insert/Edit mode
 		{Scope: input.ScopeNormal, Sequence: []string{"i"}, ActionKind: "mode", CommandName: CmdModeInsert},
@@ -135,6 +137,7 @@ func DualModalCommands() []input.CommandEntry {
 		{Name: CmdStudioOpenMarketplace, Description: "Open Official Marketplace drawer (SPC m)"},
 		{Name: CmdStudioOpenProjection, Description: "Open Projection Inspector (SPC i)"},
 		{Name: CmdStudioCycleTheme, Description: "Cycle active Studio theme preset (SPC t t)"},
+		{Name: CmdStudioToggleWhichKey, Description: "Toggle dual-modal SPC / Emacs Which-Key HUD (SPC ?)"},
 		{Name: CmdEditNextLine, Description: "Emacs Insert: move to next line (C-n)"},
 		{Name: CmdEditPrevLine, Description: "Emacs Insert: move to previous line (C-p)"},
 		{Name: CmdEditBeginningOfLine, Description: "Emacs Insert: beginning of line (C-a)"},

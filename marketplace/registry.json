@@ -109,6 +109,28 @@
       "publisher_id": "tao3k.official",
       "local_path": "examples/plugins/ios-personal-overlay",
       "summary": "Declarative mobile capture overlay pack synced over mTLS with Desktop Studio."
+    },
+    {
+      "id": "tao3k.git-workbench",
+      "name": "Git Workbench",
+      "category": "developer-tools",
+      "runtime": "webview-untrusted",
+      "slot_id": "workbench.main",
+      "trust_tier": "official",
+      "publisher_id": "tao3k.official",
+      "local_path": "examples/plugins/react-git-workbench",
+      "summary": "React 19 Git status, branch switching, hunk triage, and policy-gated commit workbench."
+    },
+    {
+      "id": "tao3k.github-workbench",
+      "name": "GitHub Workbench",
+      "category": "developer-tools",
+      "runtime": "webview-untrusted",
+      "slot_id": "workbench.main",
+      "trust_tier": "official",
+      "publisher_id": "tao3k.official",
+      "local_path": "examples/plugins/react-github-workbench",
+      "summary": "React 19 GitHub Pull Requests, Issues, and Actions CI status workbench with action-gated reviews."
     }
   ],
   "themes": [
