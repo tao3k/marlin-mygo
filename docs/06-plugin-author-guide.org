@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 06 — Marlin Plugin Author & LLM Quick-Reference Guide
+#+filetags: :tao3k:marlin:mygo:plugins:ecosystem:guide:
+
+This concise specification lets both human developers and coding LLMs author,
+verify, hot-reload, and publish secure, high-performance Marlin plugins in
+*Go (WASI Reactor)*, *TypeScript (Untrusted WebView)*, or *Declarative Packs*.
+
+* 1. Choose the Right Runtime
+
+| Runtime | Use Case | Security & Performance Profile |
+|-------------------------+------------------------------------------------+------------------------------------------------|
+| =wasm-ui-ir= (Go 1.27)  | High-frequency dashboards, graphs, diffs, logs | =22 µs= GPU =DrawList=, zero WebView RAM       |
+| =webview-untrusted= (TS)| Rich HTML/CSS layouts, boards, charts, editors | Strict CSP + =CallerPage= origin pinning       |
+| =declarative= (TOML)    | Themes, overlays, keymaps (Desktop + iOS/And.) | Zero executable code (App Store compliant)     |
+
+* 2. Minimal Go 1.27 WASI Reactor Plugin (Zero =unsafe= Boilerplate)
+
+#+begin_src go
+//go:build wasip1
+
+package main
+
+import (
+    "github.com/tao3k/marlin-mygo/pkg/schema"
+    uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
+)
+
+//go:wasmexport marlin_ui_render
+func marlinUIRender() uint64 {
+    return uiir.RenderResult(uiir.Panel("My Panel", schema.ToneAccent,
+        uiir.Text(uiir.Span("Live GPU metrics", schema.ToneSuccess)),
+    ))
+}
+
+func main() {}
+#+end_src
+
+* 3. Minimal TypeScript Untrusted WebView Plugin
+
+#+begin_src typescript
+import { defineMarlinPanel } from "@tao3k/marlin-panel-sdk";
+
+const panel = defineMarlinPanel({
+  pluginId: "acme.sprint-board",
+  events: {
+    "org.tasks": (ev) => {
+      document.getElementById("state")!.textContent = JSON.stringify(ev.payload);
+    },
+  },
+});
+
+document.getElementById("refresh")?.addEventListener("click", () => {
+  void panel.submit("sprint.refresh", { source: "click" });
+});
+#+end_src
+
+* 4. Emacs-Style Lazy Loading (=marlin-plugins.toml=)
+
+Install 100+ plugins with *0 MB startup RAM* and *O(1) zero-alloc* dispatch:
+
+#+begin_src toml
+schema_version = 1
+
+[plugins."acme.sprint-board"]
+version = "0.2.0"
+publisher = "acme.dev"
+pinned_sha256 = "<sha256-of-.marlinpkg>"
+enabled = true
+activation = "on-command"          # eager | on-command | on-slot | on-topic | manual
+slot_id = "workbench.main"
+triggers = ["sprint.open"]
+hooks = ["after-turn-complete"]    # Emacs-style lifecycle hook
+idle_unload_sec = 300              # auto-reclaim memory & restore host.* fallback
+#+end_src
+
+* 5. Hard Security Rules Enforced by =doctor= & =publish=
+
+1. Never target host-restricted slots (=approval.gate=, =host.auth=, =host.secrets=).
+2. WebView =index.html= MUST declare a =Content-Security-Policy= meta tag with zero remote =http(s)://= =<script src>= and zero =eval(= / =new Function(=.
+3. Declarative packs MUST contain zero executable or script files (=.wasm=, =.js=, =.ts=, =.sh=, =.so=, =.dylib=).
+4. Every published bundle is Ed25519-signed and SHA-256 pinned in =catalog.json=.
+
+* 6. End-to-End Author Workflow
+
+#+begin_src shell
+# 1. Scaffold a clean plugin + embedded AGENT.md contract
+just init-plugin acme.sprint-board go-wasm workbench.inspector ./sprint-board
+
+# 2. Live transactional hot-reload (auto-compiles, auto-rolls back broken saves)
+just dev-plugin ./sprint-board
+
+# 3. Run automated fail-closed security certification audit (add -json for LLMs/CI)
+just doctor ./sprint-board
+
+# 4. Certify, sign, verify, and atomically merge into catalog.json in one command
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool keygen -out ./keys/acme
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish \
+  -dir ./sprint-board -publisher acme.dev \
+  -key ./keys/acme.key -pub ./keys/acme.pub -out ./dist/marketplace
+#+end_src

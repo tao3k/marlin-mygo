@@ -6,12 +6,16 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -133,4 +137,78 @@ func runDevPlugin(args []string) error {
 		return nil
 	}
 	return err
+}
+
+func runDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "plugin directory containing marlin-plugin.toml")
+	asJSON := fs.Bool("json", false, "emit machine-readable JSON audit report (ideal for CI and coding agents)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rep, err := marketplace.AuditPluginDir(context.Background(), *dir)
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(rep)
+		return err
+	}
+	fmt.Printf("Marlin Plugin Doctor (%s v%s, runtime=%s, slot=%s)\n", rep.PluginID, rep.Version, rep.Runtime, rep.SlotID)
+	for _, chk := range rep.Checks {
+		mark := "PASS"
+		if !chk.Passed {
+			mark = "FAIL"
+		}
+		fmt.Printf("  [%s] %-24s %s\n", mark, chk.Name, chk.Details)
+	}
+	return err
+}
+
+func runPublish(args []string) error {
+	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "plugin source directory containing marlin-plugin.toml")
+	publisher := fs.String("publisher", "", "publisher identifier (e.g. acme.dev)")
+	keyPath := fs.String("key", "", "path to hex-encoded Ed25519 private key file")
+	pubPath := fs.String("pub", "", "path to hex-encoded Ed25519 public key file")
+	outDir := fs.String("out", "./dist/marketplace", "output Marketplace catalog directory")
+	revHex := fs.String("rev", strings.Repeat("0", 40), "40-char hex Git source revision")
+	replaceOld := fs.Bool("replace", true, "remove older .marlinpkg versions of the same plugin in -out")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *publisher == "" || *keyPath == "" || *pubPath == "" {
+		return errors.New("flags -publisher, -key, and -pub are required")
+	}
+	privBytes, err := readHexKey(*keyPath, ed25519.PrivateKeySize)
+	if err != nil {
+		return err
+	}
+	pubBytes, err := readHexKey(*pubPath, ed25519.PublicKeySize)
+	if err != nil {
+		return err
+	}
+	revBytes, err := hex.DecodeString(strings.TrimSpace(*revHex))
+	if err != nil || len(revBytes) != 20 {
+		return fmt.Errorf("invalid 40-char hex -rev %q", *revHex)
+	}
+	var rev [20]byte
+	copy(rev[:], revBytes)
+
+	rcpt, err := marketplace.PublishPlugin(context.Background(), marketplace.PublishConfig{
+		PluginDir:       *dir,
+		PublisherID:     schema.PublisherID(*publisher),
+		PrivateKey:      ed25519.PrivateKey(privBytes),
+		PublicKey:       ed25519.PublicKey(pubBytes),
+		SourceRev:       rev,
+		OutCatalogDir:   *outDir,
+		ReplaceExisting: *replaceOld,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Published %s v%s (%s -> %s)\n  package : %s (%d bytes, sha256=%s)\n  audit   : %d/%d checks PASSED\n  catalog : %s/catalog.json (%d entries, Ed25519 signed)\n",
+		rcpt.PluginID, rcpt.Version, rcpt.Runtime, rcpt.SlotID,
+		rcpt.PackageFile, rcpt.PackageBytes, rcpt.PackageSHA256,
+		rcpt.AuditChecks, rcpt.AuditChecks, *outDir, rcpt.CatalogEntries)
+	return nil
 }

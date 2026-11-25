@@ -39,13 +39,49 @@ func TestInitPluginKeygenPackAndVerifyEndToEnd(t *testing.T) {
 		if !strings.Contains(string(raw), `id = "acme.demo-`+rt+`"`) {
 			t.Fatalf("manifest missing plugin id: %s", string(raw))
 		}
+		if !strings.Contains(string(raw), `activation = "on-slot"`) || !strings.Contains(string(raw), `idle_unload_sec = 300`) {
+			t.Fatalf("manifest missing Emacs lazy activation defaults for %s: %s", rt, string(raw))
+		}
+		if _, err := os.Stat(filepath.Join(dir, "AGENT.md")); err != nil {
+			t.Fatalf("missing embedded AGENT.md contract card for %s: %v", rt, err)
+		}
 	}
 
-	// End-to-end keygen -> pack -> verify on scaffolded TS plugin.
+	// End-to-end doctor + keygen -> publish -> verify on scaffolded TS and Declarative plugins.
+	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "ts"), "-json"}); err != nil {
+		t.Fatalf("doctor failed on scaffolded ts plugin: %v", err)
+	}
+	if err := runDoctor([]string{"-dir", filepath.Join(tmp, "declarative")}); err != nil {
+		t.Fatalf("doctor failed on scaffolded declarative plugin: %v", err)
+	}
+
 	keyPrefix := filepath.Join(tmp, "keys", "acme")
 	if err := runKeygen([]string{"-out", keyPrefix}); err != nil {
 		t.Fatalf("keygen failed: %v", err)
 	}
+	catOut := filepath.Join(tmp, "dist-catalog")
+	if err := runPublish([]string{
+		"-dir", filepath.Join(tmp, "ts"),
+		"-publisher", "acme.dev",
+		"-key", keyPrefix + ".key",
+		"-pub", keyPrefix + ".pub",
+		"-out", catOut,
+	}); err != nil {
+		t.Fatalf("publish ts failed: %v", err)
+	}
+	if err := runPublish([]string{
+		"-dir", filepath.Join(tmp, "declarative"),
+		"-publisher", "acme.dev",
+		"-key", keyPrefix + ".key",
+		"-pub", keyPrefix + ".pub",
+		"-out", catOut,
+	}); err != nil {
+		t.Fatalf("publish declarative failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(catOut, "catalog.json.sig")); err != nil {
+		t.Fatalf("expected signed catalog.json.sig after publish: %v", err)
+	}
+
 	pkgPath := filepath.Join(tmp, "acme-demo-ts.marlinpkg")
 	if err := runPack([]string{
 		"-dir", filepath.Join(tmp, "ts"),

@@ -266,6 +266,28 @@ func assignManifestField(m *PluginManifest, section, key, valRaw string) error {
 				return err
 			}
 			decl.Panel.DeclaredActions = arr
+		case "activation":
+			s, err := parseTOMLString(valRaw)
+			if err != nil {
+				return err
+			}
+			pol := ActivationPolicy(s)
+			if !ValidActivationPolicy(pol) {
+				return fmt.Errorf("invalid activation policy %q", s)
+			}
+			decl.Panel.Activation = pol
+		case "triggers":
+			arr, err := parseTOMLStringArray(valRaw)
+			if err != nil {
+				return err
+			}
+			decl.Panel.Triggers = arr
+		case "idle_unload_sec":
+			n, err := strconv.ParseUint(valRaw, 10, 32)
+			if err != nil {
+				return err
+			}
+			decl.Panel.IdleUnloadSec = uint32(n)
 		default:
 			return fmt.Errorf("unknown panel field %q", key)
 		}

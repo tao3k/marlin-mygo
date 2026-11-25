@@ -78,6 +78,8 @@ func activePerfBudgets() []PerfBudget {
 		{Name: "BenchmarkGRPC_LoopbackScopedPanelAction", MaxNs: 250_000, MaxBytes: 20_480, MaxAllocs: 220},
 		{Name: "BenchmarkMyGoShell_HeadlessFrame", MaxNs: 90_000, MaxBytes: 2_560, MaxAllocs: 24},
 		{Name: "BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame", MaxNs: 250_000, MaxBytes: transcriptMaxBytes, MaxAllocs: transcriptMaxAllocs},
+		{Name: "BenchmarkLazyLoader_100Plugins_HookDispatch_ZeroAlloc", MaxNs: 60, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkLazyLoader_100Plugins_IdleReapCheck_O1", MaxNs: 60, MaxBytes: 0, MaxAllocs: 0},
 	}
 }
 

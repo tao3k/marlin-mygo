@@ -99,6 +99,10 @@ func main() {
 		err = runServeCatalog(os.Args[2:])
 	case "dev-plugin":
 		err = runDevPlugin(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
+	case "publish":
+		err = runPublish(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -110,7 +114,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin|doctor|publish> [flags]")
 }
 
 func runDescriptor(args []string) error {
@@ -319,6 +323,22 @@ func runInitPlugin(args []string) error {
 func renderPluginScaffold(pluginID schema.PluginID, runtimeFlag string, slotID schema.SlotID, shortName string) (map[string]string, error) {
 	actionName := shortName + ".refresh"
 	topicName := shortName + ".state"
+	agentCard := fmt.Sprintf(`# Marlin Plugin Agent Contract (%s)
+
+Runtime: %s | Slot: %s
+
+## Hard Rules (Enforced by doctor & publish)
+- Never target host-restricted slots (approval.gate, host.auth, host.secrets).
+- Only read declared read_scopes and invoke declared_actions.
+- WebView index.html MUST include Content-Security-Policy with zero remote http(s) script src and zero eval()/new Function().
+- Go WASI plugins use uiir.RenderResult(tree) or uiir.DrawListResult(cmds) (zero unsafe boilerplate).
+- Declarative packs MUST contain zero executable/script files (.wasm, .js, .ts, .sh).
+
+## Commands
+- Audit   : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir . -json
+- Hot-Dev : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir .
+- Publish : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir . -publisher <pub-id> -key <priv.key> -pub <pub.key> -out ./dist/marketplace
+`, pluginID, runtimeFlag, slotID)
 
 	switch runtimeFlag {
 	case "ts":
@@ -346,6 +366,8 @@ cardinality = "single"
 entry_path = "index.html"
 read_scopes = [%q]
 declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
 `, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
 
 		pkgJSON := fmt.Sprintf(`{
@@ -385,20 +407,20 @@ declared_actions = [%q]
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-import { createMarlinPanel } from "@tao3k/marlin-panel-sdk";
-
-const panel = createMarlinPanel({
-  pluginId: %q,
-  activationGeneration: "1",
-});
+import { defineMarlinPanel } from "@tao3k/marlin-panel-sdk";
 
 const stateEl = document.getElementById("state");
-panel.onEvent(%q, (ev) => {
-  if (stateEl) stateEl.textContent = JSON.stringify(ev.payload, null, 2);
+const panel = defineMarlinPanel({
+  pluginId: %q,
+  events: {
+    %q: (ev) => {
+      if (stateEl) stateEl.textContent = JSON.stringify(ev.payload, null, 2);
+    },
+  },
 });
 
-document.getElementById("refresh")?.addEventListener("click", async () => {
-  await panel.submitAction(%q, { source: "ui-click" }, crypto.randomUUID());
+document.getElementById("refresh")?.addEventListener("click", () => {
+  void panel.submit(%q, { source: "ui-click" });
 });
 `, pluginID, topicName, actionName)
 
@@ -409,6 +431,7 @@ document.getElementById("refresh")?.addEventListener("click", async () => {
 			"index.html":         indexHTML,
 			"src/main.ts":        mainTS,
 			"README.md":          readme,
+			"AGENT.md":           agentCard,
 		}, nil
 
 	case "go-wasm":
@@ -436,6 +459,8 @@ cardinality = "single"
 entry_path = "plugin.wasm"
 read_scopes = [%q]
 declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
 `, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
 
 		mainGo := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
@@ -450,32 +475,21 @@ package main
 
 import (
 	"fmt"
-	"unsafe"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
 )
 
-var (
-	frameCount uint64
-	lastBytes  []byte
-)
+var frameCount uint64
 
 //go:wasmexport marlin_ui_render
 func marlinUIRender() uint64 {
 	frameCount++
-	tree := uiir.Panel(%q, schema.ToneAccent,
+	return uiir.RenderResult(uiir.Panel(%q, schema.ToneAccent,
 		uiir.Rows(
 			uiir.Text(uiir.Span(fmt.Sprintf("Resident WASM-IR frame %%d", frameCount), schema.ToneInfo)),
 		),
-	)
-	raw, err := uiir.Encode(tree)
-	if err != nil || len(raw) == 0 {
-		return 0
-	}
-	lastBytes = raw
-	ptr := uint32(uintptr(unsafe.Pointer(&lastBytes[0])))
-	return (uint64(ptr) << 32) | uint64(len(lastBytes))
+	))
 }
 
 func main() {}
@@ -486,6 +500,7 @@ func main() {}
 			"marlin-plugin.toml": manifest,
 			"main.go":            mainGo,
 			"README.md":          readme,
+			"AGENT.md":           agentCard,
 		}, nil
 
 	case "declarative":
@@ -506,6 +521,8 @@ runtime = "declarative"
 slot_id = %q
 cardinality = "single"
 entry_path = "theme.toml"
+activation = "on-slot"
+idle_unload_sec = 300
 `, pluginID, shortName, shortName, slotID)
 
 		themeTOML := `# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
@@ -527,6 +544,7 @@ muted = "#73797e"
 			"marlin-plugin.toml": manifest,
 			"theme.toml":         themeTOML,
 			"README.md":          readme,
+			"AGENT.md":           agentCard,
 		}, nil
 
 	default:

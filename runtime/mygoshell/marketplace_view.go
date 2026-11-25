@@ -30,10 +30,13 @@ type MarketplaceItem struct {
 	PackageBytes      int64
 
 	Installed        bool
+	Dormant          bool // Emacs-style lazy-loaded: registered in profile with 0 runtime RAM until triggered
+	ActivationPolicy string
+	Triggers         []string
 	InstalledVersion string
 	PreviousVersion  string
 	ActiveGeneration uint64
-	HealthState      string // "HEALTHY", "BREAKER_OPEN", "HOT_RELOADING", "IDLE"
+	HealthState      string // "HEALTHY", "BREAKER_OPEN", "HOT_RELOADING", "DORMANT", "IDLE"
 	LastMessage      string
 
 	// Precomputed display labels to minimize per-frame allocations.
@@ -45,6 +48,8 @@ type MarketplaceItem struct {
 	upgradeLabel  string
 	rollbackLabel string
 	disableLabel  string
+	wakeLabel     string
+	sleepLabel    string
 }
 
 func (it *MarketplaceItem) refreshLabels() {
@@ -63,7 +68,13 @@ func (it *MarketplaceItem) refreshLabels() {
 		actions = strings.Join(it.DeclaredActions, ", ")
 	}
 	it.permLine = fmt.Sprintf("scopes:[%s]  actions:[%s]", scopes, actions)
-	if it.Installed {
+	if it.Installed && it.Dormant {
+		pol := it.ActivationPolicy
+		if pol == "" {
+			pol = "on-slot"
+		}
+		it.healthBadge = fmt.Sprintf("DORMANT v%s · lazy(%s) · 0MB RAM", it.InstalledVersion, pol)
+	} else if it.Installed {
 		health := it.HealthState
 		if health == "" {
 			health = "HEALTHY"
@@ -76,6 +87,8 @@ func (it *MarketplaceItem) refreshLabels() {
 	it.upgradeLabel = "Upgrade " + it.PluginID
 	it.rollbackLabel = "Rollback " + it.PluginID
 	it.disableLabel = "Disable " + it.PluginID
+	it.wakeLabel = "Wake " + it.PluginID
+	it.sleepLabel = "Sleep " + it.PluginID
 }
 
 // MarketplaceController owns the built-in Tier-0 Host GPU Marketplace drawer
@@ -86,6 +99,8 @@ type MarketplaceController struct {
 	OnUpgrade  func(pluginID string) error
 	OnRollback func(pluginID string) error
 	OnDisable  func(pluginID string) error
+	OnWake     func(pluginID string) error
+	OnSleep    func(pluginID string) error
 	OnRefresh  func() error
 
 	mu            sync.RWMutex
@@ -143,6 +158,7 @@ func (m *MarketplaceController) MarkInstalled(pluginID, version string, gen uint
 				m.items[i].PreviousVersion = m.items[i].InstalledVersion
 			}
 			m.items[i].Installed = true
+			m.items[i].Dormant = false
 			m.items[i].InstalledVersion = version
 			m.items[i].ActiveGeneration = gen
 			if health != "" {
@@ -150,6 +166,28 @@ func (m *MarketplaceController) MarkInstalled(pluginID, version string, gen uint
 			} else {
 				m.items[i].HealthState = "HEALTHY"
 			}
+			m.items[i].refreshLabels()
+			return
+		}
+	}
+}
+
+// MarkDormant transitions an installed plugin to lazy dormant state (0MB runtime RAM).
+func (m *MarketplaceController) MarkDormant(pluginID, version, policy string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.items {
+		if m.items[i].PluginID == pluginID {
+			m.items[i].Installed = true
+			m.items[i].Dormant = true
+			if version != "" {
+				m.items[i].InstalledVersion = version
+			}
+			if policy != "" {
+				m.items[i].ActivationPolicy = policy
+			}
+			m.items[i].ActiveGeneration = 0
+			m.items[i].HealthState = "DORMANT"
 			m.items[i].refreshLabels()
 			return
 		}
@@ -245,6 +283,8 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 		doUpgradeID   string
 		doRollbackID  string
 		doDisableID   string
+		doWakeID      string
+		doSleepID     string
 	)
 
 	ui.Column(c).MinWidth(0).Gap(10).Children(func() {
@@ -331,6 +371,17 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 								if ui.PrimaryButton(c.Key("mkt-inst-"+it.PluginID), it.installLabel).Clicked() {
 									doInstallID = it.PluginID
 								}
+							} else if it.Dormant {
+								if m.OnWake != nil {
+									if ui.PrimaryButton(c.Key("mkt-wake-"+it.PluginID), it.wakeLabel).Clicked() {
+										doWakeID = it.PluginID
+									}
+								}
+								if m.OnDisable != nil {
+									if ui.Button(c.Key("mkt-dis-"+it.PluginID), it.disableLabel).Clicked() {
+										doDisableID = it.PluginID
+									}
+								}
 							} else {
 								if it.Version != "" && it.InstalledVersion != "" && it.Version != it.InstalledVersion && m.OnUpgrade != nil {
 									if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
@@ -340,6 +391,11 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 								if it.PreviousVersion != "" && m.OnRollback != nil {
 									if ui.Button(c.Key("mkt-rb-"+it.PluginID), it.rollbackLabel).Clicked() {
 										doRollbackID = it.PluginID
+									}
+								}
+								if m.OnSleep != nil {
+									if ui.Button(c.Key("mkt-sleep-"+it.PluginID), it.sleepLabel).Clicked() {
+										doSleepID = it.PluginID
 									}
 								}
 								if m.OnDisable != nil {
@@ -386,6 +442,12 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 	}
 	if doDisableID != "" {
 		runAction("Disable "+doDisableID, func() error { return m.OnDisable(doDisableID) })
+	}
+	if doWakeID != "" {
+		runAction("Wake "+doWakeID, func() error { return m.OnWake(doWakeID) })
+	}
+	if doSleepID != "" {
+		runAction("Sleep "+doSleepID, func() error { return m.OnSleep(doSleepID) })
 	}
 	if doClose && onClose != nil {
 		onClose()

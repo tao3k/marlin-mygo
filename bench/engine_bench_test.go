@@ -13,6 +13,8 @@ package bench
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -26,6 +28,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
+	"github.com/tao3k/marlin-mygo/control/marketplace"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/arena"
 	"github.com/tao3k/marlin-mygo/engine/bus"
@@ -449,5 +452,118 @@ func BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tt.Frame()
+	}
+}
+
+type benchLazyDispatcher struct{}
+
+func (benchLazyDispatcher) SubmitScopedPanelAction(context.Context, pluginhost.ScopedActionRequest) (pluginhost.ScopedActionReceipt, error) {
+	return pluginhost.ScopedActionReceipt{Admitted: true}, nil
+}
+
+func setup100PluginLazyLoader(b *testing.B) (*marketplace.LazyLoader, time.Time) {
+	b.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{"tao3k.official": pub})
+	mgr := marketplace.NewManager(trust)
+
+	slots := shell.NewSlotRegistry()
+	_ = slots.Declare(schema.SlotDeclaration{
+		SlotID: "workbench.inspector", Cardinality: schema.SlotSingle,
+		FallbackRenderer: "host.inspector", AllowUntrustedPlugin: true,
+	}, mygoshell.NewUIElementRenderer("host.inspector", true, slots, func() schema.UIElement {
+		return schema.UIElement{Kind: schema.ElemText}
+	}))
+	host := pluginhost.NewHost(slots, benchLazyDispatcher{})
+	host.RegisterRuntime(&pluginhost.DeclarativeRuntimeFactory{})
+
+	dir := b.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "marlin-plugin.toml"), []byte(`
+id = "tao3k.warm-hook"
+version = "0.1.0"
+contract_major = 1
+[contributions.p]
+kind = "theme-pack"
+[contributions.p.panel]
+runtime = "declarative"
+slot_id = "workbench.inspector"
+entry_path = "theme.toml"
+`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "theme.toml"), []byte("[theme]\naccent = \"#c678dd\"\n"), 0o644)
+	var rev [20]byte
+	pkg, _, err := marketplace.PackBundle(dir, "tao3k.official", rev, priv)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	now := time.Date(2026, 11, 25, 11, 0, 0, 0, time.UTC)
+	loader, err := marketplace.NewLazyLoader(marketplace.LazyLoaderConfig{
+		Manager:       mgr,
+		Host:          host,
+		Target:        schema.TargetDesktopMacOS,
+		MaxActiveLazy: 8,
+		Now:           func() time.Time { return now },
+		Fetch:         func(context.Context, marketplace.PluginSpec) ([]byte, error) { return pkg, nil },
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	specs := make([]marketplace.PluginSpec, 0, 100)
+	specs = append(specs, marketplace.PluginSpec{
+		PluginID:      "tao3k.warm-hook",
+		Version:       "0.1.0",
+		Enabled:       true,
+		Activation:    schema.ActivationOnCommand,
+		SlotID:        "workbench.inspector",
+		Triggers:      []string{"warm.cmd"},
+		Hooks:         []string{"after-turn-complete"},
+		IdleUnloadSec: 300,
+	})
+	for i := 1; i < 100; i++ {
+		specs = append(specs, marketplace.PluginSpec{
+			PluginID:      schema.PluginID(fmt.Sprintf("ecosystem.lazy-%03d", i)),
+			Version:       "0.1.0",
+			Enabled:       true,
+			Activation:    schema.ActivationOnCommand,
+			Triggers:      []string{fmt.Sprintf("cmd.%03d", i)},
+			Hooks:         []string{fmt.Sprintf("hook.%03d", i)},
+			IdleUnloadSec: 300,
+		})
+	}
+	ctx := context.Background()
+	if err := loader.Reconcile(ctx, marketplace.PluginProfile{SchemaVersion: 1, Plugins: specs}); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := loader.Wake(ctx, "tao3k.warm-hook"); err != nil {
+		b.Fatal(err)
+	}
+	return loader, now
+}
+
+func BenchmarkLazyLoader_100Plugins_HookDispatch_ZeroAlloc(b *testing.B) {
+	loader, _ := setup100PluginLazyLoader(b)
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := loader.EnsureForHook(ctx, "after-turn-complete"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkLazyLoader_100Plugins_IdleReapCheck_O1(b *testing.B) {
+	loader, now := setup100PluginLazyLoader(b)
+	checkAt := now.Add(30 * time.Second) // below 300s threshold -> O(1) tail fast path
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if reaped := loader.ReapIdle(checkAt); len(reaped) != 0 {
+			b.Fatalf("unexpected reap: %v", reaped)
+		}
 	}
 }

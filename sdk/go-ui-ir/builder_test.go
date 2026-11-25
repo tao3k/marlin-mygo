@@ -32,3 +32,20 @@ func TestGoUIIRBuilderRoundTripAdmission(t *testing.T) {
 		t.Fatalf("unexpected decoded tree: %+v", admitted)
 	}
 }
+
+func TestRenderResultAndDrawListResultHostHelpers(t *testing.T) {
+	tree := Panel("Lazy Demo", schema.ToneInfo, Text(Span("ok", schema.ToneSuccess)))
+	if n := RenderResult(tree); n == 0 {
+		t.Fatalf("expected non-zero RenderResult for valid UIElement tree")
+	}
+	if n := RenderResult(schema.UIElement{}); n != 0 {
+		t.Fatalf("expected 0 RenderResult for invalid empty UIElement, got %d", n)
+	}
+	cmds := []schema.DrawCmd{
+		{Op: schema.DrawOpFillRect, X: 0, Y: 0, W: 100, H: 40, RGBA: 0x282c34ff},
+		{Op: schema.DrawOpBadge, X: 8, Y: 12, W: 64, H: 18, RGBA: 0x98c379ff},
+	}
+	if n := DrawListResult(cmds); n == 0 {
+		t.Fatalf("expected non-zero DrawListResult for valid DrawCmd slice")
+	}
+}

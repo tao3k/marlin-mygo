@@ -71,6 +71,14 @@ serve-catalog dir="./dist/marketplace" addr="127.0.0.1:8787":
 dev-plugin dir="./examples/plugins/go-graph-inspector-reactor":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir "{{dir}}"
 
+# Run fail-closed security certification audit on a plugin directory.
+doctor dir="./examples/plugins/ts-org-kanban":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir "{{dir}}"
+
+# Certify, sign, verify, and merge a plugin into a Marketplace catalog in one step.
+publish dir publisher key pub out="./dist/marketplace":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir "{{dir}}" -publisher "{{publisher}}" -key "{{key}}" -pub "{{pub}}" -out "{{out}}"
+
 # Run full repository validation gate.
 check: proto-descriptor model-gate test-ts test-go
     CGO_ENABLED=0 go vet ./...

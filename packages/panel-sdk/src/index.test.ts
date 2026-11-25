@@ -7,6 +7,7 @@ import {
   ACTION_ENDPOINT,
   PANEL_EVENT_CHANNEL,
   createPanelClient,
+  defineMarlinPanel,
   parseThemeTokens,
   type MyGoEventBridge,
   type PluginV1PanelRuntimeKind,
@@ -105,5 +106,37 @@ describe("@tao3k/marlin-panel-sdk", () => {
     };
     expect(runtime).toBe("PANEL_RUNTIME_KIND_WEBVIEW_UNTRUSTED");
     expect(slot.slotId).toBe("workbench.main");
+  });
+
+  test("defineMarlinPanel binds scoped events and cleans up on dispose", async () => {
+    let listener: ((ev: unknown) => void) | undefined;
+    const bridge: MyGoEventBridge = {
+      on(event, fn) {
+        if (event === PANEL_EVENT_CHANNEL) listener = fn as (ev: unknown) => void;
+        return () => {
+          listener = undefined;
+        };
+      },
+    };
+    let count = 0;
+    const panel = defineMarlinPanel({
+      pluginId: "acme.demo-board",
+      bridge,
+      events: {
+        "board.state": () => {
+          count++;
+        },
+      },
+    });
+    listener?.({
+      eventId: "e-1",
+      pluginId: "acme.demo-board",
+      activationGeneration: "1",
+      topic: "board.state",
+      payload: {},
+    });
+    expect(count).toBe(1);
+    panel.dispose();
+    expect(listener).toBeUndefined();
   });
 });

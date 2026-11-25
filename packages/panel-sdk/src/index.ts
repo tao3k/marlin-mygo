@@ -144,3 +144,45 @@ export function parseThemeTokens(cssVars: Record<string, string>): MarlinThemeTo
     muted: cssVars["--marlin-muted"] ?? "#73797e",
   };
 }
+
+export interface DefineMarlinPanelSpec {
+  pluginId: string;
+  fetchImpl?: typeof fetch;
+  bridge?: MyGoEventBridge;
+  events?: Record<string, (ev: ScopedPanelEvent<any>) => void>;
+}
+
+export interface MountedMarlinPanel {
+  readonly client: PanelClient;
+  submit<TArgs = unknown, TResult = unknown>(
+    action: string,
+    args: TArgs,
+    idempotencyKey?: string,
+  ): Promise<ScopedActionReceipt<TResult>>;
+  dispose(): void;
+}
+
+/**
+ * Ergonomic, zero-boilerplate entrypoint designed for human & LLM authors
+ * building clean TypeScript Untrusted WebView panels.
+ */
+export function defineMarlinPanel(spec: DefineMarlinPanelSpec): MountedMarlinPanel {
+  const client = createPanelClient({
+    pluginId: spec.pluginId,
+    fetchImpl: spec.fetchImpl,
+    bridge: spec.bridge,
+  });
+  const unsubs: Array<() => void> = [];
+  if (spec.events) {
+    for (const [topic, handler] of Object.entries(spec.events)) {
+      unsubs.push(client.onEvent(topic, handler));
+    }
+  }
+  return {
+    client,
+    submit: (action, args, idempotencyKey) => client.submitAction(action, args, idempotencyKey),
+    dispose() {
+      for (const off of unsubs.splice(0)) off();
+    },
+  };
+}

@@ -41,6 +41,26 @@ type CapabilityDecl struct {
 	Optional bool       `json:"optional,omitempty"`
 }
 
+// ActivationPolicy controls Emacs-style lazy loading of client UI plugins.
+type ActivationPolicy string
+
+const (
+	ActivationEager     ActivationPolicy = "eager"
+	ActivationOnCommand ActivationPolicy = "on-command"
+	ActivationOnSlot    ActivationPolicy = "on-slot"
+	ActivationOnTopic   ActivationPolicy = "on-topic"
+	ActivationManual    ActivationPolicy = "manual"
+)
+
+func ValidActivationPolicy(p ActivationPolicy) bool {
+	switch p {
+	case "", ActivationEager, ActivationOnCommand, ActivationOnSlot, ActivationOnTopic, ActivationManual:
+		return true
+	default:
+		return false
+	}
+}
+
 // PanelContribution describes a client-side hot-pluggable UI slot asset.
 type PanelContribution struct {
 	Runtime         PanelRuntimeKind `json:"runtime"`
@@ -52,6 +72,9 @@ type PanelContribution struct {
 	ByteSize        uint64           `json:"byteSize,string"`
 	ReadScopes      []string         `json:"readScopes,omitempty"`
 	DeclaredActions []string         `json:"declaredActions,omitempty"`
+	Activation      ActivationPolicy `json:"activation,omitempty"`
+	Triggers        []string         `json:"triggers,omitempty"`
+	IdleUnloadSec   uint32           `json:"idleUnloadSec,omitempty"`
 }
 
 // ContributionDecl represents either a host workflow preset or a client UI panel.

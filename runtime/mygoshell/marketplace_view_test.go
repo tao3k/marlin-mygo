@@ -308,3 +308,130 @@ func TestBuiltInMyGoGPUMarketplaceInstallUpgradeRollbackDisableEndToEnd(t *testi
 		t.Fatalf("expected host.inspector fallback restored after Disable, got %+v", resolved)
 	}
 }
+
+func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{"tao3k.official": pub})
+	pkg := buildSignedDeclarativePkg(t, priv, "tao3k.lazy-theme", "0.1.0", "#98c379")
+
+	mgr := marketplace.NewManager(trust)
+	slots := shell.NewSlotRegistry()
+	fb := mygoshell.NewUIElementRenderer("host.inspector", true, slots, func() schema.UIElement {
+		return schema.UIElement{Kind: schema.ElemPanel, Title: "Host Inspector Fallback", Tone: schema.ToneInfo}
+	})
+	_ = slots.Declare(schema.SlotDeclaration{
+		SlotID: "workbench.inspector", Cardinality: schema.SlotSingle,
+		FallbackRenderer: "host.inspector", AllowUntrustedPlugin: true,
+	}, fb)
+
+	pHost := pluginhost.NewHost(slots, mktTestDispatcher{})
+	pHost.RegisterRuntime(&pluginhost.DeclarativeRuntimeFactory{})
+
+	ctx := context.Background()
+	loader, err := marketplace.NewLazyLoader(marketplace.LazyLoaderConfig{
+		Manager:       mgr,
+		Host:          pHost,
+		Target:        schema.TargetDesktopMacOS,
+		MaxActiveLazy: 4,
+		Fetch:         func(context.Context, marketplace.PluginSpec) ([]byte, error) { return pkg, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loader.Reconcile(ctx, marketplace.PluginProfile{
+		SchemaVersion: 1,
+		Plugins: []marketplace.PluginSpec{{
+			PluginID:      "tao3k.lazy-theme",
+			Version:       "0.1.0",
+			Enabled:       true,
+			Activation:    schema.ActivationOnSlot,
+			SlotID:        "workbench.inspector",
+			IdleUnloadSec: 300,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wb := shell.NewWorkbenchController(slots)
+	_ = wb.AdmitSnapshot(schema.UIWorkbenchSnapshot{
+		Generation: 1, ProfileName: "desktop-dev", Theme: schema.DefaultUITheme(),
+		FrameTree: schema.UIElement{
+			Kind:     schema.ElemRows,
+			Children: []schema.UIElement{{Kind: schema.ElemSlot, SlotID: "workbench.inspector"}},
+		},
+	})
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(mktTestTarget{meta: transport.TargetMeta{
+		ID: "local-mac", DisplayName: "Local Mac", Mode: transport.ModeLocalSidecar,
+		TargetKind: schema.TargetDesktopMacOS, Phase: transport.PhaseReady,
+	}})
+
+	mktUI := mygoshell.NewMarketplaceController()
+	mktUI.SetItems([]mygoshell.MarketplaceItem{{
+		PluginID:          "tao3k.lazy-theme",
+		Version:           "0.1.0",
+		PublisherID:       "tao3k.official",
+		Summary:           "Lazy Emacs-style theme pack",
+		SlotID:            "workbench.inspector",
+		Runtime:           schema.RuntimeDeclarative,
+		SignatureVerified: true,
+		Installed:         true,
+		Dormant:           true,
+		ActivationPolicy:  string(schema.ActivationOnSlot),
+		InstalledVersion:  "0.1.0",
+	}})
+	mktUI.OnWake = func(pluginID string) error {
+		panel, err := loader.Wake(ctx, schema.PluginID(pluginID))
+		if err != nil {
+			return err
+		}
+		mktUI.MarkInstalled(pluginID, panel.Manifest.Version, panel.Instance.Scope().ActivationGeneration, "HEALTHY")
+		return nil
+	}
+	mktUI.OnSleep = func(pluginID string) error {
+		if err := loader.Sleep(schema.PluginID(pluginID)); err != nil {
+			return err
+		}
+		mktUI.MarkDormant(pluginID, "0.1.0", string(schema.ActivationOnSlot))
+		return nil
+	}
+
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Marketplace = mktUI
+	tt := ui.NewTester(app.View, 1200, 800)
+
+	if err := tt.Click("Marketplace"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") || !tt.HasText("Wake tao3k.lazy-theme") {
+		t.Fatalf("expected dormant lazy badge and Wake button, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click Wake -> mounts on-demand at gen:1 and exposes Sleep button.
+	if err := tt.Click("Wake tao3k.lazy-theme"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("ACTIVE v0.1.0 · gen:1 · HEALTHY") || !tt.HasText("Sleep tao3k.lazy-theme") {
+		t.Fatalf("expected ACTIVE gen:1 and Sleep button after Wake, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click Sleep -> unloads plugin back to 0MB RAM dormant state and restores host.inspector fallback.
+	if err := tt.Click("Sleep tao3k.lazy-theme"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("DORMANT v0.1.0 · lazy(on-slot) · 0MB RAM") {
+		t.Fatalf("expected DORMANT badge after Sleep, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if _, active := pHost.ActiveScope("tao3k.lazy-theme"); active {
+		t.Fatal("expected lazy plugin unloaded from host after Sleep")
+	}
+	if resolved := slots.Resolve("workbench.inspector"); len(resolved) != 1 || resolved[0].ID() != "host.inspector" {
+		t.Fatalf("expected host.inspector fallback restored after Sleep, got %+v", resolved)
+	}
+}
