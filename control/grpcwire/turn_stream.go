@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 )
@@ -28,26 +29,55 @@ type TurnStreamUpdate struct {
 	HumanGate   *appv1.HumanGateEvent
 }
 
+// WatchRetryPolicy configures automatic cursor-resuming reconnects for
+// WatchTurnResilient across transient HTTP/2 drops or sidecar restarts.
+type WatchRetryPolicy struct {
+	InitialBackoff time.Duration // default 50ms
+	MaxBackoff     time.Duration // default 2s
+	MaxRetries     int           // 0 = default 8; < 0 = unlimited until ctx cancel
+	OnReconnect    func(attempt int, afterEventID string, err error)
+}
+
 // TurnStreamController drives durable multi-turn session execution and
-// resumable journal streaming against a live marlin.app.v1.AppServer Target.
+// resumable journal streaming against a live marlin.app.v1.AppServer Target
+// or a hot-swappable TargetProvider (e.g. ResilientSidecarTarget / ManagedChannel).
 type TurnStreamController struct {
-	Target *Target
+	Target   *Target
+	Provider TargetProvider
 }
 
 func NewTurnStreamController(target *Target) *TurnStreamController {
 	return &TurnStreamController{Target: target}
 }
 
+// NewTurnStreamControllerWithProvider creates a TurnStreamController backed by
+// a hot-swappable TargetProvider so active and subsequent turns survive sidecar restarts.
+func NewTurnStreamControllerWithProvider(provider TargetProvider) *TurnStreamController {
+	return &TurnStreamController{Provider: provider}
+}
+
+func (c *TurnStreamController) resolveTarget() (*Target, uint64, error) {
+	if c == nil {
+		return nil, 0, fmt.Errorf("grpcwire: TurnStreamController is nil")
+	}
+	t, gen := resolveProviderTarget(c.Provider, c.Target)
+	if t == nil {
+		return nil, gen, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target or Provider")
+	}
+	return t, gen, nil
+}
+
 // OpenSession creates or attaches to an authorized durable session on the Rust host.
 func (c *TurnStreamController) OpenSession(ctx context.Context, sessionID string, create bool) (string, error) {
-	if c == nil || c.Target == nil {
-		return "", fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return "", err
 	}
 	mode := appv1.SessionOpenMode_SESSION_OPEN_MODE_EXISTING
 	if create {
 		mode = appv1.SessionOpenMode_SESSION_OPEN_MODE_CREATE
 	}
-	resp, err := c.Target.App().OpenSession(ctx, &appv1.OpenSessionRequest{
+	resp, err := t.App().OpenSession(ctx, &appv1.OpenSessionRequest{
 		SessionId: sessionID,
 		Mode:      mode,
 	})
@@ -66,10 +96,11 @@ func (c *TurnStreamController) StartTurn(
 	afterTurn uint64,
 	submissionID string,
 ) (*appv1.SessionTurnRef, error) {
-	if c == nil || c.Target == nil {
-		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return nil, err
 	}
-	resp, err := c.Target.App().StartSessionTurn(ctx, &appv1.StartSessionTurnRequest{
+	resp, err := t.App().StartSessionTurn(ctx, &appv1.StartSessionTurnRequest{
 		SessionId:    sessionID,
 		UserText:     userText,
 		AfterTurn:    afterTurn,
@@ -93,8 +124,9 @@ func (c *TurnStreamController) WatchTurn(
 	afterEventID string,
 	onUpdate func(TurnStreamUpdate),
 ) (lastEventID string, outcome appv1.SessionTurnOutcome, err error) {
-	if c == nil || c.Target == nil {
-		return "", appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return "", appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED, err
 	}
 	if turn == nil {
 		return "", appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED, fmt.Errorf("grpcwire: WatchTurn requires a non-nil turn reference")
@@ -104,7 +136,7 @@ func (c *TurnStreamController) WatchTurn(
 		cursor := afterEventID
 		req.AfterEventId = &cursor
 	}
-	stream, err := c.Target.App().WatchSessionTurn(ctx, req)
+	stream, err := t.App().WatchSessionTurn(ctx, req)
 	if err != nil {
 		return afterEventID, appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED, err
 	}
@@ -145,6 +177,80 @@ func (c *TurnStreamController) WatchTurn(
 	}
 }
 
+// WatchTurnResilient wraps WatchTurn with bounded exponential backoff and
+// strict ConversationJournal cursor resumption (afterEventID). If a transient
+// HTTP/2 error, premature EOF before terminal outcome, or sidecar restart
+// occurs mid-turn, WatchTurnResilient reconnects strictly after the last
+// committed event ID with zero duplicated deltas and zero lost checkpoints.
+func (c *TurnStreamController) WatchTurnResilient(
+	ctx context.Context,
+	turn *appv1.SessionTurnRef,
+	afterEventID string,
+	policy WatchRetryPolicy,
+	onUpdate func(TurnStreamUpdate),
+) (lastEventID string, outcome appv1.SessionTurnOutcome, err error) {
+	if turn == nil {
+		return "", appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED, fmt.Errorf("grpcwire: WatchTurnResilient requires a non-nil turn reference")
+	}
+	initialBackoff := policy.InitialBackoff
+	if initialBackoff <= 0 {
+		initialBackoff = 50 * time.Millisecond
+	}
+	maxBackoff := policy.MaxBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = 2 * time.Second
+	}
+	maxRetries := policy.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 8
+	}
+
+	cursor := afterEventID
+	backoff := initialBackoff
+	attempt := 0
+	for {
+		_, seenGen, _ := c.resolveTarget()
+		nextCursor, out, watchErr := c.WatchTurn(ctx, turn, cursor, func(upd TurnStreamUpdate) {
+			// Reset backoff whenever forward progress is made on the stream.
+			backoff = initialBackoff
+			if onUpdate != nil {
+				onUpdate(upd)
+			}
+		})
+		if nextCursor != "" {
+			cursor = nextCursor
+		}
+		if out != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_UNSPECIFIED {
+			return cursor, out, nil
+		}
+		if watchErr == nil {
+			// Stream closed cleanly (EOF) without terminal outcome; if caller
+			// cancelled, return cleanly; otherwise treat as transient server close.
+			if ctx.Err() != nil {
+				return cursor, out, ctx.Err()
+			}
+			watchErr = io.ErrUnexpectedEOF
+		}
+		if !isRetryableStreamError(ctx, watchErr) {
+			return cursor, out, watchErr
+		}
+		attempt++
+		if maxRetries > 0 && attempt > maxRetries {
+			return cursor, out, watchErr
+		}
+		if policy.OnReconnect != nil {
+			policy.OnReconnect(attempt, cursor, watchErr)
+		}
+		if !waitReconnectOrSwap(ctx, c.Provider, seenGen, backoff) {
+			return cursor, out, ctx.Err()
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 // StartAndWatchTurn submits a new durable turn and streams all committed
 // checkpoints until the terminal outcome arrives or ctx is cancelled.
 func (c *TurnStreamController) StartAndWatchTurn(
@@ -165,35 +271,39 @@ func (c *TurnStreamController) StartAndWatchTurn(
 
 // CancelTurn requests authoritative cancellation of an active turn's runtime task scope.
 func (c *TurnStreamController) CancelTurn(ctx context.Context, turn *appv1.SessionTurnRef) (*appv1.CancelSessionTurnResponse, error) {
-	if c == nil || c.Target == nil {
-		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return nil, err
 	}
-	return c.Target.App().CancelSessionTurn(ctx, &appv1.CancelSessionTurnRequest{Turn: turn})
+	return t.App().CancelSessionTurn(ctx, &appv1.CancelSessionTurnRequest{Turn: turn})
 }
 
 // GetSessionSummary fetches the durable journal head and recovery state for a session.
 func (c *TurnStreamController) GetSessionSummary(ctx context.Context, sessionID string) (*appv1.GetSessionSummaryResponse, error) {
-	if c == nil || c.Target == nil {
-		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return nil, err
 	}
-	return c.Target.App().GetSessionSummary(ctx, &appv1.GetSessionSummaryRequest{SessionId: sessionID})
+	return t.App().GetSessionSummary(ctx, &appv1.GetSessionSummaryRequest{SessionId: sessionID})
 }
 
 // GetSessionTurnStatus fetches the committed recovery state and outcome for one turn.
 func (c *TurnStreamController) GetSessionTurnStatus(ctx context.Context, turn *appv1.SessionTurnRef) (*appv1.GetSessionTurnStatusResponse, error) {
-	if c == nil || c.Target == nil {
-		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return nil, err
 	}
-	return c.Target.App().GetSessionTurnStatus(ctx, &appv1.GetSessionTurnStatusRequest{Turn: turn})
+	return t.App().GetSessionTurnStatus(ctx, &appv1.GetSessionTurnStatusRequest{Turn: turn})
 }
 
 // GetSessionTurnCancellation fetches durable cancellation / RuntimeShutdownReceipt
 // evidence recorded in Rust's ConversationJournal for one turn.
 func (c *TurnStreamController) GetSessionTurnCancellation(ctx context.Context, turn *appv1.SessionTurnRef) (*appv1.GetSessionTurnCancellationResponse, error) {
-	if c == nil || c.Target == nil {
-		return nil, fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return nil, err
 	}
-	return c.Target.App().GetSessionTurnCancellation(ctx, &appv1.GetSessionTurnCancellationRequest{Turn: turn})
+	return t.App().GetSessionTurnCancellation(ctx, &appv1.GetSessionTurnCancellationRequest{Turn: turn})
 }
 
 // ReplayTurnHistory queries GetSessionSummary and replays committed journal
@@ -223,10 +333,11 @@ func (c *TurnStreamController) StreamStatelessTurn(
 	messages []*appv1.ConversationMessage,
 	onDelta func(sequence uint64, delta string),
 ) (string, error) {
-	if c == nil || c.Target == nil {
-		return "", fmt.Errorf("grpcwire: TurnStreamController requires a non-nil Target")
+	t, _, err := c.resolveTarget()
+	if err != nil {
+		return "", err
 	}
-	stream, err := c.Target.App().StreamTurn(ctx, &appv1.StreamTurnRequest{Messages: messages})
+	stream, err := t.App().StreamTurn(ctx, &appv1.StreamTurnRequest{Messages: messages})
 	if err != nil {
 		return "", err
 	}

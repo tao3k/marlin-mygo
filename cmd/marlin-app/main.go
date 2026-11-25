@@ -18,7 +18,9 @@ import (
 )
 
 type appConfig struct {
+	appServerBin     string
 	sidecarBin       string
+	standalone       bool
 	realSession      bool
 	tursoPath        string
 	pubKeyFile       string
@@ -44,11 +46,13 @@ type appConfig struct {
 
 func parseFlags() appConfig {
 	var cfg appConfig
-	flag.StringVar(&cfg.sidecarBin, "sidecar", "", "optional local Rust marlin-mygo-host binary to spawn with ephemeral token")
-	flag.BoolVar(&cfg.realSession, "real-session", false, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised sidecar")
+	flag.StringVar(&cfg.appServerBin, "app-server", "", "local Rust marlin-app-server binary to spawn automatically (auto-discovered if omitted)")
+	flag.StringVar(&cfg.sidecarBin, "sidecar", "", "alias for -app-server: explicit local Rust App Server sidecar binary path")
+	flag.BoolVar(&cfg.standalone, "standalone", false, "run UI-only offline preview without auto-launching the local Rust App Server sidecar")
+	flag.BoolVar(&cfg.realSession, "real-session", true, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised Rust App Server")
 	flag.StringVar(&cfg.tursoPath, "turso", "", "optional Turso SQLite file path for crash-resilient session persistence (MARLIN_BRIDGE_TURSO_PATH)")
 	flag.StringVar(&cfg.pubKeyFile, "pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
-	flag.StringVar(&cfg.hostAddr, "host", "", "optional live Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
+	flag.StringVar(&cfg.hostAddr, "host", "", "optional already-running Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
 	flag.StringVar(&cfg.token, "token", "marlin-dev-token", "Bearer token for live Rust host")
 	flag.StringVar(&cfg.caFile, "ca", "", "optional TLS CA PEM file for remote gRPC hosts")
 	flag.StringVar(&cfg.certFile, "cert", "", "optional mTLS client certificate PEM file")

@@ -18,35 +18,46 @@ import (
 const maxTrackedGraphNodes = 128
 
 // ProjectionBridgeConfig wires a live marlin.projection.v1.ProjectionQueryService
-// Target into a Tier-0 native GPU mygoshell.ProjectionController (secrets always denied).
+// Target (or hot-swappable Provider) into a Tier-0 native GPU
+// mygoshell.ProjectionController (secrets always denied).
 type ProjectionBridgeConfig struct {
-	Target     *Target
-	ProjectID  string
-	SessionID  string
-	Controller *mygoshell.ProjectionController
-	OnUpdate   func(mygoshell.ProjectionSnapshot)
+	Target                  *Target
+	Provider                TargetProvider
+	ProjectID               string
+	SessionID               string
+	Controller              *mygoshell.ProjectionController
+	ReconnectInitialBackoff time.Duration // defaults to 50ms
+	ReconnectMaxBackoff     time.Duration // defaults to 2s
+	OnUpdate                func(mygoshell.ProjectionSnapshot)
+	OnStreamState           func(streamName string, connected bool, err error)
 }
 
 // ProjectionStreamBridge consumes WatchGraphTrajectory, WatchWorkspaceDiff, and
-// WatchManagedProcesses concurrently and pushes immutable secret-free snapshots
-// to mygoshell.ProjectionController.
+// WatchManagedProcesses concurrently with automatic bounded-backoff reconnection
+// and pushes immutable secret-free snapshots to mygoshell.ProjectionController.
 type ProjectionStreamBridge struct {
 	cfg ProjectionBridgeConfig
 
-	mu          sync.Mutex
-	nodes       []mygoshell.GraphNodeReceiptView
-	nodeIndex   map[string]int
-	diffFiles   []mygoshell.WorkspaceDiffFileView
-	processes   []mygoshell.ManagedProcessView
-	diffRev     uint64
-	procRev     uint64
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+	mu        sync.Mutex
+	nodes     []mygoshell.GraphNodeReceiptView
+	nodeIndex map[string]int
+	diffFiles []mygoshell.WorkspaceDiffFileView
+	processes []mygoshell.ManagedProcessView
+	diffRev   uint64
+	procRev   uint64
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func NewProjectionStreamBridge(cfg ProjectionBridgeConfig) *ProjectionStreamBridge {
 	if cfg.ProjectID == "" {
 		cfg.ProjectID = "default"
+	}
+	if cfg.ReconnectInitialBackoff <= 0 {
+		cfg.ReconnectInitialBackoff = 50 * time.Millisecond
+	}
+	if cfg.ReconnectMaxBackoff <= 0 {
+		cfg.ReconnectMaxBackoff = 2 * time.Second
 	}
 	return &ProjectionStreamBridge{
 		cfg:       cfg,
@@ -54,11 +65,22 @@ func NewProjectionStreamBridge(cfg ProjectionBridgeConfig) *ProjectionStreamBrid
 	}
 }
 
+func (b *ProjectionStreamBridge) activeTarget() (*Target, uint64) {
+	return resolveProviderTarget(b.cfg.Provider, b.cfg.Target)
+}
+
+func (b *ProjectionStreamBridge) notifyStreamState(name string, connected bool, err error) {
+	if b.cfg.OnStreamState != nil {
+		b.cfg.OnStreamState(name, connected, err)
+	}
+}
+
 // HydrateGraph performs one bounded secret-denied QueryProjectGraph lookup so
 // the Projection Inspector shows live records before streaming events arrive.
 func (b *ProjectionStreamBridge) HydrateGraph(ctx context.Context) error {
-	if b.cfg.Target == nil {
-		return fmt.Errorf("grpcwire: ProjectionStreamBridge requires non-nil Target")
+	target, _ := b.activeTarget()
+	if target == nil {
+		return fmt.Errorf("grpcwire: ProjectionStreamBridge requires non-nil Target or Provider")
 	}
 	req := &projectionv1.QueryProjectGraphRequest{
 		ProjectId: b.cfg.ProjectID,
@@ -73,7 +95,7 @@ func (b *ProjectionStreamBridge) HydrateGraph(ctx context.Context) error {
 		sid := b.cfg.SessionID
 		req.SessionId = &sid
 	}
-	resp, err := b.cfg.Target.Projection().QueryProjectGraph(ctx, req)
+	resp, err := target.Projection().QueryProjectGraph(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -90,10 +112,11 @@ func (b *ProjectionStreamBridge) HydrateGraph(ctx context.Context) error {
 	return nil
 }
 
-// Start spawns background pumps for all 3 marlin.projection.v1 server streams.
+// Start spawns auto-reconnecting background pumps for all 3 marlin.projection.v1 streams.
 func (b *ProjectionStreamBridge) Start(ctx context.Context) error {
-	if b.cfg.Target == nil {
-		return fmt.Errorf("grpcwire: ProjectionStreamBridge requires non-nil Target")
+	target, _ := b.activeTarget()
+	if target == nil {
+		return fmt.Errorf("grpcwire: ProjectionStreamBridge requires non-nil Target or Provider")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	b.mu.Lock()
@@ -123,126 +146,228 @@ func (b *ProjectionStreamBridge) Stop() {
 
 func (b *ProjectionStreamBridge) pumpGraphTrajectory(ctx context.Context) {
 	defer b.wg.Done()
-	stream, err := b.cfg.Target.Projection().WatchGraphTrajectory(ctx, &projectionv1.WatchGraphTrajectoryRequest{
-		SessionId: b.cfg.SessionID,
-	})
-	if err != nil {
-		return
-	}
+	backoff := b.cfg.ReconnectInitialBackoff
+	firstAttempt := true
 	for {
-		resp, err := stream.Recv()
-		if err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		ev := resp.GetEvent()
-		if ev == nil || ev.GetNodeId() == "" {
+		target, seenGen := b.activeTarget()
+		if target == nil {
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
+			}
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 			continue
 		}
-		receiptID := ""
-		if r := ev.GetNodeReceipt(); r != nil {
-			receiptID = r.GetReceiptId()
+		if !firstAttempt {
+			_ = b.HydrateGraph(ctx)
 		}
-		meta := ev.GetMetadata()
-		b.upsertGraphNode(mygoshell.GraphNodeReceiptView{
-			NodeID:      ev.GetNodeId(),
-			Kind:        ev.GetNodeKind(),
-			Phase:       ev.GetStatus(),
-			ReceiptID:   receiptID,
-			GatewayNote: meta["gateway_note"],
-			Summary:     meta["summary"],
+		firstAttempt = false
+
+		stream, err := target.Projection().WatchGraphTrajectory(ctx, &projectionv1.WatchGraphTrajectoryRequest{
+			SessionId: b.cfg.SessionID,
 		})
-		b.publish()
+		if err != nil {
+			b.notifyStreamState("graph_trajectory", false, err)
+			if !isRetryableStreamError(ctx, err) {
+				return
+			}
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
+			}
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
+			continue
+		}
+		b.notifyStreamState("graph_trajectory", true, nil)
+		backoff = b.cfg.ReconnectInitialBackoff
+		for {
+			resp, recvErr := stream.Recv()
+			if recvErr != nil {
+				b.notifyStreamState("graph_trajectory", false, recvErr)
+				if !isRetryableStreamError(ctx, recvErr) {
+					return
+				}
+				break
+			}
+			ev := resp.GetEvent()
+			if ev == nil || ev.GetNodeId() == "" {
+				continue
+			}
+			receiptID := ""
+			if r := ev.GetNodeReceipt(); r != nil {
+				receiptID = r.GetReceiptId()
+			}
+			meta := ev.GetMetadata()
+			b.upsertGraphNode(mygoshell.GraphNodeReceiptView{
+				NodeID:      ev.GetNodeId(),
+				Kind:        ev.GetNodeKind(),
+				Phase:       ev.GetStatus(),
+				ReceiptID:   receiptID,
+				GatewayNote: meta["gateway_note"],
+				Summary:     meta["summary"],
+			})
+			b.publish()
+		}
+		if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+			return
+		}
+		backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 	}
 }
 
 func (b *ProjectionStreamBridge) pumpWorkspaceDiff(ctx context.Context) {
 	defer b.wg.Done()
-	stream, err := b.cfg.Target.Projection().WatchWorkspaceDiff(ctx, &projectionv1.WatchWorkspaceDiffRequest{
-		ProjectId: b.cfg.ProjectID,
-	})
-	if err != nil {
-		return
-	}
+	backoff := b.cfg.ReconnectInitialBackoff
 	for {
-		resp, err := stream.Recv()
-		if err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		snap := resp.GetSnapshot()
-		if snap == nil {
+		target, seenGen := b.activeTarget()
+		if target == nil {
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
+			}
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 			continue
 		}
-		files := make([]mygoshell.WorkspaceDiffFileView, 0, len(snap.GetFiles()))
-		for _, f := range snap.GetFiles() {
-			var lines []string
-			if branch := snap.GetBranch(); branch != "" {
-				lines = append(lines, fmt.Sprintf("branch: %s (rev %d)", branch, snap.GetRevision()))
+		stream, err := target.Projection().WatchWorkspaceDiff(ctx, &projectionv1.WatchWorkspaceDiffRequest{
+			ProjectId: b.cfg.ProjectID,
+		})
+		if err != nil {
+			b.notifyStreamState("workspace_diff", false, err)
+			if !isRetryableStreamError(ctx, err) {
+				return
 			}
-			if art := f.GetDiffArtifact(); art != nil && len(art.GetSha256()) > 0 {
-				lines = append(lines, fmt.Sprintf("artifact: marlin-artifact://%s/ (%d bytes)", hex.EncodeToString(art.GetSha256()), art.GetByteSize()))
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
 			}
-			files = append(files, mygoshell.WorkspaceDiffFileView{
-				Path:      f.GetPath(),
-				Status:    f.GetStatus(),
-				Additions: int(f.GetAddedLines()),
-				Deletions: int(f.GetRemovedLines()),
-				HunkLines: lines,
-			})
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
+			continue
 		}
-		b.mu.Lock()
-		if snap.GetRevision() >= b.diffRev {
-			b.diffRev = snap.GetRevision()
-			b.diffFiles = files
+		b.notifyStreamState("workspace_diff", true, nil)
+		backoff = b.cfg.ReconnectInitialBackoff
+		for {
+			resp, recvErr := stream.Recv()
+			if recvErr != nil {
+				b.notifyStreamState("workspace_diff", false, recvErr)
+				if !isRetryableStreamError(ctx, recvErr) {
+					return
+				}
+				break
+			}
+			snap := resp.GetSnapshot()
+			if snap == nil {
+				continue
+			}
+			files := make([]mygoshell.WorkspaceDiffFileView, 0, len(snap.GetFiles()))
+			for _, f := range snap.GetFiles() {
+				var lines []string
+				if branch := snap.GetBranch(); branch != "" {
+					lines = append(lines, fmt.Sprintf("branch: %s (rev %d)", branch, snap.GetRevision()))
+				}
+				if art := f.GetDiffArtifact(); art != nil && len(art.GetSha256()) > 0 {
+					lines = append(lines, fmt.Sprintf("artifact: marlin-artifact://%s/ (%d bytes)", hex.EncodeToString(art.GetSha256()), art.GetByteSize()))
+				}
+				files = append(files, mygoshell.WorkspaceDiffFileView{
+					Path:      f.GetPath(),
+					Status:    f.GetStatus(),
+					Additions: int(f.GetAddedLines()),
+					Deletions: int(f.GetRemovedLines()),
+					HunkLines: lines,
+				})
+			}
+			b.mu.Lock()
+			if snap.GetRevision() >= b.diffRev {
+				b.diffRev = snap.GetRevision()
+				b.diffFiles = files
+			}
+			b.mu.Unlock()
+			b.publish()
 		}
-		b.mu.Unlock()
-		b.publish()
+		if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+			return
+		}
+		backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 	}
 }
 
 func (b *ProjectionStreamBridge) pumpManagedProcesses(ctx context.Context) {
 	defer b.wg.Done()
-	stream, err := b.cfg.Target.Projection().WatchManagedProcesses(ctx, &projectionv1.WatchManagedProcessesRequest{
-		SessionId: b.cfg.SessionID,
-	})
-	if err != nil {
-		return
-	}
+	backoff := b.cfg.ReconnectInitialBackoff
 	for {
-		resp, err := stream.Recv()
-		if err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		snap := resp.GetSnapshot()
-		if snap == nil {
+		target, seenGen := b.activeTarget()
+		if target == nil {
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
+			}
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 			continue
 		}
-		nowMS := time.Now().UnixMilli()
-		procs := make([]mygoshell.ManagedProcessView, 0, len(snap.GetProcesses()))
-		for _, pr := range snap.GetProcesses() {
-			var uptimeSec int64
-			if started := int64(pr.GetStartedAtUnixMs()); started > 0 && nowMS > started {
-				uptimeSec = (nowMS - started) / 1000
+		stream, err := target.Projection().WatchManagedProcesses(ctx, &projectionv1.WatchManagedProcessesRequest{
+			SessionId: b.cfg.SessionID,
+		})
+		if err != nil {
+			b.notifyStreamState("managed_processes", false, err)
+			if !isRetryableStreamError(ctx, err) {
+				return
 			}
-			var tail []string
-			if r := pr.GetShutdownReceipt(); r != nil && r.GetReceiptId() != "" {
-				tail = append(tail, "shutdown receipt: "+r.GetReceiptId())
+			if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+				return
 			}
-			procs = append(procs, mygoshell.ManagedProcessView{
-				ProcessID: pr.GetProcessId(),
-				Command:   pr.GetCommand(),
-				State:     pr.GetState(),
-				ExitCode:  int(pr.GetExitCode()),
-				UptimeSec: uptimeSec,
-				TailLines: tail,
-			})
+			backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
+			continue
 		}
-		b.mu.Lock()
-		if snap.GetRevision() >= b.procRev {
-			b.procRev = snap.GetRevision()
-			b.processes = procs
+		b.notifyStreamState("managed_processes", true, nil)
+		backoff = b.cfg.ReconnectInitialBackoff
+		for {
+			resp, recvErr := stream.Recv()
+			if recvErr != nil {
+				b.notifyStreamState("managed_processes", false, recvErr)
+				if !isRetryableStreamError(ctx, recvErr) {
+					return
+				}
+				break
+			}
+			snap := resp.GetSnapshot()
+			if snap == nil {
+				continue
+			}
+			nowMS := time.Now().UnixMilli()
+			procs := make([]mygoshell.ManagedProcessView, 0, len(snap.GetProcesses()))
+			for _, pr := range snap.GetProcesses() {
+				var uptimeSec int64
+				if started := int64(pr.GetStartedAtUnixMs()); started > 0 && nowMS > started {
+					uptimeSec = (nowMS - started) / 1000
+				}
+				var tail []string
+				if r := pr.GetShutdownReceipt(); r != nil && r.GetReceiptId() != "" {
+					tail = append(tail, "shutdown receipt: "+r.GetReceiptId())
+				}
+				procs = append(procs, mygoshell.ManagedProcessView{
+					ProcessID: pr.GetProcessId(),
+					Command:   pr.GetCommand(),
+					State:     pr.GetState(),
+					ExitCode:  int(pr.GetExitCode()),
+					UptimeSec: uptimeSec,
+					TailLines: tail,
+				})
+			}
+			b.mu.Lock()
+			if snap.GetRevision() >= b.procRev {
+				b.procRev = snap.GetRevision()
+				b.processes = procs
+			}
+			b.mu.Unlock()
+			b.publish()
 		}
-		b.mu.Unlock()
-		b.publish()
+		if !waitReconnectOrSwap(ctx, b.cfg.Provider, seenGen, backoff) {
+			return
+		}
+		backoff = min(backoff*2, b.cfg.ReconnectMaxBackoff)
 	}
 }
 

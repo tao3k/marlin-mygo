@@ -43,6 +43,7 @@ type ResilientSidecarTarget struct {
 	mu         sync.RWMutex
 	current    *ManagedSidecarTarget
 	generation uint64
+	swapCh     chan struct{}
 	restarts   int
 	recovering bool
 	closed     bool
@@ -72,6 +73,7 @@ func LaunchResilientSidecar(ctx context.Context, cfg ResilientSidecarConfig) (*R
 		cfg:    cfg,
 		runCtx: runCtx,
 		cancel: cancel,
+		swapCh: make(chan struct{}),
 	}
 
 	managed, ready, err := r.spawnGeneration(ctx, 1)
@@ -192,8 +194,11 @@ func (r *ResilientSidecarTarget) recoverLoop(old *ManagedSidecarTarget, exitErr 
 		r.restarts++
 		r.recovering = false
 		r.lastErr = nil
+		oldSwap := r.swapCh
+		r.swapCh = make(chan struct{})
 		restarts := r.restarts
 		r.mu.Unlock()
+		close(oldSwap)
 		close(ready)
 
 		if r.cfg.OnRecovered != nil {
@@ -211,6 +216,40 @@ func (r *ResilientSidecarTarget) CurrentTarget() *Target {
 		return nil
 	}
 	return r.current.Target
+}
+
+// Generation returns the monotonic sidecar spawn generation (starts at 1).
+func (r *ResilientSidecarTarget) Generation() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.generation
+}
+
+// WaitSwap blocks until the sidecar respawns into a generation strictly greater
+// than afterGen, or until ctx cancels or the supervisor closes.
+func (r *ResilientSidecarTarget) WaitSwap(ctx context.Context, afterGen uint64) (uint64, bool) {
+	r.mu.RLock()
+	if r.closed {
+		gen := r.generation
+		r.mu.RUnlock()
+		return gen, false
+	}
+	if r.generation > afterGen {
+		gen := r.generation
+		r.mu.RUnlock()
+		return gen, true
+	}
+	ch := r.swapCh
+	r.mu.RUnlock()
+
+	select {
+	case <-ch:
+		return r.Generation(), true
+	case <-r.runCtx.Done():
+		return afterGen, false
+	case <-ctx.Done():
+		return afterGen, false
+	}
 }
 
 // Sidecar returns the currently live SidecarSupervisor.

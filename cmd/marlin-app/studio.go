@@ -84,7 +84,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	app, mktUI, transcript := buildWorkbenchApp(ctx, cfg, targets, federation, slots, wb, wvRuntime, conn.liveTarget)
 
-	var liveDriver *grpcwire.SessionDriver
+	var stopLiveSession func()
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 
@@ -119,8 +119,8 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		wireWindowTabLazyLifecycle(ctx, app, lazySess, syncMarketplace, cfg.idleReapInterval, win)
 		startDevPluginWatcher(ctx, cfg.devPluginDir, host, mktUI, win)
 
-		if conn.liveTarget != nil {
-			liveDriver = wireLiveSession(ctx, cfg, conn.liveTarget, wb, federation, host, app, transcript, win, fireHook, publishProjection)
+		if conn.provider != nil {
+			stopLiveSession = wireLiveSession(ctx, cfg, conn.provider, wb, federation, host, app, transcript, win, fireHook, publishProjection)
 		} else {
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
 		}
@@ -134,8 +134,8 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 	if err := mygo.App.Run(); err != nil {
 		return err
 	}
-	if liveDriver != nil {
-		liveDriver.Stop()
+	if stopLiveSession != nil {
+		stopLiveSession()
 	}
 	return nil
 }
