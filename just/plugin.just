@@ -22,9 +22,17 @@ show-memory:
 show-workflow:
     CGO_ENABLED=0 go run ./cmd/marlin-app -showcase -showcase-plugin workflow
 
-# Preview Marlin Mobile Companion (390x844 App Store 2.5.2 safe shell).
+# Preview authentic iOS Phone Companion (iPhone 16 Pro 393x852, Dynamic Island + HIG chrome).
+show-ios:
+    CGO_ENABLED=0 go run ./cmd/marlin-mobile -platform ios -device iphone16
+
+# Preview authentic Android Phone Companion (Pixel 9 412x915, Material 3 chrome).
+show-android:
+    CGO_ENABLED=0 go run ./cmd/marlin-mobile -platform android -device pixel9
+
+# Preview Marlin Mobile Companion (defaults to iOS iPhone 16 Pro).
 show-mobile:
-    CGO_ENABLED=0 go run ./cmd/marlin-mobile
+    @just plugin show-ios
 
 # Build Rust marlin-mygo-host (if needed) and launch full live Rust Sidecar + Studio showcase.
 studio-live core="../..":
@@ -112,22 +120,26 @@ soak-ui ops="10000":
 visual-check out="./dist/visual-snapshots":
     MARLIN_VISUAL_OUT="{{out}}" CGO_ENABLED=0 go test -v -count=1 -run "TestVisualFrameSnapshotsAndContrastInvariants" ./runtime/mygoshell
 
-# Typecheck iOS Swift bridge against iphonesimulator SDK & run native macOS `swift test` (zero Simulator runtime required).
+# Typecheck iOS Swift bridge against iphonesimulator SDK, run macOS `swift test`, AND run real Go <-> Swift protocol E2E.
 test-swift:
     swiftc -typecheck -warnings-as-errors -sdk "$(xcrun --show-sdk-path --sdk iphonesimulator)" -target arm64-apple-ios17.0-simulator runtime/device/nativebridge/ios/Sources/MarlinDeviceBridge/MarlinDeviceBridge.swift
     swift test --package-path runtime/device/nativebridge/ios
+    swift build --package-path runtime/device/nativebridge/ios --product MarlinDeviceBridgeProbe
+    MARLIN_SWIFT_PROBE_BIN="$(swift build --package-path runtime/device/nativebridge/ios --show-bin-path)/MarlinDeviceBridgeProbe" go test -v -race -run TestCrossLanguageGoToSwiftProtocolE2E ./runtime/device/nativebridge
 
-# Compile and run Android Kotlin bridge JVM unit & concurrency tests (zero Android Emulator required).
+# Compile and run Android Kotlin JVM unit tests AND real Go <-> Kotlin protocol E2E (zero Android Emulator required).
 test-kotlin:
     #!/usr/bin/env sh
     set -eu
     mkdir -p runtime/device/nativebridge/android/build
-    if command -v kotlinc >/dev/null 2>&1; then
-      kotlinc -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeTest.kt
-    else
-      nix shell nixpkgs#kotlin -c kotlinc -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeTest.kt
+    KOTLINC="kotlinc"
+    if ! command -v kotlinc >/dev/null 2>&1; then
+      KOTLINC="nix shell nixpkgs#kotlin -c kotlinc"
     fi
+    $KOTLINC -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeTest.kt
     java -jar runtime/device/nativebridge/android/build/marlin-device-bridge-tests.jar
+    $KOTLINC -Werror -include-runtime -d runtime/device/nativebridge/android/build/marlin-device-bridge-probe.jar runtime/device/nativebridge/android/src/main/kotlin/org/tao3k/marlin/device/MarlinDeviceBridge.kt runtime/device/nativebridge/android/src/test/kotlin/org/tao3k/marlin/device/MarlinDeviceBridgeProbe.kt
+    MARLIN_KOTLIN_PROBE_JAR="$(pwd)/runtime/device/nativebridge/android/build/marlin-device-bridge-probe.jar" go test -v -race -run TestCrossLanguageGoToKotlinProtocolE2E ./runtime/device/nativebridge
 
 # Compile Android SDK framework providers against real android.jar (zero Android Emulator required).
 test-android-sdk:

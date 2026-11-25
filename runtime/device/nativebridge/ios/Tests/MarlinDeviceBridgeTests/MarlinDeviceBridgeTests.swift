@@ -66,6 +66,29 @@ private final class RecordingNotificationDeliverer: NotificationDelivering, @unc
     }
 }
 
+private struct StubVoiceProvider: VoiceCaptureProviding {
+    let transcript: VoiceTranscriptWire
+    func latestTranscript() throws -> VoiceTranscriptWire { transcript }
+}
+
+private final class StubContactsProvider: ContactsProviding, @unchecked Sendable {
+    var contacts: [ContactSummaryWire]
+    private(set) var lastQuery: String?
+    private(set) var lastLimit: Int?
+
+    init(contacts: [ContactSummaryWire]) {
+        self.contacts = contacts
+    }
+
+    func searchContacts(query: String, limit: Int) throws -> [ContactSummaryWire] {
+        lastQuery = query
+        lastLimit = limit
+        let q = query.lowercased()
+        let filtered = q.isEmpty ? contacts : contacts.filter { $0.displayName.lowercased().contains(q) }
+        return Array(filtered.prefix(limit))
+    }
+}
+
 // MARK: - Unit & Go Wire Parity Tests (Runs Natively on macOS — Zero Simulator Required)
 
 final class MarlinDeviceBridgeTests: XCTestCase {
@@ -228,6 +251,48 @@ final class MarlinDeviceBridgeTests: XCTestCase {
         XCTAssertEqual(drained.count, 1)
         XCTAssertEqual(drained[0].sourceChannel, "ios.share-extension")
         XCTAssertEqual(drained[0].text, "Valid legacy capture")
+    }
+
+    func testDispatchCapabilitiesVoiceAndContactsWireParity() async throws {
+        let voice = StubVoiceProvider(
+            transcript: VoiceTranscriptWire(
+                transcriptId: "vt-swift-1",
+                locale: "en-US",
+                text: "Ship Marlin unified UI",
+                durationMs: 2150
+            )
+        )
+        let contacts = StubContactsProvider(contacts: [
+            ContactSummaryWire(contactId: "c-1", displayName: "Ada Lovelace", handle: "ada@tao3k.org"),
+            ContactSummaryWire(contactId: "c-2", displayName: "Grace Hopper", handle: "grace@tao3k.org"),
+        ])
+        let bridge = MarlinDeviceBridge(
+            photos: StubPhotoLibraryProvider(),
+            voice: voice,
+            contacts: contacts,
+            notifications: RecordingNotificationDeliverer()
+        )
+
+        let capsRaw = try await bridge.dispatch(method: "bridge.capabilities", argsJSON: nil)
+        let caps = try JSONDecoder().decode(BridgeCapabilitiesWire.self, from: capsRaw)
+        XCTAssertEqual(caps.platform, "ios")
+        XCTAssertEqual(caps.families.count, 5)
+        XCTAssertEqual(caps.methods.count, 8)
+
+        let voiceRaw = try await bridge.dispatch(method: "voice.latestTranscript", argsJSON: nil)
+        let decodedVoice = try JSONDecoder().decode(VoiceTranscriptWire.self, from: voiceRaw)
+        XCTAssertEqual(decodedVoice.transcriptId, "vt-swift-1")
+        XCTAssertEqual(decodedVoice.durationMs, 2150)
+
+        let contactsRaw = try await bridge.dispatch(
+            method: "contacts.search",
+            argsJSON: Data(#"{"query":"  Ada  ","limit":999}"#.utf8)
+        )
+        XCTAssertEqual(contacts.lastQuery, "Ada")
+        XCTAssertEqual(contacts.lastLimit, MarlinDeviceBridge.maxContactsLimit)
+        let decodedContacts = try JSONDecoder().decode(ContactSearchResponse.self, from: contactsRaw)
+        XCTAssertEqual(decodedContacts.contacts.count, 1)
+        XCTAssertEqual(decodedContacts.contacts[0].displayName, "Ada Lovelace")
     }
 
     func testUnsupportedMethodFailsClosed() async {

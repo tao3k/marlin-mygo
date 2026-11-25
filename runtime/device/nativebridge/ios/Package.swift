@@ -16,11 +16,20 @@ let package = Package(
             name: "MarlinDeviceBridge",
             targets: ["MarlinDeviceBridge"]
         ),
+        .executable(
+            name: "MarlinDeviceBridgeProbe",
+            targets: ["MarlinDeviceBridgeProbe"]
+        ),
     ],
     targets: [
         .target(
             name: "MarlinDeviceBridge",
             path: "Sources/MarlinDeviceBridge"
+        ),
+        .executableTarget(
+            name: "MarlinDeviceBridgeProbe",
+            dependencies: ["MarlinDeviceBridge"],
+            path: "Sources/MarlinDeviceBridgeProbe"
         ),
         .testTarget(
             name: "MarlinDeviceBridgeTests",

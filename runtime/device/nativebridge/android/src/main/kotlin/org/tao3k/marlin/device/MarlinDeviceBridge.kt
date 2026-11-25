@@ -90,12 +90,42 @@ data class CapturePayloadWire(
     }
 }
 
+data class VoiceTranscriptWire(
+    val transcriptId: String,
+    val locale: String,
+    val text: String,
+    val durationMs: Long,
+)
+
+data class ContactSummaryWire(
+    val contactId: String,
+    val displayName: String,
+    val handle: String? = null,
+)
+
 // MARK: - Protocol-Injectable Android OS Boundaries
 
 interface AndroidPhotoLibrary {
     fun permissionState(): OsPermissionStateWire
     fun recentScreenshots(limit: Int): List<PhotoItemWire>
     fun extractTextOCR(localId: String): String
+}
+
+interface AndroidVoiceProvider {
+    fun latestTranscript(): VoiceTranscriptWire
+}
+
+interface AndroidContactsProvider {
+    fun searchContacts(query: String, limit: Int): List<ContactSummaryWire>
+}
+
+class EmptyAndroidVoiceProvider : AndroidVoiceProvider {
+    override fun latestTranscript(): VoiceTranscriptWire =
+        VoiceTranscriptWire(transcriptId = "", locale = "en-US", text = "", durationMs = 0L)
+}
+
+class EmptyAndroidContactsProvider : AndroidContactsProvider {
+    override fun searchContacts(query: String, limit: Int): List<ContactSummaryWire> = emptyList()
 }
 
 interface AndroidNotificationDeliverer {
@@ -142,13 +172,28 @@ class MarlinDeviceBridge(
     private val photos: AndroidPhotoLibrary,
     private val notifications: AndroidNotificationDeliverer,
     private val captureStore: AndroidCaptureStore = InMemoryCaptureStore(),
+    private val voice: AndroidVoiceProvider = EmptyAndroidVoiceProvider(),
+    private val contacts: AndroidContactsProvider = EmptyAndroidContactsProvider(),
 ) {
     companion object {
         const val DEFAULT_SCREENSHOT_LIMIT = 10
         const val MAX_SCREENSHOT_LIMIT = 32
+        const val MAX_CONTACTS_LIMIT = 25
         const val MAX_QUEUED_CAPTURES = 64
         const val MAX_NOTIFICATION_TITLE_CHARS = 160
         const val MAX_NOTIFICATION_BODY_CHARS = 1024
+
+        val SUPPORTED_FAMILIES = listOf("photos", "voice", "contacts", "notifications", "capture")
+        val SUPPORTED_METHODS = listOf(
+            "bridge.capabilities",
+            "permissionState",
+            "photos.recentScreenshots",
+            "vision.extractOCR",
+            "voice.latestTranscript",
+            "contacts.search",
+            "notify.send",
+            "capture.drain",
+        )
 
         fun clampScreenshotLimit(limit: Int): Int {
             if (limit <= 0) return DEFAULT_SCREENSHOT_LIMIT
@@ -200,9 +245,22 @@ class MarlinDeviceBridge(
     fun drainPendingCaptures(maxItems: Int = MAX_QUEUED_CAPTURES): List<CapturePayloadWire> =
         captureStore.drainAll(maxItems)
 
+    fun latestTranscript(): VoiceTranscriptWire = voice.latestTranscript()
+
+    fun searchContacts(query: String, limit: Int = 10): List<ContactSummaryWire> {
+        val bounded = if (limit <= 0) 10 else minOf(limit, MAX_CONTACTS_LIMIT)
+        return contacts.searchContacts(query.trim(), bounded)
+    }
+
     /** Dispatches a JSON RPC call emitted by Go `runtime/device/nativebridge.Adapter`. */
     fun dispatch(method: String, argsJson: String?): String {
         return when (method) {
+            "bridge.capabilities" -> {
+                val fams = SUPPORTED_FAMILIES.joinToString(",") { WireJson.quote(it) }
+                val meths = SUPPORTED_METHODS.joinToString(",") { WireJson.quote(it) }
+                """{"families":[$fams],"methods":[$meths],"platform":"android"}"""
+            }
+
             "permissionState" -> {
                 val state = permissionState().wireValue
                 """{"state":${WireJson.quote(state)}}"""
@@ -239,6 +297,30 @@ class MarlinDeviceBridge(
                     ?: throw MarlinBridgeException.InvalidArgument("localId must not be empty")
                 val text = extractTextOCR(localId)
                 """{"text":${WireJson.quote(text)}}"""
+            }
+
+            "voice.latestTranscript" -> {
+                val tr = latestTranscript()
+                """{"durationMs":${tr.durationMs},"locale":${WireJson.quote(tr.locale)},"text":${WireJson.quote(tr.text)},"transcriptId":${WireJson.quote(tr.transcriptId)}}"""
+            }
+
+            "contacts.search" -> {
+                val fields = if (argsJson.isNullOrBlank()) emptyMap() else WireJson.parseFlatObject(argsJson)
+                val query = fields["query"] ?: ""
+                val limit = fields["limit"]?.toIntOrNull() ?: 10
+                val items = searchContacts(query, limit)
+                val encoded = items.joinToString(",") { item ->
+                    buildString {
+                        append('{')
+                        append("\"contactId\":").append(WireJson.quote(item.contactId)).append(',')
+                        append("\"displayName\":").append(WireJson.quote(item.displayName))
+                        if (!item.handle.isNullOrEmpty()) {
+                            append(",\"handle\":").append(WireJson.quote(item.handle))
+                        }
+                        append('}')
+                    }
+                }
+                """{"contacts":[$encoded]}"""
             }
 
             "notify.send" -> {

@@ -136,19 +136,25 @@ jobs:
       - run: just ci perf-gate
 
   ios-swift-bridge:
-    name: iOS Swift Native Bridge (iOS SDK Typecheck & macOS swift test)
+    name: iOS Swift Native Bridge (iOS SDK Typecheck, swift test & Go<->Swift E2E)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: just ci ios-swift-bridge
 
   android-kotlin-bridge:
-    name: Android Kotlin Native Bridge (JVM Tests & Android SDK Compile)
+    name: Android Kotlin Native Bridge (JVM Tests, Go<->Kotlin E2E & Android SDK)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - run: just ci android-kotlin-bridge
 
   plugin-marketplace-admission:
@@ -163,6 +169,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: just ci plugin-admission-gate
+
+  web-wasm-deploy-build:
+    name: Web Deploy Frontend Build (GOOS=js GOARCH=wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci web-wasm-build
 
   reuse-spdx:
     name: REUSE SPDX License Compliance

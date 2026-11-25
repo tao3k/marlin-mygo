@@ -12,14 +12,20 @@ import (
 
 // Canonical device.* capability identifiers across desktop and mobile targets.
 const (
-	CapIOSPhotosRecent      schema.CapabilityID = "device.ios.photos.recent"
-	CapIOSOCR               schema.CapabilityID = "device.ios.ocr"
-	CapIOSVoiceTranscribe   schema.CapabilityID = "device.ios.voice.transcribe"
-	CapIOSShareDrain        schema.CapabilityID = "device.ios.share.drain"
-	CapIOSContactsSearch    schema.CapabilityID = "device.ios.contacts.search"
-	CapIOSNotifySend        schema.CapabilityID = "device.ios.notify.send"
-	CapDesktopClipboardRead schema.CapabilityID = "device.desktop.clipboard.read"
-	CapDesktopNotifySend    schema.CapabilityID = "device.desktop.notify.send"
+	CapIOSPhotosRecent        schema.CapabilityID = "device.ios.photos.recent"
+	CapIOSOCR                 schema.CapabilityID = "device.ios.ocr"
+	CapIOSVoiceTranscribe     schema.CapabilityID = "device.ios.voice.transcribe"
+	CapIOSShareDrain          schema.CapabilityID = "device.ios.share.drain"
+	CapIOSContactsSearch      schema.CapabilityID = "device.ios.contacts.search"
+	CapIOSNotifySend          schema.CapabilityID = "device.ios.notify.send"
+	CapAndroidPhotosRecent    schema.CapabilityID = "device.android.photos.recent"
+	CapAndroidOCR             schema.CapabilityID = "device.android.ocr"
+	CapAndroidVoiceTranscribe schema.CapabilityID = "device.android.voice.transcribe"
+	CapAndroidShareDrain      schema.CapabilityID = "device.android.share.drain"
+	CapAndroidContactsSearch  schema.CapabilityID = "device.android.contacts.search"
+	CapAndroidNotifySend      schema.CapabilityID = "device.android.notify.send"
+	CapDesktopClipboardRead   schema.CapabilityID = "device.desktop.clipboard.read"
+	CapDesktopNotifySend      schema.CapabilityID = "device.desktop.notify.send"
 )
 
 // PhotoItem is a bounded metadata record returned by PhotosProtocol.

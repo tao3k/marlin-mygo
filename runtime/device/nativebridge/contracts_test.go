@@ -118,3 +118,58 @@ func TestNativeBridgeAdapterAndroidWireParityAndFullMethods(t *testing.T) {
 		t.Fatalf("expected drained captures, got %+v err=%v", captures, err)
 	}
 }
+
+type fakeHostBridge struct {
+	platform string
+}
+
+func (f *fakeHostBridge) Platform() (string, error) { return f.platform, nil }
+
+func (f *fakeHostBridge) DispatchJSON(_ context.Context, method string, _ string) (string, error) {
+	switch method {
+	case "bridge.capabilities":
+		return `{"platform":"` + f.platform + `","families":["photos","voice","contacts","notifications","capture"],"methods":["bridge.capabilities","permissionState","photos.recentScreenshots","vision.extractOCR","voice.latestTranscript","contacts.search","notify.send","capture.drain"]}`, nil
+	case "permissionState":
+		return `{"state":"granted"}`, nil
+	case "voice.latestTranscript":
+		return `{"transcriptId":"vt-host-1","locale":"en-US","text":"Hello from mygo:native","durationMs":1500}`, nil
+	case "contacts.search":
+		return `{"contacts":[{"contactId":"c-1","displayName":"Ada Lovelace","handle":"ada@tao3k.org"}]}`, nil
+	default:
+		return `{"ok":true}`, nil
+	}
+}
+
+func TestHostBridgeTransportAndRegisterAllProtocols(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		kind     schema.TargetKind
+		platform string
+		voiceCap schema.CapabilityID
+	}{
+		{schema.TargetMobileIOS, "ios", device.CapIOSVoiceTranscribe},
+		{schema.TargetMobileAndroid, "android", device.CapAndroidVoiceTranscribe},
+	} {
+		tr := &HostBridgeTransport{Host: &fakeHostBridge{platform: tc.platform}}
+		adapter := &Adapter{Transport: tr, Platform: tc.platform}
+		caps, err := adapter.Capabilities(ctx)
+		if err != nil || caps.Platform != tc.platform || len(caps.Methods) != 8 {
+			t.Fatalf("Capabilities(%s): caps=%+v err=%v", tc.platform, caps, err)
+		}
+		br := device.NewBridge(tc.kind)
+		if err := RegisterAllProtocols(ctx, br, tr); err != nil {
+			t.Fatalf("RegisterAllProtocols(%s): %v", tc.platform, err)
+		}
+		res, err := br.Dispatch(ctx, device.InvocationRequest{
+			InvocationID: "inv-voice-" + tc.platform,
+			CapabilityID: tc.voiceCap,
+		})
+		if err != nil || !res.OK {
+			t.Fatalf("voice dispatch(%s): res=%+v err=%v", tc.platform, res, err)
+		}
+		var vt device.VoiceTranscript
+		if err := json.Unmarshal(res.Result, &vt); err != nil || vt.TranscriptID != "vt-host-1" {
+			t.Fatalf("unexpected voice transcript: %s err=%v", string(res.Result), err)
+		}
+	}
+}

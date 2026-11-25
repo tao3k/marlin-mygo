@@ -17,6 +17,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.ContactsContract
 import android.provider.MediaStore
 
 class SystemAndroidPhotoLibrary(
@@ -121,5 +122,48 @@ class SystemAndroidNotificationDeliverer(
             .build()
 
         manager.notify(request.tag, request.tag.hashCode(), notification)
+    }
+}
+
+class SystemAndroidContactsProvider(
+    private val context: Context,
+) : AndroidContactsProvider {
+    override fun searchContacts(query: String, limit: Int): List<ContactSummaryWire> {
+        val bounded = if (limit <= 0) 10 else minOf(limit, MarlinDeviceBridge.MAX_CONTACTS_LIMIT)
+        val granted = context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+        if (!granted) return emptyList()
+
+        val projection = arrayOf(
+            ContactsContract.CommonDataKinds.Email.CONTACT_ID,
+            ContactsContract.CommonDataKinds.Email.DISPLAY_NAME_PRIMARY,
+            ContactsContract.CommonDataKinds.Email.ADDRESS,
+        )
+        val trimmed = query.trim()
+        val selection = if (trimmed.isEmpty()) {
+            null
+        } else {
+            "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME_PRIMARY} LIKE ?"
+        }
+        val selectionArgs = if (trimmed.isEmpty()) null else arrayOf("%$trimmed%")
+
+        val out = ArrayList<ContactSummaryWire>(bounded)
+        context.contentResolver.query(
+            ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+            projection,
+            selection,
+            selectionArgs,
+            "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME_PRIMARY} ASC",
+        )?.use { cursor ->
+            val idIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.CONTACT_ID)
+            val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.DISPLAY_NAME_PRIMARY)
+            val addrIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
+            while (cursor.moveToNext() && out.size < bounded) {
+                val id = cursor.getString(idIdx) ?: continue
+                val name = cursor.getString(nameIdx) ?: id
+                val addr = cursor.getString(addrIdx)
+                out.add(ContactSummaryWire(contactId = id, displayName = name, handle = addr))
+            }
+        }
+        return out
     }
 }

@@ -44,6 +44,30 @@ private class RecordingNotificationDeliverer : AndroidNotificationDeliverer {
     }
 }
 
+private class StubVoiceProvider(
+    private val transcript: VoiceTranscriptWire,
+) : AndroidVoiceProvider {
+    override fun latestTranscript(): VoiceTranscriptWire = transcript
+}
+
+private class StubContactsProvider(
+    private val contacts: List<ContactSummaryWire>,
+) : AndroidContactsProvider {
+    @Volatile
+    var lastQuery: String? = null
+
+    @Volatile
+    var lastLimit: Int = -1
+
+    override fun searchContacts(query: String, limit: Int): List<ContactSummaryWire> {
+        lastQuery = query
+        lastLimit = limit
+        val q = query.lowercase()
+        val matched = if (q.isEmpty()) contacts else contacts.filter { it.displayName.lowercase().contains(q) }
+        return matched.take(limit)
+    }
+}
+
 private fun assertEquals(expected: Any?, actual: Any?, label: String = "") {
     if (expected != actual) {
         throw AssertionError("FAIL $label: expected=<$expected> actual=<$actual>")
@@ -178,6 +202,50 @@ private fun testCaptureQueueFIFOAtomicDrainAndRingCap() {
     }
 }
 
+private fun testCapabilitiesVoiceAndContactsWireParity() {
+    val voice = StubVoiceProvider(
+        VoiceTranscriptWire(
+            transcriptId = "vt-kt-1",
+            locale = "en-US",
+            text = "Ship \"Marlin\" mobile",
+            durationMs = 1920L,
+        ),
+    )
+    val contacts = StubContactsProvider(
+        listOf(
+            ContactSummaryWire("ac-1", "Ada Lovelace", "ada@tao3k.org"),
+            ContactSummaryWire("ac-2", "Alan Turing", "alan@tao3k.org"),
+        ),
+    )
+    val bridge = MarlinDeviceBridge(
+        photos = StubPhotoLibrary(),
+        notifications = RecordingNotificationDeliverer(),
+        voice = voice,
+        contacts = contacts,
+    )
+
+    val caps = bridge.dispatch("bridge.capabilities", null)
+    assertTrue(caps.contains(""""platform":"android""""), "android platform")
+    assertTrue(caps.contains(""""voice.latestTranscript""""), "voice method advertised")
+    assertTrue(caps.contains(""""contacts.search""""), "contacts method advertised")
+
+    val voiceOut = bridge.dispatch("voice.latestTranscript", null)
+    assertEquals(
+        """{"durationMs":1920,"locale":"en-US","text":"Ship \"Marlin\" mobile","transcriptId":"vt-kt-1"}""",
+        voiceOut,
+        "voice.latestTranscript wire JSON",
+    )
+
+    val contactsOut = bridge.dispatch("contacts.search", """{"query":"  Ada  ","limit":999}""")
+    assertEquals("Ada", contacts.lastQuery, "trimmed query")
+    assertEquals(MarlinDeviceBridge.MAX_CONTACTS_LIMIT, contacts.lastLimit, "clamped limit to 25")
+    assertEquals(
+        """{"contacts":[{"contactId":"ac-1","displayName":"Ada Lovelace","handle":"ada@tao3k.org"}]}""",
+        contactsOut,
+        "contacts.search wire JSON",
+    )
+}
+
 private fun testUnsupportedMethodFailsClosed() {
     val bridge = MarlinDeviceBridge(
         photos = StubPhotoLibrary(),
@@ -246,6 +314,7 @@ fun main() {
         "testVisionOCRSuccessEscapingAndRejectsEmptyLocalId" to ::testVisionOCRSuccessEscapingAndRejectsEmptyLocalId,
         "testNotificationBuildsGatePrefixedTagAndRejectsEmptyPayload" to ::testNotificationBuildsGatePrefixedTagAndRejectsEmptyPayload,
         "testCaptureQueueFIFOAtomicDrainAndRingCap" to ::testCaptureQueueFIFOAtomicDrainAndRingCap,
+        "testCapabilitiesVoiceAndContactsWireParity" to ::testCapabilitiesVoiceAndContactsWireParity,
         "testUnsupportedMethodFailsClosed" to ::testUnsupportedMethodFailsClosed,
         "testConcurrentDispatchStress100TasksZeroRaces" to ::testConcurrentDispatchStress100TasksZeroRaces,
     )

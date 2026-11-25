@@ -13,6 +13,7 @@
 // UserDefaults App Group), enabling deterministic `swift test` execution on
 // macOS hosts and CI without requiring an iOS Simulator runtime image.
 
+import Contacts
 import Foundation
 import Photos
 import UserNotifications
@@ -169,12 +170,90 @@ public struct DrainCapturesResponse: Codable, Equatable, Sendable {
     }
 }
 
+public struct VoiceTranscriptWire: Codable, Equatable, Sendable {
+    public let transcriptId: String
+    public let locale: String
+    public let text: String
+    public let durationMs: Int64
+
+    public init(transcriptId: String, locale: String, text: String, durationMs: Int64) {
+        self.transcriptId = transcriptId
+        self.locale = locale
+        self.text = text
+        self.durationMs = durationMs
+    }
+}
+
+public struct ContactSearchRequest: Codable, Equatable, Sendable {
+    public let query: String
+    public let limit: Int
+
+    public init(query: String, limit: Int = 10) {
+        self.query = query
+        self.limit = limit
+    }
+}
+
+public struct ContactSummaryWire: Codable, Equatable, Sendable {
+    public let contactId: String
+    public let displayName: String
+    public let handle: String?
+
+    public init(contactId: String, displayName: String, handle: String? = nil) {
+        self.contactId = contactId
+        self.displayName = displayName
+        self.handle = handle
+    }
+}
+
+public struct ContactSearchResponse: Codable, Equatable, Sendable {
+    public let contacts: [ContactSummaryWire]
+
+    public init(contacts: [ContactSummaryWire]) {
+        self.contacts = contacts
+    }
+}
+
+public struct BridgeCapabilitiesWire: Codable, Equatable, Sendable {
+    public let platform: String
+    public let families: [String]
+    public let methods: [String]
+
+    public init(platform: String, families: [String], methods: [String]) {
+        self.platform = platform
+        self.families = families
+        self.methods = methods
+    }
+}
+
 // MARK: - Protocol-Injectable OS Boundaries
 
 public protocol PhotoLibraryProviding: Sendable {
     func authorizationStatus() -> PHAuthorizationStatus
     func recentScreenshots(limit: Int) throws -> [PhotoItemWire]
     func extractTextOCR(localID: String) throws -> String
+}
+
+public protocol VoiceCaptureProviding: Sendable {
+    func latestTranscript() throws -> VoiceTranscriptWire
+}
+
+public protocol ContactsProviding: Sendable {
+    func searchContacts(query: String, limit: Int) throws -> [ContactSummaryWire]
+}
+
+public struct EmptyVoiceCaptureProvider: VoiceCaptureProviding {
+    public init() {}
+    public func latestTranscript() throws -> VoiceTranscriptWire {
+        VoiceTranscriptWire(transcriptId: "", locale: "en-US", text: "", durationMs: 0)
+    }
+}
+
+public struct EmptyContactsProvider: ContactsProviding {
+    public init() {}
+    public func searchContacts(query: String, limit: Int) throws -> [ContactSummaryWire] {
+        []
+    }
 }
 
 public protocol NotificationDelivering: Sendable {
@@ -282,6 +361,50 @@ public struct SystemNotificationDeliverer: NotificationDelivering {
     }
 }
 
+/// Real Apple Contacts framework adapter returning PII-bounded ContactSummaryWire records.
+public struct SystemContactsProvider: ContactsProviding {
+    public init() {}
+
+    public func searchContacts(query: String, limit: Int) throws -> [ContactSummaryWire] {
+        let bounded = limit <= 0 ? 10 : min(limit, MarlinDeviceBridge.maxContactsLimit)
+        let store = CNContactStore()
+        let keys: [CNKeyDescriptor] = [
+            CNContactIdentifierKey as CNKeyDescriptor,
+            CNContactGivenNameKey as CNKeyDescriptor,
+            CNContactFamilyNameKey as CNKeyDescriptor,
+            CNContactEmailAddressesKey as CNKeyDescriptor,
+        ]
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matched: [CNContact]
+        if trimmed.isEmpty {
+            var collected: [CNContact] = []
+            let req = CNContactFetchRequest(keysToFetch: keys)
+            try store.enumerateContacts(with: req) { contact, stop in
+                collected.append(contact)
+                if collected.count >= bounded {
+                    stop.pointee = true
+                }
+            }
+            matched = collected
+        } else {
+            let predicate = CNContact.predicateForContacts(matchingName: trimmed)
+            matched = Array(try store.unifiedContacts(matching: predicate, keysToFetch: keys).prefix(bounded))
+        }
+        return matched.map { contact in
+            let fullName = [contact.givenName, contact.familyName]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            let email = contact.emailAddresses.first.map { String($0.value) }
+            return ContactSummaryWire(
+                contactId: contact.identifier,
+                displayName: fullName.isEmpty ? (email ?? contact.identifier) : fullName,
+                handle: email
+            )
+        }
+    }
+}
+
 public final class AppGroupCaptureStore: CaptureQueueStoring, @unchecked Sendable {
     public static let queueKey = "marlin.pending.captures"
     public static let maxQueuedItems = 64
@@ -381,20 +504,59 @@ public final class MarlinDeviceBridge: Sendable {
     public static let maxNotificationBodyChars = 1024
     public static let defaultScreenshotLimit = 10
     public static let maxScreenshotLimit = 32
+    public static let maxContactsLimit = 25
+
+    public static let supportedFamilies = ["photos", "voice", "contacts", "notifications", "capture"]
+    public static let supportedMethods = [
+        "bridge.capabilities",
+        "permissionState",
+        "photos.recentScreenshots",
+        "vision.extractOCR",
+        "voice.latestTranscript",
+        "contacts.search",
+        "notify.send",
+        "capture.drain",
+    ]
 
     private let photos: PhotoLibraryProviding
+    private let voice: VoiceCaptureProviding
+    private let contacts: ContactsProviding
     private let notifications: NotificationDelivering
     private let captureStore: CaptureQueueStoring
 
     public init(
         appGroupID: String = defaultAppGroupID,
         photos: PhotoLibraryProviding = SystemPhotoLibraryProvider(),
+        voice: VoiceCaptureProviding = EmptyVoiceCaptureProvider(),
+        contacts: ContactsProviding = SystemContactsProvider(),
         notifications: NotificationDelivering = SystemNotificationDeliverer(),
         captureStore: CaptureQueueStoring? = nil
     ) {
         self.photos = photos
+        self.voice = voice
+        self.contacts = contacts
         self.notifications = notifications
         self.captureStore = captureStore ?? AppGroupCaptureStore(suiteName: appGroupID)
+    }
+
+    public func capabilities() -> BridgeCapabilitiesWire {
+        BridgeCapabilitiesWire(
+            platform: "ios",
+            families: Self.supportedFamilies,
+            methods: Self.supportedMethods
+        )
+    }
+
+    public func latestTranscript() throws -> VoiceTranscriptWire {
+        try voice.latestTranscript()
+    }
+
+    public func searchContacts(query: String, limit: Int = 10) throws -> [ContactSummaryWire] {
+        let bounded = limit <= 0 ? 10 : min(limit, Self.maxContactsLimit)
+        return try contacts.searchContacts(
+            query: query.trimmingCharacters(in: .whitespacesAndNewlines),
+            limit: bounded
+        )
     }
 
     public static func mapPermissionStatus(_ status: PHAuthorizationStatus) -> OsPermissionStateWire {
@@ -482,6 +644,9 @@ public final class MarlinDeviceBridge: Sendable {
         let decoder = JSONDecoder()
 
         switch method {
+        case "bridge.capabilities":
+            return try encoder.encode(capabilities())
+
         case "permissionState":
             return try encoder.encode(PermissionStateResponse(state: permissionState()))
 
@@ -503,6 +668,24 @@ public final class MarlinDeviceBridge: Sendable {
             let req = try decoder.decode(ExtractOCRRequest.self, from: argsJSON)
             let text = try extractTextOCR(localID: req.localId)
             return try encoder.encode(ExtractOCRResponse(text: text))
+
+        case "voice.latestTranscript":
+            let tr = try latestTranscript()
+            return try encoder.encode(tr)
+
+        case "contacts.search":
+            let query: String
+            let limit: Int
+            if let argsJSON, !argsJSON.isEmpty {
+                let req = try decoder.decode(ContactSearchRequest.self, from: argsJSON)
+                query = req.query
+                limit = req.limit
+            } else {
+                query = ""
+                limit = 10
+            }
+            let items = try searchContacts(query: query, limit: limit)
+            return try encoder.encode(ContactSearchResponse(contacts: items))
 
         case "notify.send":
             guard let argsJSON, !argsJSON.isEmpty else {
