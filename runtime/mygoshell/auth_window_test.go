@@ -148,4 +148,28 @@ func TestDedicatedLoginWindowDesktopCompactAndOSKeychainLockToggle(t *testing.T)
 	if !compactTester.HasText("TIER-0 LOGIN WINDOW") || !compactTester.HasText("Guangtao Dev") {
 		t.Fatalf("expected compact LoginWindow to render cleanly, got %q", strings.Join(compactTester.Texts(), " | "))
 	}
+
+	// 6. Enterprise OIDC Discovery UI panel inside Sign-In view captures Issuer + Client ID cleanly!
+	_ = mgr.SignOutAll(ctx)
+	var gotIssuer, gotClient string
+	authCtrl.OnConfigureOIDC = func(issuer, clientID string) error {
+		gotIssuer = issuer
+		gotClient = clientID
+		return nil
+	}
+	tt.Frame()
+	if err := tt.Click("+ Enterprise SSO"); err != nil {
+		t.Fatalf("click + Enterprise SSO failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("ENTERPRISE OIDC DISCOVERY") {
+		t.Fatalf("expected Enterprise OIDC Discovery form, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	authCtrl.SetEnterpriseOIDCInputs("https://sso.acme.dev", "acme-marlin-native")
+	if err := tt.Click("Connect Enterprise SSO"); err != nil {
+		t.Fatalf("click Connect Enterprise SSO failed: %v", err)
+	}
+	if gotIssuer != "https://sso.acme.dev" || gotClient != "acme-marlin-native" {
+		t.Fatalf("unexpected Enterprise OIDC submission: issuer=%q client=%q", gotIssuer, gotClient)
+	}
 }

@@ -27,18 +27,22 @@ type AuthController struct {
 
 	// Optional platform hooks invoked by UI buttons.
 	OnStartOAuth      func(providerID auth.ProviderID) error
+	OnConfigureOIDC   func(issuerURL, clientID string) error
 	OnCopyText        func(text string)
 	OnRefresh         func(accountID auth.AccountID) error
 	OnOpenLoginWindow func()
 	OnChanged         func()
 
-	mu            sync.Mutex
-	emailInput    string
-	codeInput     string
-	emailMode     auth.AuthMethod
-	addingAccount bool
-	statusMessage string
-	statusError   string
+	mu             sync.Mutex
+	emailInput     string
+	codeInput      string
+	emailMode      auth.AuthMethod
+	oidcOpen       bool
+	oidcIssuer     string
+	oidcClientID   string
+	addingAccount  bool
+	statusMessage  string
+	statusError    string
 }
 
 // CurrentVaultInfo returns the latest secret-free OS Keychain / vault security status.
@@ -124,6 +128,14 @@ func (ac *AuthController) SetEmailInput(v string) {
 func (ac *AuthController) SetCodeInput(v string) {
 	ac.mu.Lock()
 	ac.codeInput = v
+	ac.mu.Unlock()
+}
+
+// SetEnterpriseOIDCInputs sets the Issuer URL and Client ID for Enterprise SSO forms.
+func (ac *AuthController) SetEnterpriseOIDCInputs(issuerURL, clientID string) {
+	ac.mu.Lock()
+	ac.oidcIssuer = issuerURL
+	ac.oidcClientID = clientID
 	ac.mu.Unlock()
 }
 
@@ -252,8 +264,18 @@ func (ac *AuthController) renderSignInOptions(
 	}
 
 	if len(oauthProviders) > 0 {
-		ui.Text(c, "SINGLE SIGN-ON (EXTERNAL BROWSER · PKCE S256)").
-			FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "SINGLE SIGN-ON (EXTERNAL BROWSER · PKCE S256)").
+				FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+			ui.Spacer(c)
+			oidcLbl := "+ Enterprise SSO"
+			if ac.oidcOpen {
+				oidcLbl = "Hide SSO"
+			}
+			if ApplePillButton(c, "auth-toggle-oidc", oidcLbl, BtnGlass, dt, svgIconGlobe, true).Clicked() {
+				ac.oidcOpen = !ac.oidcOpen
+			}
+		})
 		ui.Column(c).Gap(8).AlignItems(ui.Stretch).Children(func() {
 			for _, p := range oauthProviders {
 				prov := p
@@ -262,6 +284,42 @@ func (ac *AuthController) renderSignInOptions(
 				})
 			}
 		})
+		if ac.oidcOpen {
+			ui.Column(c).Padding(10, 12).Gap(8).Radius(12).
+				Background(toColor(dt.SurfaceElevated)).Border(1, glassBorderColor(dt)).Children(func() {
+				ui.Text(c, "ENTERPRISE OIDC DISCOVERY (OKTA · ENTRA ID · KEYCLOAK)").
+					FontSize(10).FontWeight(700).TextColor(toColor(dt.InkMuted))
+				AuthEmailInputRow(c, dt, "auth-oidc-issuer", svgIconGlobe, &ac.oidcIssuer, "https://sso.company.com", false)
+				AuthEmailInputRow(c, dt, "auth-oidc-client", svgIconKey, &ac.oidcClientID, "Native OIDC Client ID", false)
+				ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+					if ApplePillButton(c, "auth-oidc-connect", "Connect Enterprise SSO", BtnPrimary, dt, svgIconShield, true).Clicked() {
+						ac.mu.Lock()
+						iss := ac.oidcIssuer
+						cid := ac.oidcClientID
+						ac.mu.Unlock()
+						var err error
+						if ac.OnConfigureOIDC != nil {
+							err = ac.OnConfigureOIDC(iss, cid)
+						} else {
+							cfg, dErr := auth.DiscoverOIDCProvider(context.Background(), nil, iss, cid, "Enterprise SSO", false)
+							if dErr != nil {
+								err = dErr
+							} else if rErr := ac.Manager.RegisterProvider(cfg); rErr != nil {
+								err = rErr
+							} else {
+								ac.startOAuthFlow(cfg.ID)
+							}
+						}
+						if err != nil {
+							ac.setStatus("", err.Error())
+						} else {
+							ac.oidcOpen = false
+							ac.setStatus("Connected Enterprise OIDC provider via discovery.", "")
+						}
+					}
+				})
+			})
+		}
 	}
 
 	// Passwordless Email Login (OTP Code or Magic Link).
@@ -488,6 +546,10 @@ func (ac *AuthController) renderAccountCenter(
 			}
 		}
 	})
+
+	if ac.CanToggleVaultLock() || ac.CurrentVaultInfo().OSProtected {
+		AuthVaultStatusCard(c, dt, ac.CurrentVaultInfo(), ac.CanToggleVaultLock(), ac.ToggleVaultLock)
+	}
 }
 
 func (ac *AuthController) startOAuthFlow(providerID auth.ProviderID) {

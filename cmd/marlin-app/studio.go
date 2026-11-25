@@ -277,6 +277,9 @@ func buildWorkbenchApp(
 		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
 	}
 	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
+	if restored, rErr := authMgr.RestoreFromVault(ctx); rErr == nil && restored > 0 {
+		log.Printf("rehydrated %d signed-in account(s) from %s", restored, vaultInfo.BackendName)
+	}
 	authCtrl := mygoshell.NewAuthController(authMgr)
 	authCtrl.VaultInfo = vaultInfo
 	if osVault, ok := nativeVault.(*auth.OSProtectedVault); ok {

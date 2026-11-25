@@ -133,3 +133,58 @@ func TestOSProtectedVaultKeychainWrapLockUnlockAndPersistence(t *testing.T) {
 		t.Fatalf("fallback MemoryVault Store failed: %v", err)
 	}
 }
+
+func TestSessionRehydrationAcrossAppRestartFromOSKeychainVault(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeNativeSecretStore{name: "macOS Keychain (Mock)", available: true}
+	vaultPath := filepath.Join(t.TempDir(), "rehydrate-vault.enc")
+
+	// Session 1: sign in two accounts and switch active account.
+	vault1, _ := auth.OpenNativeVault(ctx, auth.NativeVaultConfig{Store: store, VaultPath: vaultPath})
+	mgr1 := auth.NewManager(auth.ManagerConfig{
+		Vault:        vault1,
+		EmailBackend: &fakeEmailBackend{expectedCode: "999888"},
+	})
+	_ = mgr1.RegisterProvider(auth.EmailOTPProvider())
+
+	_, _ = mgr1.RequestEmailLogin(ctx, "first@marlin.dev", auth.MethodEmailOTP)
+	acc1, err := mgr1.VerifyEmailLogin(ctx, "999888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = mgr1.RequestEmailLogin(ctx, "second@marlin.dev", auth.MethodEmailOTP)
+	acc2, err := mgr1.VerifyEmailLogin(ctx, "999888")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr1.SwitchAccount(acc1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify ZERO plaintext emails or tokens exist on disk inside the AES-256-GCM file!
+	diskRaw, err := os.ReadFile(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(diskRaw, []byte("first@marlin.dev")) || bytes.Contains(diskRaw, []byte("email-access-token")) {
+		t.Fatal("plaintext email or token leaked to encrypted vault file!")
+	}
+
+	// Session 2 (fresh process): reopen OS-keychain vault + brand-new AuthManager -> RestoreFromVault!
+	vault2, _ := auth.OpenNativeVault(ctx, auth.NativeVaultConfig{Store: store, VaultPath: vaultPath})
+	mgr2 := auth.NewManager(auth.ManagerConfig{Vault: vault2})
+	restoredCount, err := mgr2.RestoreFromVault(ctx)
+	if err != nil || restoredCount != 2 {
+		t.Fatalf("expected 2 restored accounts on restart, got count=%d err=%v", restoredCount, err)
+	}
+	snap := mgr2.Snapshot()
+	if snap.Phase != auth.PhaseSignedIn || snap.ActiveAccountID != acc1.ID || len(snap.Accounts) != 2 {
+		t.Fatalf("unexpected rehydrated AuthSnapshot: %+v (want active=%s)", snap, acc1.ID)
+	}
+	if hdr, err := mgr2.AuthorizationHeader(ctx); err != nil || hdr != "Bearer email-access-token" {
+		t.Fatalf("expected live Bearer token after restart rehydration, got %q err=%v", hdr, err)
+	}
+	if err := mgr2.SwitchAccount(acc2.ID); err != nil {
+		t.Fatalf("expected second restored account %s to be switchable, got %v", acc2.ID, err)
+	}
+}

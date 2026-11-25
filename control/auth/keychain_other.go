@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-//go:build (!darwin && !linux) || js
+//go:build (!darwin && !linux && !windows) || js
 
 package auth
 

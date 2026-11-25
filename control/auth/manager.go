@@ -625,8 +625,64 @@ func (m *AuthManager) SwitchAccount(accountID AccountID) error {
 	m.phase = PhaseSignedIn
 	m.lastError = ""
 	m.mu.Unlock()
+	if pv, ok := m.vault.(ProfileVault); ok {
+		_ = pv.SetActiveAccount(context.Background(), accountID)
+	}
 	m.emit()
 	return nil
+}
+
+// RestoreFromVault rehydrates persisted signed-in AccountProfiles from an
+// OS-Keychain-protected ProfileVault on application startup. Only accounts
+// that still have valid vaulted credentials are restored.
+func (m *AuthManager) RestoreFromVault(ctx context.Context) (int, error) {
+	pv, ok := m.vault.(ProfileVault)
+	if !ok {
+		return 0, nil
+	}
+	profiles, savedActive, err := pv.LoadProfiles(ctx)
+	if err != nil {
+		return 0, err
+	}
+	restored := make([]AccountProfile, 0, len(profiles))
+	for _, prof := range profiles {
+		if prof.ID == "" {
+			continue
+		}
+		tok, found, loadErr := m.vault.Load(ctx, prof.ID)
+		if loadErr != nil || !found || strings.TrimSpace(tok.AccessToken) == "" {
+			continue
+		}
+		prof.ExpiresAt = tok.ExpiresAt
+		prof.HasRefresh = tok.RefreshToken != ""
+		restored = append(restored, prof)
+	}
+	if len(restored) == 0 {
+		return 0, nil
+	}
+
+	m.mu.Lock()
+	for _, prof := range restored {
+		if _, exists := m.accounts[prof.ID]; !exists {
+			m.accountOrder = append(m.accountOrder, prof.ID)
+		}
+		m.accountEpoch[prof.ID]++
+		m.accounts[prof.ID] = prof
+	}
+	if savedActive != "" {
+		if _, exists := m.accounts[savedActive]; exists {
+			m.activeAccountID = savedActive
+		}
+	}
+	if m.activeAccountID == "" && len(m.accountOrder) > 0 {
+		m.activeAccountID = m.accountOrder[0]
+	}
+	if m.activeAccountID != "" {
+		m.phase = PhaseSignedIn
+	}
+	m.mu.Unlock()
+	m.emit()
+	return len(restored), nil
 }
 
 // SignOut revokes the account's refresh/access token if supported, scrubs its
@@ -850,6 +906,9 @@ func (m *AuthManager) admitSignedInAccount(
 		m.setError(err)
 		return AccountProfile{}, err
 	}
+	if pv, ok := m.vault.(ProfileVault); ok {
+		_ = pv.StoreProfile(ctx, profile)
+	}
 
 	m.mu.Lock()
 	if _, exists := m.accounts[profile.ID]; !exists {
@@ -865,6 +924,30 @@ func (m *AuthManager) admitSignedInAccount(
 	m.mu.Unlock()
 	m.emit()
 	return profile, nil
+}
+
+func (m *AuthManager) accountStanding(accountID AccountID) (AccountProfile, uint64, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	if !ok {
+		return AccountProfile{}, 0, false
+	}
+	cp := acc
+	if len(acc.Scopes) > 0 {
+		cp.Scopes = append([]string(nil), acc.Scopes...)
+	}
+	return cp, m.accountEpoch[accountID], true
+}
+
+func (m *AuthManager) isAccountEpochCurrent(accountID AccountID, epoch uint64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.accounts[accountID]
+	return ok && m.accountEpoch[accountID] == epoch
 }
 
 func (m *AuthManager) setError(err error) {

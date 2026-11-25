@@ -312,3 +312,66 @@ func TestOpenSystemBrowserRejectsUnsafeURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverOIDCProviderValidatesIssuerAndPKCES256(t *testing.T) {
+	var mode string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch mode {
+		case "wrong-issuer":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 "https://evil-substituted-issuer.example",
+				"authorization_endpoint": srv.URL + "/auth",
+				"token_endpoint":         srv.URL + "/token",
+				"jwks_uri":               srv.URL + "/jwks",
+			})
+		case "no-s256":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           srv.URL,
+				"authorization_endpoint":           srv.URL + "/auth",
+				"token_endpoint":                   srv.URL + "/token",
+				"jwks_uri":                         srv.URL + "/jwks",
+				"code_challenge_methods_supported": []string{"plain"},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                           srv.URL,
+				"authorization_endpoint":           srv.URL + "/auth",
+				"token_endpoint":                   srv.URL + "/token",
+				"jwks_uri":                         srv.URL + "/jwks",
+				"userinfo_endpoint":                srv.URL + "/userinfo",
+				"revocation_endpoint":              srv.URL + "/revoke",
+				"code_challenge_methods_supported": []string{"S256"},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+
+	// 1. Valid OIDC Discovery succeeds and wires all endpoints + JWKS + Issuer.
+	mode = "ok"
+	cfg, err := auth.DiscoverOIDCProvider(ctx, srv.Client(), srv.URL, "ent-client-1", "Acme SSO", true)
+	if err != nil {
+		t.Fatalf("DiscoverOIDCProvider failed: %v", err)
+	}
+	if cfg.Issuer != srv.URL || cfg.JWKSURL != srv.URL+"/jwks" || cfg.DisplayName != "Acme SSO" {
+		t.Fatalf("unexpected discovered ProviderConfig: %+v", cfg)
+	}
+
+	// 2. Issuer substitution attack MUST fail-closed with ErrIssuerMismatch!
+	mode = "wrong-issuer"
+	if _, err := auth.DiscoverOIDCProvider(ctx, srv.Client(), srv.URL, "ent-client-1", "Acme", true); !errors.Is(err, auth.ErrIssuerMismatch) {
+		t.Fatalf("expected ErrIssuerMismatch on issuer substitution, got %v", err)
+	}
+
+	// 3. Provider advertising only `plain` PKCE (no S256) MUST be rejected!
+	mode = "no-s256"
+	if _, err := auth.DiscoverOIDCProvider(ctx, srv.Client(), srv.URL, "ent-client-1", "Acme", true); err == nil {
+		t.Fatal("expected rejection when IdP does not support PKCE S256")
+	}
+}

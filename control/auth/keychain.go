@@ -251,6 +251,50 @@ func (v *OSProtectedVault) ListAccountIDs(ctx context.Context) ([]AccountID, err
 	return inner.ListAccountIDs(ctx)
 }
 
+func (v *OSProtectedVault) StoreProfile(ctx context.Context, profile AccountProfile) error {
+	v.mu.Lock()
+	inner := v.inner
+	locked := v.locked
+	v.mu.Unlock()
+	if locked || inner == nil {
+		return ErrVaultLocked
+	}
+	return inner.StoreProfile(ctx, profile)
+}
+
+func (v *OSProtectedVault) LoadProfiles(ctx context.Context) ([]AccountProfile, AccountID, error) {
+	v.mu.Lock()
+	inner := v.inner
+	locked := v.locked
+	v.mu.Unlock()
+	if locked || inner == nil {
+		return nil, "", ErrVaultLocked
+	}
+	return inner.LoadProfiles(ctx)
+}
+
+func (v *OSProtectedVault) SetActiveAccount(ctx context.Context, accountID AccountID) error {
+	v.mu.Lock()
+	inner := v.inner
+	locked := v.locked
+	v.mu.Unlock()
+	if locked || inner == nil {
+		return ErrVaultLocked
+	}
+	return inner.SetActiveAccount(ctx, accountID)
+}
+
+func (v *OSProtectedVault) DeleteProfile(ctx context.Context, accountID AccountID) error {
+	v.mu.Lock()
+	inner := v.inner
+	locked := v.locked
+	v.mu.Unlock()
+	if locked || inner == nil {
+		return ErrVaultLocked
+	}
+	return inner.DeleteProfile(ctx, accountID)
+}
+
 func decodeKeyMaterial(raw []byte) ([]byte, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if len(trimmed) == 64 {
