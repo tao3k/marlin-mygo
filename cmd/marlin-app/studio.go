@@ -134,6 +134,40 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				}()
 				return nil
 			}
+			openDedicatedLoginWindow := func() {
+				var loginWin *mygo.Window
+				loginApp := mygoshell.NewLoginWindowApp(mygoshell.LoginWindowConfig{
+					BrandTitle:       app.BrandTitle,
+					BrandSubtitle:    "Sign in via OAuth 2.1 PKCE S256 or Passwordless Email · OS Keychain Protected",
+					InitialThemeID:   "midnight",
+					Auth:             app.Auth,
+					AllowOfflineMode: true,
+					OnAuthenticated: func(auth.AccountProfile) {
+						win.Invalidate()
+						if loginWin != nil {
+							loginWin.Close()
+						}
+					},
+					OnContinueOffline: func() {
+						if loginWin != nil {
+							loginWin.Close()
+						}
+					},
+				})
+				loginWin = mygo.NewWindow(mygo.WindowOptions{
+					Title:     "Sign in to Marlin Studio",
+					Width:     900,
+					Height:    600,
+					MinWidth:  420,
+					MinHeight: 520,
+					Content:   ui.View(loginApp.View),
+				})
+				loginWin.Invalidate()
+			}
+			app.Auth.OnOpenLoginWindow = openDedicatedLoginWindow
+			if cfg.loginWindow {
+				openDedicatedLoginWindow()
+			}
 		}
 
 		if !cfg.showcase {
@@ -227,7 +261,9 @@ func buildWorkbenchApp(
 	if liveTarget == nil {
 		initialProjection = sampleProjectionSnapshot()
 	}
+	nativeVault, vaultInfo := auth.OpenNativeVault(ctx, auth.NativeVaultConfig{})
 	authMgr := auth.NewManager(auth.ManagerConfig{
+		Vault:       nativeVault,
 		OpenBrowser: auth.OpenSystemBrowser,
 	})
 	if googleID := strings.TrimSpace(os.Getenv("MARLIN_OAUTH_GOOGLE_CLIENT_ID")); googleID != "" {
@@ -241,7 +277,12 @@ func buildWorkbenchApp(
 		_ = authMgr.RegisterProvider(auth.GitHubOAuthProvider("marlin-desktop-native"))
 	}
 	_ = authMgr.RegisterProvider(auth.EmailOTPProvider())
-	app.Auth = mygoshell.NewAuthController(authMgr)
+	authCtrl := mygoshell.NewAuthController(authMgr)
+	authCtrl.VaultInfo = vaultInfo
+	if osVault, ok := nativeVault.(*auth.OSProtectedVault); ok {
+		authCtrl.Vault = osVault
+	}
+	app.Auth = authCtrl
 
 	app.Projection = mygoshell.NewProjectionController(initialProjection)
 	app.OnAddRemoteTarget = func(targetID, displayName, endpoint, bearerToken string) error {

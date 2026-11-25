@@ -17,17 +17,20 @@ import (
 )
 
 // AuthController bridges control/auth.AuthManager to a Tier-0 Host GPU UI
-// authentication & account center modal. All credential inputs and OAuth flows
-// render exclusively inside the Tier-0 host layer above untrusted WebViews,
-// and raw tokens never enter this controller or UI state.
+// authentication & account center modal or standalone LoginWindowApp.
+// All credential inputs and OAuth flows render exclusively inside the Tier-0
+// host layer above untrusted WebViews, and raw tokens never enter UI state.
 type AuthController struct {
-	Manager *auth.AuthManager
+	Manager   *auth.AuthManager
+	Vault     *auth.OSProtectedVault
+	VaultInfo auth.VaultSecurityInfo
 
 	// Optional platform hooks invoked by UI buttons.
-	OnStartOAuth func(providerID auth.ProviderID) error
-	OnCopyText   func(text string)
-	OnRefresh    func(accountID auth.AccountID) error
-	OnChanged    func()
+	OnStartOAuth      func(providerID auth.ProviderID) error
+	OnCopyText        func(text string)
+	OnRefresh         func(accountID auth.AccountID) error
+	OnOpenLoginWindow func()
+	OnChanged         func()
 
 	mu            sync.Mutex
 	emailInput    string
@@ -36,6 +39,39 @@ type AuthController struct {
 	addingAccount bool
 	statusMessage string
 	statusError   string
+}
+
+// CurrentVaultInfo returns the latest secret-free OS Keychain / vault security status.
+func (ac *AuthController) CurrentVaultInfo() auth.VaultSecurityInfo {
+	if ac == nil {
+		return auth.VaultSecurityInfo{}
+	}
+	if ac.Vault != nil {
+		return ac.Vault.SecurityInfo()
+	}
+	return ac.VaultInfo
+}
+
+// CanToggleVaultLock reports whether an OS-protected persistent vault is attached.
+func (ac *AuthController) CanToggleVaultLock() bool {
+	return ac != nil && ac.Vault != nil
+}
+
+// ToggleVaultLock locks or unlocks the OS-keychain-backed AES-256-GCM vault.
+func (ac *AuthController) ToggleVaultLock() {
+	if ac == nil || ac.Vault == nil {
+		return
+	}
+	if ac.Vault.SecurityInfo().Locked {
+		if err := ac.Vault.Unlock(context.Background()); err != nil {
+			ac.setStatus("", err.Error())
+			return
+		}
+		ac.setStatus("Unlocked OS Keychain credential vault.", "")
+		return
+	}
+	ac.Vault.Lock()
+	ac.setStatus("Locked credential vault and scrubbed RAM wrapping key.", "")
 }
 
 // NewAuthController wraps an AuthManager for Tier-0 GPU UI rendering.
@@ -104,7 +140,39 @@ func (ac *AuthController) Render(c *ui.Context, t *ui.Theme, dt DerivedTheme, on
 		ui.Text(c, "Auth framework unavailable.").TextColor(toColor(dt.InkMuted))
 		return
 	}
+	ui.Column(c).Width(520).Gap(12).AlignItems(ui.Stretch).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			AppleBadgePill(c, "TIER-0 HOST AUTH", dt.Accent, dt)
+			ui.Text(c, "Account & Authorization").FontSize(16.5).FontWeight(700).TextColor(toColor(dt.Ink))
+			ui.Spacer(c)
+			if ac.OnOpenLoginWindow != nil {
+				if ApplePillButton(c, "auth-popout-window", "Login Window", BtnGlass, dt, svgIconExpand, true).Clicked() {
+					if onClose != nil {
+						onClose()
+					}
+					ac.OnOpenLoginWindow()
+				}
+			}
+			if onClose != nil {
+				if ApplePillButton(c, "auth-close", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
+					ac.ClearSensitiveInputs()
+					onClose()
+				}
+			}
+		})
+		ac.RenderBody(c, t, dt)
+	})
+}
+
+// RenderBody renders the reusable Tier-0 Auth flow body shared by both the
+// overlay Modal (AuthController.Render) and the standalone LoginWindowApp.
+func (ac *AuthController) RenderBody(c *ui.Context, _ *ui.Theme, dt DerivedTheme) {
+	if ac == nil || ac.Manager == nil {
+		ui.Text(c, "Auth framework unavailable.").TextColor(toColor(dt.InkMuted))
+		return
+	}
 	snap := ac.Manager.Snapshot()
+	vaultInfo := ac.CurrentVaultInfo()
 
 	ac.mu.Lock()
 	adding := ac.addingAccount
@@ -120,57 +188,35 @@ func (ac *AuthController) Render(c *ui.Context, t *ui.Theme, dt DerivedTheme, on
 	}
 	ac.mu.Unlock()
 
-	// Header + Tier-0 Security Shield Banner.
-	ui.Column(c).Width(520).Gap(12).AlignItems(ui.Stretch).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			AppleBadgePill(c, "TIER-0 HOST AUTH", dt.Accent, dt)
-			ui.Text(c, "Account & Authorization").FontSize(16.5).FontWeight(700).TextColor(toColor(dt.Ink))
-			ui.Spacer(c)
-			if onClose != nil {
-				if ApplePillButton(c, "auth-close", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
-					ac.ClearSensitiveInputs()
-					onClose()
-				}
-			}
+	AuthSecurityBanner(c, dt, vaultInfo)
+
+	if statusErr != "" {
+		ui.Row(c).Padding(8, 12).Radius(10).
+			Background(rgbaFromRGB(dt.Danger, 0.14)).
+			Border(1, rgbaFromRGB(dt.Danger, 0.45)).Children(func() {
+			ui.Text(c, statusErr).FontSize(12).FontWeight(600).TextColor(toColor(dt.Danger))
 		})
-
-		ui.Row(c).Padding(8, 12).Gap(8).Radius(10).AlignItems(ui.Center).
-			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-			ui.Icon(c, svgIconShield).Size(14, 14).TextColor(toColor(dt.Success))
-			ui.Text(c, "OAuth 2.1 PKCE S256 · Encrypted Host Vault · Zero Untrusted Plugin Token Access").
-				FontSize(11).TextColor(toColor(dt.InkSecondary))
+	} else if statusMsg != "" {
+		ui.Row(c).Padding(8, 12).Radius(10).
+			Background(rgbaFromRGB(dt.Success, 0.12)).
+			Border(1, rgbaFromRGB(dt.Success, 0.35)).Children(func() {
+			ui.Text(c, statusMsg).FontSize(12).TextColor(toColor(dt.Success))
 		})
+	}
 
-		if statusErr != "" {
-			ui.Row(c).Padding(8, 12).Radius(10).
-				Background(rgbaFromRGB(dt.Danger, 0.14)).
-				Border(1, rgbaFromRGB(dt.Danger, 0.45)).Children(func() {
-				ui.Text(c, statusErr).FontSize(12).FontWeight(600).TextColor(toColor(dt.Danger))
-			})
-		} else if statusMsg != "" {
-			ui.Row(c).Padding(8, 12).Radius(10).
-				Background(rgbaFromRGB(dt.Success, 0.12)).
-				Border(1, rgbaFromRGB(dt.Success, 0.35)).Children(func() {
-				ui.Text(c, statusMsg).FontSize(12).TextColor(toColor(dt.Success))
-			})
-		}
-
-		// Route between: (1) In-progress OAuth/Device flow, (2) Pending Email OTP/Link verification,
-		// (3) Signed-In Account Center, or (4) Sign-In / Add Account selector.
-		if snap.PendingOAuth != nil {
-			ac.renderPendingOAuth(c, dt, snap.PendingOAuth)
-			return
-		}
-		if snap.PendingEmail != nil {
-			ac.renderPendingEmail(c, dt, snap.PendingEmail)
-			return
-		}
-		if active, signedIn := snap.ActiveProfile(); signedIn && !adding {
-			ac.renderAccountCenter(c, dt, snap, active)
-			return
-		}
-		ac.renderSignInOptions(c, dt, snap, emailMode, len(snap.Accounts) > 0)
-	})
+	if snap.PendingOAuth != nil {
+		ac.renderPendingOAuth(c, dt, snap.PendingOAuth)
+		return
+	}
+	if snap.PendingEmail != nil {
+		ac.renderPendingEmail(c, dt, snap.PendingEmail)
+		return
+	}
+	if active, signedIn := snap.ActiveProfile(); signedIn && !adding {
+		ac.renderAccountCenter(c, dt, snap, active)
+		return
+	}
+	ac.renderSignInOptions(c, dt, snap, emailMode, len(snap.Accounts) > 0)
 }
 
 func (ac *AuthController) renderSignInOptions(
@@ -211,16 +257,8 @@ func (ac *AuthController) renderSignInOptions(
 		ui.Column(c).Gap(8).AlignItems(ui.Stretch).Children(func() {
 			for _, p := range oauthProviders {
 				prov := p
-				variant := BtnPrimary
-				if prov.ID != auth.ProviderGoogle {
-					variant = BtnTinted
-				}
-				label := fmt.Sprintf("Continue with %s", prov.DisplayName)
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					if ApplePillButton(c, "auth-oauth-"+string(prov.ID), label, variant, dt, svgIconShield, false).Clicked() {
-						ac.startOAuthFlow(prov.ID)
-					}
-					AppleBadgePill(c, strings.ToUpper(string(prov.Method)), dt.Info, dt)
+				AuthOAuthProviderButton(c, dt, prov, func() {
+					ac.startOAuthFlow(prov.ID)
 				})
 			}
 		})
@@ -242,12 +280,7 @@ func (ac *AuthController) renderSignInOptions(
 			}
 		})
 
-		ui.Row(c).Padding(8, 12).Radius(12).
-			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-			ui.TextInputBase(c.Key("auth-email-input"), &ac.emailInput).
-				Placeholder("you@company.com").
-				FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1)
-		})
+		AuthEmailInputRow(c, dt, "auth-email-input", svgIconMail, &ac.emailInput, "you@company.com", false)
 
 		sendLabel := "Send Verification Code"
 		if emailMode == auth.MethodEmailMagicLink {
@@ -324,12 +357,7 @@ func (ac *AuthController) renderPendingEmail(c *ui.Context, dt DerivedTheme, pen
 		if pending.Method == auth.MethodEmailMagicLink {
 			placeholder = "Paste magic link verification token..."
 		}
-		ui.Row(c).Padding(8, 12).Radius(12).
-			Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-			ui.TextInputBase(c.Key("auth-code-input"), &ac.codeInput).
-				Placeholder(placeholder).
-				FontSize(14).TextColor(toColor(dt.Ink)).Grow(1).AutoFocus()
-		})
+		AuthEmailInputRow(c, dt, "auth-code-input", svgIconKey, &ac.codeInput, placeholder, true)
 
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Textf(c, "Attempts %d/%d", pending.Attempts, pending.MaxAttempts).
@@ -391,15 +419,7 @@ func (ac *AuthController) renderAccountCenter(
 		}
 		ui.Text(c, expiryNote).FontSize(11.5).TextColor(toColor(dt.InkMuted))
 
-		if len(active.Scopes) > 0 {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "SCOPES:").FontSize(10).FontWeight(700).TextColor(toColor(dt.InkMuted))
-				limit := min(len(active.Scopes), 5)
-				for i := 0; i < limit; i++ {
-					AppleBadgePill(c, active.Scopes[i], dt.Info, dt)
-				}
-			})
-		}
+		AuthScopeChips(c, dt, active.Scopes)
 
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 			if active.HasRefresh {

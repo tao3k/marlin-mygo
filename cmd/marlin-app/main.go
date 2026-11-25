@@ -21,6 +21,7 @@ type appConfig struct {
 	appServerBin     string
 	sidecarBin       string
 	standalone       bool
+	loginWindow      bool
 	realSession      bool
 	tursoPath        string
 	pubKeyFile       string
@@ -49,6 +50,7 @@ func parseFlags() appConfig {
 	flag.StringVar(&cfg.appServerBin, "app-server", "", "local Rust marlin-app-server binary to spawn automatically (auto-discovered if omitted)")
 	flag.StringVar(&cfg.sidecarBin, "sidecar", "", "alias for -app-server: explicit local Rust App Server sidecar binary path")
 	flag.BoolVar(&cfg.standalone, "standalone", false, "run UI-only offline preview without auto-launching the local Rust App Server sidecar")
+	flag.BoolVar(&cfg.loginWindow, "login-window", false, "open the dedicated standalone Tier-0 Login & Security window before/alongside the workbench")
 	flag.BoolVar(&cfg.realSession, "real-session", true, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised Rust App Server")
 	flag.StringVar(&cfg.tursoPath, "turso", "", "optional Turso SQLite file path for crash-resilient session persistence (MARLIN_BRIDGE_TURSO_PATH)")
 	flag.StringVar(&cfg.pubKeyFile, "pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
