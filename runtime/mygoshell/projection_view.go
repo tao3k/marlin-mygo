@@ -6,6 +6,7 @@ package mygoshell
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/egoist/mygo/ui"
@@ -178,9 +179,16 @@ func (p *ProjectionController) renderGraphSurface(c *ui.Context, t *ui.Theme, dt
 		ui.Text(c, "No graph-loop node receipts recorded yet.").TextColor(t.TextMuted)
 		return
 	}
+	var maxDur int64 = 1
+	limit := min(len(nodes), 16)
+	for i := 0; i < limit; i++ {
+		if nodes[i].DurationMS > maxDur {
+			maxDur = nodes[i].DurationMS
+		}
+	}
 	var active *GraphNodeReceiptView
 	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-		limit := min(len(nodes), 16)
+		// Harness-style Pipeline Stage Stepper with semantic phase dot + proportional latency bar.
 		for i := 0; i < limit; i++ {
 			n := nodes[i]
 			if n.NodeID == selectedID {
@@ -188,24 +196,64 @@ func (p *ProjectionController) renderGraphSurface(c *ui.Context, t *ui.Theme, dt
 				active = &cp
 			}
 			label := fmt.Sprintf("%s [%s] · %s · %dms", n.NodeID, n.Kind, n.Phase, n.DurationMS)
-			variant := BtnGlass
-			if n.NodeID == selectedID {
-				variant = BtnPrimary
+			phaseTone := dt.Success
+			phaseGlyph := "✓"
+			switch strings.ToLower(n.Phase) {
+			case "running", "active":
+				phaseTone = dt.Accent
+				phaseGlyph = "●"
+			case "failed", "error":
+				phaseTone = dt.Danger
+				phaseGlyph = "✕"
+			case "denied", "gated", "waiting_gate":
+				phaseTone = dt.Warning
+				phaseGlyph = "⚠"
 			}
-			if ApplePillButton(c, "graph-node-"+n.NodeID, label, variant, dt, nil, true).Clicked() {
+			selected := n.NodeID == selectedID
+			rowBg := toColor(dt.SurfaceElevated)
+			borderCol := glassBorderColor(dt)
+			if selected {
+				rowBg = rgbaFromRGB(dt.Accent, 0.14)
+				borderCol = rgbaFromRGB(dt.Accent, 0.42)
+			}
+			barW := float32(64) * float32(n.DurationMS) / float32(maxDur)
+			if barW < 6 {
+				barW = 6
+			}
+			rowBtn := ui.ButtonBase(c.Key("graph-node-"+n.NodeID)).Label(label).
+				Padding(7, 10).Radius(10).AlignItems(ui.Center).Gap(8).
+				Background(rowBg).Border(1, borderCol)
+			rowBtn.Children(func() {
+				ui.Text(c, phaseGlyph).FontSize(12).FontWeight(700).TextColor(toColor(phaseTone))
+				ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				// Proportional stage duration bar.
+				ui.Row(c).Width(64).Height(6).Radius(3).Background(toColor(dt.SurfaceRecessed)).Children(func() {
+					ui.Box(c).Width(barW).Height(6).Radius(3).Background(toColor(phaseTone))
+				})
+			})
+			if rowBtn.Clicked() {
 				p.mu.Lock()
 				p.selectedNodeID = n.NodeID
 				p.mu.Unlock()
 			}
 		}
 		if active != nil {
-			AppleGlassCard(c, "proj-graph-detail", dt, 14, 12, 5, func() {
-				ui.Textf(c, "Node Receipt: %s", active.ReceiptID).FontWeight(700).TextColor(toColor(dt.Accent))
+			AppleGlassCard(c, "proj-graph-detail", dt, 14, 12, 6, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Textf(c, "Node Receipt: %s", active.ReceiptID).FontWeight(700).TextColor(toColor(dt.Accent))
+					ui.Spacer(c)
+					AppleBadgePill(c, strings.ToUpper(active.Kind), dt.Info, dt)
+				})
 				if active.Summary != "" {
-					ui.Text(c, active.Summary).FontSize(13).TextColor(toColor(dt.Ink))
+					ui.Text(c, active.Summary).FontSize(13).LineHeight(1.4).TextColor(toColor(dt.Ink))
 				}
 				if active.GatewayNote != "" {
-					ui.Textf(c, "Gateway Evidence: %s", active.GatewayNote).FontSize(12).FontWeight(600).TextColor(toColor(dt.Warning))
+					ui.Row(c).Padding(6, 10).Radius(8).
+						Background(rgbaFromRGB(dt.Warning, 0.12)).
+						BorderWidth(0, 0, 0, 2).BorderColor(toColor(dt.Warning)).Children(func() {
+						ui.Textf(c, "Gateway Evidence: %s", active.GatewayNote).FontSize(12).FontWeight(600).TextColor(toColor(dt.Warning))
+					})
 				}
 			})
 		}
@@ -227,23 +275,72 @@ func (p *ProjectionController) renderDiffSurface(c *ui.Context, t *ui.Theme, dt 
 				active = &cp
 			}
 			label := fmt.Sprintf("%s (%s +%d/-%d)", f.Path, f.Status, f.Additions, f.Deletions)
-			variant := BtnGlass
-			if f.Path == selectedPath {
-				variant = BtnPrimary
+			selected := f.Path == selectedPath
+			rowBg := toColor(dt.SurfaceElevated)
+			borderCol := glassBorderColor(dt)
+			if selected {
+				rowBg = rgbaFromRGB(dt.Accent, 0.14)
+				borderCol = rgbaFromRGB(dt.Accent, 0.42)
 			}
-			if ApplePillButton(c, "diff-file-"+f.Path, label, variant, dt, nil, true).Clicked() {
+			totalDelta := f.Additions + f.Deletions
+			addW := float32(28)
+			delW := float32(0)
+			if totalDelta > 0 {
+				addW = float32(56) * float32(f.Additions) / float32(totalDelta)
+				delW = 56 - addW
+			}
+			rowBtn := ui.ButtonBase(c.Key("diff-file-"+f.Path)).Label(label).
+				Padding(7, 10).Radius(10).AlignItems(ui.Center).Gap(8).
+				Background(rowBg).Border(1, borderCol)
+			rowBtn.Children(func() {
+				ui.Text(c, label).FontSize(12).FontWeight(600).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				ui.Row(c).Width(56).Height(6).Radius(3).Background(toColor(dt.SurfaceRecessed)).Clip().Children(func() {
+					if addW > 0 {
+						ui.Box(c).Width(addW).Height(6).Background(toColor(dt.Success))
+					}
+					if delW > 0 {
+						ui.Box(c).Width(delW).Height(6).Background(toColor(dt.Danger))
+					}
+				})
+			})
+			if rowBtn.Clicked() {
 				p.mu.Lock()
 				p.selectedDiffPath = f.Path
 				p.mu.Unlock()
 			}
 		}
 		if active != nil {
-			AppleGlassCard(c, "proj-diff-detail", dt, 14, 12, 3, func() {
-				ui.Textf(c, "Diff Preview: %s", active.Path).FontWeight(700).TextColor(toColor(dt.Accent))
-				lineLimit := min(len(active.HunkLines), 24)
-				for i := 0; i < lineLimit; i++ {
-					ui.Text(c, active.HunkLines[i]).FontSize(12).TextColor(toColor(dt.InkSecondary))
-				}
+			AppleGlassCard(c, "proj-diff-detail", dt, 14, 12, 4, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Textf(c, "Diff Preview: %s", active.Path).FontWeight(700).TextColor(toColor(dt.Accent))
+					ui.Spacer(c)
+					AppleBadgePill(c, fmt.Sprintf("+%d", active.Additions), dt.Success, dt)
+					AppleBadgePill(c, fmt.Sprintf("-%d", active.Deletions), dt.Danger, dt)
+				})
+				ui.Column(c).Padding(6).Gap(2).Radius(10).Background(toColor(dt.SurfaceRecessed)).Children(func() {
+					lineLimit := min(len(active.HunkLines), 24)
+					for i := 0; i < lineLimit; i++ {
+						line := active.HunkLines[i]
+						bg := ui.Transparent
+						ink := toColor(dt.InkSecondary)
+						weight := 400
+						if strings.HasPrefix(line, "@@") {
+							bg = rgbaFromRGB(dt.Accent, 0.12)
+							ink = toColor(dt.Accent)
+							weight = 600
+						} else if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+							bg = rgbaFromRGB(dt.Success, 0.13)
+							ink = toColor(dt.Success)
+						} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+							bg = rgbaFromRGB(dt.Danger, 0.13)
+							ink = toColor(dt.Danger)
+						}
+						ui.Row(c).Padding(2, 6).Radius(4).Background(bg).Children(func() {
+							ui.Text(c, line).FontSize(12).FontWeight(weight).TextColor(ink)
+						})
+					}
+				})
 			})
 		}
 	})
@@ -275,12 +372,25 @@ func (p *ProjectionController) renderProcessSurface(c *ui.Context, t *ui.Theme, 
 			}
 		}
 		if active != nil {
-			AppleGlassCard(c, "proj-proc-detail", dt, 14, 12, 3, func() {
-				ui.Textf(c, "Process %s (exit=%d)", active.ProcessID, active.ExitCode).FontWeight(700).TextColor(toColor(dt.Accent))
-				tailLimit := min(len(active.TailLines), 16)
-				for i := 0; i < tailLimit; i++ {
-					ui.Text(c, active.TailLines[i]).FontSize(12).TextColor(toColor(dt.InkMuted))
-				}
+			stateTone := dt.InkMuted
+			switch strings.ToLower(active.State) {
+			case "running":
+				stateTone = dt.Success
+			case "failed":
+				stateTone = dt.Danger
+			}
+			AppleGlassCard(c, "proj-proc-detail", dt, 14, 12, 6, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Textf(c, "Process %s (exit=%d)", active.ProcessID, active.ExitCode).FontWeight(700).TextColor(toColor(dt.Accent))
+					ui.Spacer(c)
+					AppleBadgePill(c, strings.ToUpper(active.State), stateTone, dt)
+				})
+				ui.Column(c).Padding(8, 10).Gap(3).Radius(10).Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+					tailLimit := min(len(active.TailLines), 16)
+					for i := 0; i < tailLimit; i++ {
+						ui.Textf(c, "%02d | %s", i+1, active.TailLines[i]).FontSize(12).TextColor(toColor(dt.InkSecondary))
+					}
+				})
 			})
 		}
 	})

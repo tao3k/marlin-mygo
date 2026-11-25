@@ -66,6 +66,15 @@ type CancellationReceiptView struct {
 	Outcome               string
 }
 
+// TranscriptSegment is a pre-parsed prose or fenced code block computed once at
+// append/update time so 120Hz Render loops never re-scan markdown strings.
+type TranscriptSegment struct {
+	IsCode  bool
+	Lang    string
+	Content string
+	CopyKey string
+}
+
 // TranscriptEntry stores one row in the Fenwick-virtualized live transcript.
 // Precomputed display strings avoid per-frame fmt.Sprintf heap allocations at 120Hz/240Hz.
 type TranscriptEntry struct {
@@ -91,6 +100,7 @@ type TranscriptEntry struct {
 	receiptBadge  string
 	denialBadge   string
 	cancelBadge   string
+	segments      []TranscriptSegment
 }
 
 func (e *TranscriptEntry) refreshLabels() {
@@ -108,7 +118,11 @@ func (e *TranscriptEntry) refreshLabels() {
 		e.foldKey = "fold-" + e.ID
 		e.collapseLabel = "Collapse " + e.ID
 		e.expandLabel = "Expand " + e.ID
-		e.foldedSummary = fmt.Sprintf("(folded · %d chars)", utf8.RuneCountInString(e.Text))
+		if e.Role == RoleThinking {
+			e.foldedSummary = fmt.Sprintf("Thought · %d chars (click to expand)", utf8.RuneCountInString(e.Text))
+		} else {
+			e.foldedSummary = fmt.Sprintf("(folded · %d chars)", utf8.RuneCountInString(e.Text))
+		}
 	} else {
 		e.foldKey = ""
 		e.collapseLabel = ""
@@ -132,6 +146,69 @@ func (e *TranscriptEntry) refreshLabels() {
 	} else {
 		e.cancelBadge = ""
 	}
+	if strings.Contains(e.Text, "```") {
+		e.segments = parseFencedCodeSegments(e.ID, e.Text)
+	} else {
+		e.segments = nil
+	}
+}
+
+func parseFencedCodeSegments(entryID, text string) []TranscriptSegment {
+	var out []TranscriptSegment
+	lines := strings.Split(text, "\n")
+	var buf strings.Builder
+	inCode := false
+	lang := ""
+	codeIdx := 0
+
+	flushProse := func() {
+		s := strings.TrimSpace(buf.String())
+		buf.Reset()
+		if s != "" {
+			out = append(out, TranscriptSegment{IsCode: false, Content: s})
+		}
+	}
+	flushCode := func() {
+		s := strings.TrimRight(buf.String(), "\n")
+		buf.Reset()
+		l := strings.ToUpper(strings.TrimSpace(lang))
+		if l == "" {
+			l = "CODE"
+		}
+		codeIdx++
+		out = append(out, TranscriptSegment{
+			IsCode:  true,
+			Lang:    l,
+			Content: s,
+			CopyKey: fmt.Sprintf("copy-%s-%d", entryID, codeIdx),
+		})
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if !inCode {
+				flushProse()
+				inCode = true
+				lang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+			} else {
+				flushCode()
+				inCode = false
+				lang = ""
+			}
+			continue
+		}
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(line)
+	}
+	if inCode {
+		flushCode()
+	} else {
+		flushProse()
+	}
+	return out
 }
 
 const (
@@ -166,6 +243,11 @@ type TranscriptController struct {
 	composerText  string
 	activeTurn    uint64
 	inFlight      bool
+	deepThink     bool
+	modelLabel    string
+	lastCopiedKey string
+	OnCopyCode    func(code string)
+	OnDeepThink   func(enabled bool)
 
 	// Single-frame scratch buffers reused across 120Hz/240Hz Render calls (0 slice allocs/frame).
 	renderMu       sync.Mutex
@@ -544,6 +626,31 @@ func (tc *TranscriptController) SetComposerText(text string) {
 	tc.mu.Unlock()
 }
 
+// DeepThinkEnabled reports whether the composer's DeepSeek-style Deep Think toggle is active.
+func (tc *TranscriptController) DeepThinkEnabled() bool {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.deepThink
+}
+
+// SetDeepThink toggles the composer's Deep Think pill (pure UI state).
+func (tc *TranscriptController) SetDeepThink(enabled bool) {
+	tc.mu.Lock()
+	tc.deepThink = enabled
+	cb := tc.OnDeepThink
+	tc.mu.Unlock()
+	if cb != nil {
+		cb(enabled)
+	}
+}
+
+// SetModelLabel sets the ambient model/profile badge displayed in the composer bar.
+func (tc *TranscriptController) SetModelLabel(label string) {
+	tc.mu.Lock()
+	tc.modelLabel = strings.TrimSpace(label)
+	tc.mu.Unlock()
+}
+
 // Render paints ONLY the Fenwick-virtualized visible slice of transcript rows
 // plus the interactive chat composer onto MyGo's GPU scene graph.
 func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(string), onCancel func()) {
@@ -555,6 +662,10 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	totalRows := len(tc.entries)
 	totalH := tc.heights.TotalHeight()
 	inFlight := tc.inFlight
+	autoFollow := tc.autoFollow
+	deepThink := tc.deepThink
+	modelLbl := tc.modelLabel
+	lastCopied := tc.lastCopiedKey
 	draft := tc.composerText
 	tc.renderEntries = tc.renderEntries[:0]
 	tc.renderIndices = tc.renderIndices[:0]
@@ -565,6 +676,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		}
 	}
 	tc.mu.RUnlock()
+	if modelLbl == "" {
+		modelLbl = "Marlin Core"
+	}
 
 	visible := tc.renderEntries
 	visibleIndices := tc.renderIndices
@@ -576,113 +690,234 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	statsLine := tc.cachedStatsStr
 
-	var toggleRow = -1
-	var submitPrompt string
-	var cancelClicked bool
+	var (
+		toggleRow     = -1
+		submitPrompt  string
+		cancelClicked bool
+		jumpLatest    bool
+		toggleThink   bool
+		copiedKey     string
+		copiedCode    string
+	)
 
-	ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(8).
-		Background(t.Surface).Border(1, t.Border).Children(func() {
+	dt := derivedThemeFromUITheme(t)
+
+	ui.Column(c).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
+		Background(toColor(dt.Surface)).Border(1, glassBorderColor(dt)).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).Bold().TextColor(t.TextMuted)
-			ui.Text(c, statsLine).FontSize(11).TextColor(t.TextMuted)
+			ui.Text(c, "LIVE TRANSCRIPT").FontSize(11).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
+			ui.Text(c, statsLine).FontSize(11).TextColor(toColor(dt.InkMuted))
 			ui.Spacer(c)
 			if inFlight {
-				ui.Text(c, "STREAMING").FontSize(11).Bold().TextColor(t.Warning)
+				AppleBadgePill(c, "STREAMING", dt.Warning, dt)
 			} else {
-				ui.Text(c, "IDLE").FontSize(11).TextColor(t.Accent)
+				AppleBadgePill(c, "IDLE", dt.Accent, dt)
 			}
 		})
 
 		if len(visible) == 0 {
 			ui.Text(c, "No turns yet. Send a message below to stream from Rust AppServer.").
-				FontSize(12).TextColor(t.TextMuted)
+				FontSize(12.5).TextColor(toColor(dt.InkMuted))
 		} else {
-			ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
 				for idx := range visible {
 					entry := &visible[idx]
 					rowIdx := visibleIndices[idx]
-					border := t.Border
-					roleColor := t.Accent
+
 					switch entry.Role {
 					case RoleUser:
-						roleColor = t.Accent
-					case RoleAssistant:
-						border = t.Accent
-					case RoleThinking, RoleTool:
-						roleColor = t.Warning
-					case RoleGate:
-						border = t.Warning
-						roleColor = t.Warning
-					}
-					ui.Column(c).MinWidth(0).Padding(8).Gap(4).Radius(6).
-						Border(1, border).Children(func() {
-						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, entry.headerLabel).FontSize(11).Bold().TextColor(roleColor)
-							if entry.Streaming {
-								ui.Text(c, "[streaming...]").FontSize(11).TextColor(t.Warning)
-							} else if entry.outcomeBadge != "" {
-								ui.Text(c, entry.outcomeBadge).FontSize(11).TextColor(t.TextMuted)
-							}
-							ui.Spacer(c)
-							if entry.Collapsible {
-								btnLabel := entry.collapseLabel
-								if entry.Folded {
-									btnLabel = entry.expandLabel
+						// T3 Chat asymmetric user bubble: soft accent tint with crisp pill radius.
+						ui.Row(c).Justify(ui.End).Children(func() {
+							ui.Column(c).MinWidth(0).Padding(9, 13).Gap(4).Radius(16, 16, 4, 16).
+								Background(rgbaFromRGB(dt.Accent, 0.14)).
+								Border(1, rgbaFromRGB(dt.Accent, 0.24)).Children(func() {
+								ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+									ui.Text(c, entry.headerLabel).FontSize(10.5).FontWeight(700).TextColor(toColor(dt.Accent))
+									if entry.outcomeBadge != "" {
+										ui.Text(c, entry.outcomeBadge).FontSize(10.5).TextColor(toColor(dt.InkMuted))
+									}
+								})
+								if entry.Text != "" {
+									ui.Text(c, entry.Text).FontSize(13).LineHeight(1.4).TextColor(toColor(dt.Ink))
 								}
-								if ui.Button(c.Key(entry.foldKey), btnLabel).Clicked() {
-									toggleRow = rowIdx
+							})
+						})
+
+					case RoleThinking:
+						// DeepSeek R1 calm collapsible thinking timeline (recessed + 2px left rail).
+						ui.Column(c).MinWidth(0).Padding(8, 12).Gap(5).Radius(10).
+							Background(toColor(dt.SurfaceRecessed)).
+							BorderWidth(0, 0, 0, 2).BorderColor(toColor(dt.Accent)).Children(func() {
+							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, entry.headerLabel).FontSize(11).FontWeight(600).TextColor(toColor(dt.InkSecondary))
+								if entry.Streaming {
+									AppleBadgePill(c, "THINKING...", dt.Accent, dt)
+								} else if entry.outcomeBadge != "" {
+									ui.Text(c, entry.outcomeBadge).FontSize(11).TextColor(toColor(dt.InkMuted))
 								}
+								ui.Spacer(c)
+								if entry.Collapsible {
+									btnLabel := entry.collapseLabel
+									if entry.Folded {
+										btnLabel = entry.expandLabel
+									}
+									if ApplePillButton(c, entry.foldKey, btnLabel, BtnGlass, dt, nil, true).Clicked() {
+										toggleRow = rowIdx
+									}
+								}
+							})
+							if entry.Collapsible && entry.Folded {
+								ui.Text(c, entry.foldedSummary).FontSize(11.5).TextColor(toColor(dt.InkMuted))
+							} else if entry.Text != "" {
+								ui.Text(c, entry.Text).FontSize(12.5).LineHeight(1.4).TextColor(toColor(dt.InkSecondary))
 							}
 						})
-						if entry.Collapsible && entry.Folded {
-							ui.Text(c, entry.foldedSummary).FontSize(11).TextColor(t.TextMuted)
-						} else if entry.Text != "" {
-							ui.Text(c, entry.Text).FontSize(13)
+
+					default:
+						// Assistant editorial card (with T3 code-fence blocks) / Tool / Gate cards.
+						cardBg := toColor(dt.SurfaceElevated)
+						borderCol := glassBorderColor(dt)
+						roleColor := toColor(dt.Accent)
+						if entry.Role == RoleTool {
+							cardBg = toColor(dt.SurfaceRecessed)
+							roleColor = toColor(dt.Info)
+						} else if entry.Role == RoleGate {
+							cardBg = rgbaFromRGB(dt.Warning, 0.08)
+							borderCol = rgbaFromRGB(dt.Warning, 0.34)
+							roleColor = toColor(dt.Warning)
 						}
-						if entry.ToolCard != nil && !entry.Folded {
-							if entry.receiptBadge != "" {
-								ui.Text(c, entry.receiptBadge).FontSize(11).TextColor(t.Accent)
+						ui.Column(c).MinWidth(0).Padding(10, 12).Gap(6).Radius(12).
+							Background(cardBg).Border(1, borderCol).Children(func() {
+							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, entry.headerLabel).FontSize(11).FontWeight(700).TextColor(roleColor)
+								if entry.Streaming {
+									AppleBadgePill(c, "[streaming...]", dt.Warning, dt)
+								} else if entry.outcomeBadge != "" {
+									ui.Text(c, entry.outcomeBadge).FontSize(11).FontWeight(600).TextColor(toColor(dt.InkMuted))
+								}
+								ui.Spacer(c)
+								if entry.Collapsible {
+									btnLabel := entry.collapseLabel
+									if entry.Folded {
+										btnLabel = entry.expandLabel
+									}
+									if ApplePillButton(c, entry.foldKey, btnLabel, BtnGlass, dt, nil, true).Clicked() {
+										toggleRow = rowIdx
+									}
+								}
+							})
+							if entry.Collapsible && entry.Folded {
+								ui.Text(c, entry.foldedSummary).FontSize(11.5).TextColor(toColor(dt.InkMuted))
+							} else if len(entry.segments) > 0 {
+								for sIdx := range entry.segments {
+									seg := entry.segments[sIdx]
+									if !seg.IsCode {
+										ui.Text(c, seg.Content).FontSize(13).LineHeight(1.45).TextColor(toColor(dt.Ink))
+										continue
+									}
+									// T3 Chat / DeepSeek GPU code-fence card with language badge + 1-click Copy.
+									ui.Column(c).MinWidth(0).Padding(8, 10).Gap(5).Radius(10).
+										Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+										ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+											AppleBadgePill(c, seg.Lang, dt.Info, dt)
+											ui.Spacer(c)
+											copyLbl := "Copy Code"
+											copyVar := BtnGlass
+											if lastCopied == seg.CopyKey {
+												copyLbl = "Copied"
+												copyVar = BtnSuccess
+											}
+											if ApplePillButton(c, seg.CopyKey, copyLbl, copyVar, dt, nil, true).Clicked() {
+												copiedKey = seg.CopyKey
+												copiedCode = seg.Content
+											}
+										})
+										ui.Text(c, seg.Content).FontSize(12).LineHeight(1.4).TextColor(toColor(dt.Ink))
+									})
+								}
+							} else if entry.Text != "" {
+								ui.Text(c, entry.Text).FontSize(13).LineHeight(1.45).TextColor(toColor(dt.Ink))
 							}
-							if entry.denialBadge != "" {
-								ui.Text(c, entry.denialBadge).FontSize(11).TextColor(t.Warning)
+							if entry.ToolCard != nil && !entry.Folded {
+								if entry.receiptBadge != "" {
+									AppleBadgePill(c, entry.receiptBadge, dt.Accent, dt)
+								}
+								if entry.denialBadge != "" {
+									AppleBadgePill(c, entry.denialBadge, dt.Warning, dt)
+								}
 							}
-						}
-						if entry.cancelBadge != "" {
-							ui.Text(c, entry.cancelBadge).FontSize(11).Bold().TextColor(t.Warning)
-						}
-					})
+							if entry.cancelBadge != "" {
+								ui.Text(c, entry.cancelBadge).FontSize(11).FontWeight(700).TextColor(toColor(dt.Warning))
+							}
+						})
+					}
 				}
 			})
 		}
 
-		// Interactive Apple-style floating capsule chat composer bound to live durable sessions.
-		dt := derivedThemeFromUITheme(t)
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(5, 8, 5, 14).Radius(24).
+		// Floating T3/DeepSeek "Jump to Latest" pill whenever user scrolled up from live stream.
+		if !autoFollow && totalRows > 0 {
+			ui.Row(c).Justify(ui.Center).Children(func() {
+				if ApplePillButton(c, "transcript-jump-latest", "Jump to Latest", BtnTinted, dt, nil, true).Clicked() {
+					jumpLatest = true
+				}
+			})
+		}
+
+		// 2-row T3 Chat / DeepSeek floating glass capsule composer.
+		ui.Column(c).Gap(6).Padding(8, 10, 6, 12).Radius(20).
 			Background(toColor(dt.SurfaceElevated)).
 			Border(1, glassBorderColor(dt)).
 			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt)).Children(func() {
-			ui.TextInputBase(c.Key("transcript-composer"), &draft).
-				Placeholder("Message Marlin agent...").
-				FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(5, 2)
-			if AppleCircleIconButton(c, "transcript-send", "Send", svgIconArrowUp, 32, dt).Clicked() {
-				trimmed := strings.TrimSpace(draft)
-				if trimmed != "" {
-					submitPrompt = trimmed
-					draft = ""
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.TextInputBase(c.Key("transcript-composer"), &draft).
+					Placeholder("Message Marlin agent...").
+					FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(4, 2)
+			})
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				AppleBadgePill(c, modelLbl, dt.InkMuted, dt)
+				thinkVar := BtnGlass
+				if deepThink {
+					thinkVar = BtnTinted
 				}
-			}
-			if inFlight && onCancel != nil {
-				if ApplePillButton(c, "transcript-cancel", "Cancel Turn", BtnDestructive, dt, svgIconXMark, true).Clicked() {
-					cancelClicked = true
+				if ApplePillButton(c, "transcript-deep-think", "Deep Think", thinkVar, dt, svgIconSparkles, true).Clicked() {
+					toggleThink = true
 				}
-			}
+				ui.Spacer(c)
+				if inFlight && onCancel != nil {
+					if ApplePillButton(c, "transcript-cancel", "Cancel Turn", BtnDestructive, dt, svgIconXMark, true).Clicked() {
+						cancelClicked = true
+					}
+				}
+				if AppleCircleIconButton(c, "transcript-send", "Send", svgIconArrowUp, 30, dt).Clicked() {
+					trimmed := strings.TrimSpace(draft)
+					if trimmed != "" {
+						submitPrompt = trimmed
+						draft = ""
+					}
+				}
+			})
 		})
 	})
 
 	tc.mu.Lock()
 	tc.composerText = draft
+	if jumpLatest {
+		tc.autoFollow = true
+		tc.scrollToBottomLocked()
+	}
+	if copiedKey != "" {
+		tc.lastCopiedKey = copiedKey
+	}
+	copyCB := tc.OnCopyCode
 	tc.mu.Unlock()
 
+	if toggleThink {
+		tc.SetDeepThink(!deepThink)
+	}
+	if copiedKey != "" && copyCB != nil {
+		copyCB(copiedCode)
+	}
 	if toggleRow >= 0 {
 		tc.ToggleFold(toggleRow)
 	}

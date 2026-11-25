@@ -121,6 +121,8 @@ type WorkbenchApp struct {
 	cachedSnapProfile string
 	cachedSnapGen     uint64
 	cachedSnapBadge   string
+	cachedTabVer      uint64
+	cachedTabBadge    string
 }
 
 func NewWorkbenchApp(
@@ -547,11 +549,73 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				}
 			})
 			a.renderWhichKeyHUD(c, t, dt)
+			a.renderStatusBar(c, t, dt, snap)
 		})
 	})
 
 	// Overlays painted last so they float above any embedded ui.WebView plugin.
 	a.renderOverlays(c, t)
+}
+
+// renderStatusBar paints a sleek 28px Zed / Emacs-modeline footer bar carrying
+// ambient telemetry (target phase, profile/gen, modal keymap, and lazy tab
+// memory counts) so the top navigation bar stays clean and uncluttered.
+func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedTheme, snap *schema.UIWorkbenchSnapshot) {
+	ui.Row(c).Padding(4, 12).Gap(10).AlignItems(ui.Center).
+		Background(toColor(dt.Surface)).
+		BorderWidth(1, 0, 0, 0).BorderColor(toColor(dt.Border)).Children(func() {
+		if active, ok := a.Targets.Active(); ok {
+			meta := active.Meta()
+			phaseStr := string(meta.Phase)
+			if a.cachedTopBadge == "" || a.cachedTopTargetID != meta.ID || a.cachedTopKind != meta.TargetKind || a.cachedTopPhase != phaseStr {
+				a.cachedTopTargetID = meta.ID
+				a.cachedTopKind = meta.TargetKind
+				a.cachedTopPhase = phaseStr
+				a.cachedTopBadge = fmt.Sprintf("[%s · %s]", meta.TargetKind, phaseStr)
+			}
+			ui.Box(c).Size(7, 7).Radius(3.5).Background(toColor(dt.Success))
+			ui.Text(c, a.cachedTopBadge).FontSize(11).TextColor(toColor(dt.InkMuted))
+		}
+		if snap != nil {
+			if a.cachedSnapBadge == "" || a.cachedSnapProfile != snap.ProfileName || a.cachedSnapGen != snap.Generation {
+				a.cachedSnapProfile = snap.ProfileName
+				a.cachedSnapGen = snap.Generation
+				a.cachedSnapBadge = fmt.Sprintf("profile:%s gen:%d", snap.ProfileName, snap.Generation)
+			}
+			ui.Text(c, a.cachedSnapBadge).FontSize(11).TextColor(toColor(dt.Accent))
+		}
+		ui.Spacer(c)
+		if a.Windows != nil {
+			wsnap := a.Windows.Snapshot()
+			if a.cachedTabBadge == "" || a.cachedTabVer != wsnap.Version {
+				a.cachedTabVer = wsnap.Version
+				a.cachedTabBadge = fmt.Sprintf("Tabs %d (%d sleep 0MB)", wsnap.TotalTabs, wsnap.HibernatedTabs)
+			}
+			if ApplePillButton(c, "status-tabs", a.cachedTabBadge, BtnGlass, dt, nil, true).Clicked() {
+				a.bufferPickerOpen = true
+				a.bufferPickerQuery = ""
+			}
+		}
+		if a.KeyTrie != nil {
+			mode := a.ActiveKeyMode()
+			modeLbl := "NORMAL · SPC"
+			modeVar := BtnTinted
+			nextMode := input.ScopeInsert
+			if mode == input.ScopeInsert {
+				modeLbl = "INSERT · EMACS"
+				modeVar = BtnSuccess
+				nextMode = input.ScopeNormal
+			}
+			if ApplePillButton(c, "key-mode", modeLbl, modeVar, dt, nil, true).Clicked() {
+				a.SetKeyMode(nextMode)
+			}
+			if ApplePillButton(c, "status-whichkey", "SPC ?", BtnGlass, dt, nil, true).Clicked() {
+				a.mu.Lock()
+				a.whichKeyOpen = !a.whichKeyOpen
+				a.mu.Unlock()
+			}
+		}
+	})
 }
 
 func (a *WorkbenchApp) renderWhichKeyHUD(c *ui.Context, t *ui.Theme, dt DerivedTheme) {
@@ -732,24 +796,7 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 	ui.Row(c).Padding(8, 12).Gap(10).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
 		if active, ok := a.Targets.Active(); ok {
-			meta := active.Meta()
-			ui.Text(c, meta.DisplayName).Bold()
-			phaseStr := string(meta.Phase)
-			if a.cachedTopBadge == "" || a.cachedTopTargetID != meta.ID || a.cachedTopKind != meta.TargetKind || a.cachedTopPhase != phaseStr {
-				a.cachedTopTargetID = meta.ID
-				a.cachedTopKind = meta.TargetKind
-				a.cachedTopPhase = phaseStr
-				a.cachedTopBadge = fmt.Sprintf("[%s · %s]", meta.TargetKind, phaseStr)
-			}
-			ui.Text(c, a.cachedTopBadge).FontSize(12).TextColor(t.TextMuted)
-		}
-		if snap != nil {
-			if a.cachedSnapBadge == "" || a.cachedSnapProfile != snap.ProfileName || a.cachedSnapGen != snap.Generation {
-				a.cachedSnapProfile = snap.ProfileName
-				a.cachedSnapGen = snap.Generation
-				a.cachedSnapBadge = fmt.Sprintf("profile:%s gen:%d", snap.ProfileName, snap.Generation)
-			}
-			ui.Text(c, a.cachedSnapBadge).FontSize(12).TextColor(t.Accent)
+			ui.Text(c, active.Meta().DisplayName).Bold()
 		}
 		if a.Windows != nil && a.OnSelectPerspective != nil {
 			activePersp := a.Windows.Snapshot().Perspective
@@ -760,20 +807,6 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				{ID: "zen", Label: "Zen"},
 			}, activePersp, a.cachedDerivedTheme, true); chosen != "" {
 				a.OnSelectPerspective(chosen)
-			}
-		}
-		if a.KeyTrie != nil {
-			mode := a.ActiveKeyMode()
-			modeLbl := "NORMAL · SPC"
-			modeVar := BtnTinted
-			nextMode := input.ScopeInsert
-			if mode == input.ScopeInsert {
-				modeLbl = "INSERT · EMACS"
-				modeVar = BtnSuccess
-				nextMode = input.ScopeNormal
-			}
-			if ApplePillButton(c, "key-mode", modeLbl, modeVar, a.cachedDerivedTheme, nil, true).Clicked() {
-				a.SetKeyMode(nextMode)
 			}
 		}
 		a.mu.Lock()
