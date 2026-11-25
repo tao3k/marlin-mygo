@@ -38,9 +38,10 @@ var PanelEvent = mygo.NewEvent[pluginhost.ScopedEvent]("marlin:panel-event")
 // WebViewRuntime implements pluginhost.RuntimeFactory for both TS/Web plugins
 // (webview-untrusted) and Go GOOS=js/wasm MyGo-UI plugins (mygo-js-wasm).
 type WebViewRuntime struct {
-	kind     schema.PanelRuntimeKind
-	win      *mygo.Window
-	protocol *pluginhost.WebViewProtocolHandler
+	kind      schema.PanelRuntimeKind
+	win       *mygo.Window
+	protocol  *pluginhost.WebViewProtocolHandler
+	artifacts *pluginhost.ArtifactProtocolHandler
 
 	mu           sync.RWMutex
 	pageOwners   map[*mygo.Page]schema.PluginID
@@ -74,15 +75,15 @@ func (r *WebViewRuntime) BroadcastTheme(mt schema.UITheme) {
 	}
 }
 
-// NewWebViewRuntime wires a WebViewProtocolHandler using mygo.CallerPage(ctx)
-// and registers the "marlin-plugin://" custom protocol scheme with MyGo.
+// NewWebViewRuntime wires a WebViewProtocolHandler and ArtifactProtocolHandler
+// using mygo.CallerPage(ctx) for "marlin-plugin://" and "marlin-artifact://".
 // Call RegisterProtocol() before creating the host window.
 func NewWebViewRuntime(kind schema.PanelRuntimeKind) *WebViewRuntime {
 	rt := &WebViewRuntime{
 		kind:       kind,
 		pageOwners: make(map[*mygo.Page]schema.PluginID),
 	}
-	rt.protocol = pluginhost.NewWebViewProtocolHandler(func(ctx context.Context) (schema.PluginID, bool) {
+	resolveCaller := func(ctx context.Context) (schema.PluginID, bool) {
 		p := mygo.CallerPage(ctx)
 		if p == nil {
 			return "", false
@@ -91,13 +92,26 @@ func NewWebViewRuntime(kind schema.PanelRuntimeKind) *WebViewRuntime {
 		id, ok := rt.pageOwners[p]
 		rt.mu.RUnlock()
 		return id, ok
-	})
+	}
+	rt.protocol = pluginhost.NewWebViewProtocolHandler(resolveCaller)
+	rt.artifacts = pluginhost.NewArtifactProtocolHandler(resolveCaller, nil)
 	return rt
 }
 
-// RegisterProtocol installs the marlin-plugin:// scheme handler before App.Run / NewWindow.
+// Artifacts returns the bounded SHA-256 ArtifactCAS backing marlin-artifact://.
+func (r *WebViewRuntime) Artifacts() *pluginhost.ArtifactCAS { return r.artifacts.CAS() }
+
+// GrantArtifact authorizes pluginID to fetch a specific SHA-256 artifact via marlin-artifact://.
+func (r *WebViewRuntime) GrantArtifact(pluginID schema.PluginID, digestHex string) error {
+	return r.artifacts.Grant(pluginID, digestHex)
+}
+
+// RegisterProtocol installs marlin-plugin:// and marlin-artifact:// before App.Run / NewWindow.
 func (r *WebViewRuntime) RegisterProtocol() error {
-	return mygo.Protocol.Handle(pluginhost.PluginScheme, r.protocol)
+	if err := mygo.Protocol.Handle(pluginhost.PluginScheme, r.protocol); err != nil {
+		return err
+	}
+	return mygo.Protocol.Handle(pluginhost.ArtifactScheme, r.artifacts)
 }
 
 // AttachWindow binds the host native-UI window once created inside App.WhenReady
@@ -188,6 +202,7 @@ func (i *webViewInstance) Close() error {
 		win := i.rt.win
 		i.rt.mu.Unlock()
 		i.rt.protocol.Unbind(i.scope.PluginID)
+		i.rt.artifacts.RevokePlugin(i.scope.PluginID)
 		i.wv.Destroy()
 		if win != nil {
 			win.Invalidate()

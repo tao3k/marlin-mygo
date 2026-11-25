@@ -59,6 +59,12 @@ type WorkbenchApp struct {
 	// Optional built-in Tier-0 Host GPU Marketplace control drawer (floats above WebViews).
 	Marketplace *MarketplaceController
 
+	// Optional native GPU marlin.projection.v1 inspector (Graph Receipts, Diff, Processes).
+	Projection *ProjectionController
+
+	// Optional callback invoked when the user adds a Remote TLS gRPC target via "+ Remote".
+	OnAddRemoteTarget func(targetID, displayName, endpoint, bearerToken string) error
+
 	// Optional callbacks invoked by top-level chrome controls.
 	OnGateDecision      func(gateID string, approve bool)
 	OnCommandInvoke     func(commandName string)
@@ -82,6 +88,10 @@ type WorkbenchApp struct {
 	paletteLastCmdLen int
 	marketplaceOpen   bool
 	settingsOpen      bool
+	projectionOpen    bool
+	addRemoteOpen     bool
+	addRemoteState    *SchemaFormState
+	addRemoteStatus   string
 	rankedBuf         []input.RankedCommand
 	activeChord       []string
 	gateOpen          bool
@@ -183,8 +193,23 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 		if a.settingsOpen {
 			a.paletteOpen = false
 			a.marketplaceOpen = false
+			a.projectionOpen = false
+			a.addRemoteOpen = false
 			a.gateOpen = false
 		}
+	}
+	if a.Projection != nil && c.Shortcut(ui.Cmd, ui.KeyI) {
+		a.projectionOpen = !a.projectionOpen
+		if a.projectionOpen {
+			a.paletteOpen = false
+			a.marketplaceOpen = false
+			a.settingsOpen = false
+			a.addRemoteOpen = false
+			a.gateOpen = false
+		}
+	}
+	if a.Transcript != nil && c.Shortcut(ui.Cmd, ui.KeyJ) {
+		a.TranscriptHidden = !a.TranscriptHidden
 	}
 	if a.OnQuickPluginSelect != nil && len(a.QuickPlugins) > 0 {
 		if c.Shortcut(ui.Cmd, ui.Key1) {
@@ -253,6 +278,20 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 				})
 			}
 			a.renderTargetSidebar(c, t)
+			if a.OnAddRemoteTarget != nil {
+				if ui.Button(c.Key("open-add-remote"), "+ Remote Target").Clicked() {
+					if a.addRemoteState == nil {
+						a.addRemoteState = NewSchemaFormState(remoteTargetFormSchema(), nil)
+					}
+					a.addRemoteStatus = ""
+					a.addRemoteOpen = true
+					a.paletteOpen = false
+					a.marketplaceOpen = false
+					a.settingsOpen = false
+					a.projectionOpen = false
+					a.gateOpen = false
+				}
+			}
 			if a.OnTogglePlugin != nil {
 				label := "Mount Plugin"
 				if a.PluginMountedFn != nil && a.PluginMountedFn() {
@@ -411,6 +450,16 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.OnToggleTheme()
 			}
 		}
+		if a.Projection != nil {
+			if ui.Button(c.Key("open-projection"), "Inspect").Clicked() {
+				a.projectionOpen = true
+				a.paletteOpen = false
+				a.marketplaceOpen = false
+				a.settingsOpen = false
+				a.addRemoteOpen = false
+				a.gateOpen = false
+			}
+		}
 		if a.SettingsSchema != nil && a.SettingsState != nil {
 			if ui.Button(c.Key("open-settings"), "Settings").Clicked() {
 				a.settingsOpen = true
@@ -494,6 +543,39 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		})
 	}
 
+	if a.Projection != nil {
+		ui.Modal(c, &a.projectionOpen, func() {
+			a.Projection.Render(c, t, func() {
+				a.projectionOpen = false
+			})
+		})
+	}
+
+	if a.OnAddRemoteTarget != nil && a.addRemoteState != nil {
+		ui.Modal(c, &a.addRemoteOpen, func() {
+			RenderBoundedForm(c, remoteTargetFormSchema(), a.addRemoteState, func(vals map[string]any) {
+				targetID, _ := vals["target_id"].(string)
+				displayName, _ := vals["display_name"].(string)
+				endpoint, _ := vals["endpoint"].(string)
+				token, _ := vals["bearer_token"].(string)
+				if err := a.OnAddRemoteTarget(targetID, displayName, endpoint, token); err != nil {
+					a.addRemoteStatus = err.Error()
+					return
+				}
+				a.addRemoteStatus = ""
+				a.addRemoteOpen = false
+			})
+			if a.addRemoteStatus != "" {
+				ui.Text(c, a.addRemoteStatus).FontSize(12).TextColor(t.Danger)
+			}
+			ui.Row(c).Justify(ui.End).Children(func() {
+				if ui.Button(c.Key("close-add-remote"), "Close").Clicked() {
+					a.addRemoteOpen = false
+				}
+			})
+		})
+	}
+
 	ui.Modal(c, &a.gateOpen, func() {
 		a.mu.Lock()
 		gate := a.pendingGate
@@ -523,4 +605,17 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 			}
 		})
 	})
+}
+
+func remoteTargetFormSchema() schema.BoundedSchema {
+	return schema.BoundedSchema{
+		ID:    "marlin.remote.target.v1",
+		Title: "Connect Remote Marlin Host (TLS 1.3 gRPC)",
+		Fields: []schema.FieldSpec{
+			{Key: "target_id", Label: "Target ID", Kind: schema.FieldString, Default: "remote-gpu-1", MaxLen: 64},
+			{Key: "display_name", Label: "Display Name", Kind: schema.FieldString, Default: "Remote Workstation", MaxLen: 64},
+			{Key: "endpoint", Label: "gRPC Address", Kind: schema.FieldString, Default: "10.0.0.12:50051", MaxLen: 128},
+			{Key: "bearer_token", Label: "Bearer Token", Kind: schema.FieldString, Default: "", MaxLen: 256},
+		},
+	}
 }

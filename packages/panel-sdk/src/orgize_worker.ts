@@ -113,6 +113,74 @@ export function resolveGlobalOrgizeWorker(
   return createOrgizeWorkerClient(port, sessionId);
 }
 
+export interface AutoMountOrgizeOptions {
+  sessionId?: string;
+  workerUrl?: string | URL;
+}
+
+/**
+ * Resolves an already-mounted global `tao3k/orgize-wasm` Worker or spawns one
+ * from `options.workerUrl` / `globalThis.__MARLIN_ORGIZE_WORKER_URL__` when
+ * running in a WebView with Worker support. Never throws in offline/SSR tests.
+ */
+export function autoMountOrgizeWorker(
+  options: AutoMountOrgizeOptions = {},
+): OrgizeWorkerClient | null {
+  const sessionId = options.sessionId ?? "marlin-panel";
+  const existing = resolveGlobalOrgizeWorker(sessionId);
+  if (existing) return existing;
+
+  const globalUrl = (globalThis as { __MARLIN_ORGIZE_WORKER_URL__?: string | URL }).__MARLIN_ORGIZE_WORKER_URL__;
+  const candidate = options.workerUrl ?? globalUrl;
+  if (!candidate || typeof Worker !== "function") {
+    return null;
+  }
+  try {
+    return mountOrgizeWorker(candidate, sessionId);
+  } catch {
+    return null;
+  }
+}
+
+export interface OrgizeCaptureProposalPayload {
+  title: string;
+  kind: "task" | "event" | "note";
+  tags: string[];
+  timeBlock?: string;
+  dateISO?: string;
+}
+
+/** Builds a normalized, bounded capture action payload for `org.capture.plan`. */
+export function buildOrgizeCaptureActionPayload(input: {
+  title: string;
+  kind?: "task" | "event" | "note";
+  tags?: string[] | string;
+  timeBlock?: string;
+  dateISO?: string;
+}): OrgizeCaptureProposalPayload {
+  const title = input.title.trim().slice(0, 200);
+  if (!title) {
+    throw new Error("capture title must not be empty");
+  }
+  const rawTags = Array.isArray(input.tags)
+    ? input.tags
+    : typeof input.tags === "string"
+      ? input.tags.split(",")
+      : [];
+  const tags = rawTags
+    .map((t) => t.trim().replace(/^:/, "").replace(/:$/, ""))
+    .filter((t) => t.length > 0)
+    .slice(0, 12);
+  const out: OrgizeCaptureProposalPayload = {
+    title,
+    kind: input.kind ?? "task",
+    tags,
+  };
+  if (input.timeBlock?.trim()) out.timeBlock = input.timeBlock.trim();
+  if (input.dateISO?.trim()) out.dateISO = input.dateISO.trim();
+  return out;
+}
+
 export function createOrgizeWorkerClient(
   port: OrgizeWorkerPort,
   sessionId = "marlin-panel",

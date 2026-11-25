@@ -303,6 +303,76 @@ func main() {
 	studioSettingsState := mygoshell.NewSchemaFormState(studioSettingsSchema, nil)
 	app.SettingsSchema = &studioSettingsSchema
 	app.SettingsState = studioSettingsState
+	app.Projection = mygoshell.NewProjectionController(mygoshell.ProjectionSnapshot{
+		GraphNodes: []mygoshell.GraphNodeReceiptView{
+			{
+				NodeID:      "node-admit",
+				Kind:        "readiness-gate",
+				Phase:       "succeeded",
+				DurationMS:  4,
+				ReceiptID:   "rcpt-graph-admit-001",
+				GatewayNote: "no-live-llm gateway denial receipt preserved",
+				Summary:     "Rust native ABI readiness gate verified",
+			},
+			{
+				NodeID:     "node-org-plan",
+				Kind:       "org-agenda",
+				Phase:      "succeeded",
+				DurationMS: 11,
+				ReceiptID:  "rcpt-graph-plan-002",
+				Summary:    "Projected daily org agenda & time blocks",
+			},
+		},
+		DiffFiles: []mygoshell.WorkspaceDiffFileView{
+			{
+				Path:      "runtime/pluginhost/artifact_protocol.go",
+				Status:    "modified",
+				Additions: 24,
+				Deletions: 2,
+				HunkLines: []string{"+marlin-artifact://<sha256> content-addressed CAS enabled"},
+			},
+		},
+		Processes: []mygoshell.ManagedProcessView{
+			{
+				ProcessID: "proc-marlin-host",
+				Command:   "marlin-mygo-host",
+				State:     "running",
+				ExitCode:  0,
+				UptimeSec: 60,
+				TailLines: []string{"marlin.projection.v1 read-only surface active (secrets hidden)"},
+			},
+		},
+	})
+	app.OnAddRemoteTarget = func(targetID, displayName, endpoint, bearerToken string) error {
+		id := strings.TrimSpace(targetID)
+		addr := strings.TrimSpace(endpoint)
+		if id == "" || addr == "" {
+			return fmt.Errorf("target ID and gRPC address are required")
+		}
+		if displayName == "" {
+			displayName = id
+		}
+		authHeader := strings.TrimSpace(bearerToken)
+		if authHeader != "" && !strings.HasPrefix(authHeader, "Bearer ") {
+			authHeader = "Bearer " + authHeader
+		}
+		dialed, err := grpcwire.Dial(grpcwire.DialConfig{
+			ID:          id,
+			DisplayName: displayName,
+			Mode:        transport.ModeRemoteGRPC,
+			Address:     addr,
+			AuthToken:   authHeader,
+		})
+		if err != nil {
+			return err
+		}
+		if err := targets.Register(dialed); err != nil {
+			_ = dialed.Close()
+			return err
+		}
+		federation.ProbeAll(ctx, 2*time.Second)
+		return nil
+	}
 	var themeLight atomic.Bool
 	var wbGen atomic.Uint64
 	wbGen.Store(1)

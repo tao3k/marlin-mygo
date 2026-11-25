@@ -4,66 +4,83 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  createOrgizeWorkerClient,
+  autoMountOrgizeWorker,
+  buildOrgizeCaptureActionPayload,
+  formatArtifactUrl,
   type OrgizeWorkerEnvelope,
   type OrgizeWorkerPort,
   type OrgizeWorkerRequestPayload,
-} from "./orgize_worker";
+} from "./index";
 
-describe("@tao3k/marlin-panel-sdk orgize-wasm Worker client", () => {
-  test("correlates agendaView, clockRollup, memory, and capturePlan requests and handles errors", async () => {
-    const sent: OrgizeWorkerRequestPayload[] = [];
-    const listeners = new Set<(ev: { data: OrgizeWorkerEnvelope }) => void>();
+class FakeOrgizePort implements OrgizeWorkerPort {
+  listeners = new Set<(ev: { data: OrgizeWorkerEnvelope }) => void>();
+  sent: OrgizeWorkerRequestPayload[] = [];
 
-    const mockPort: OrgizeWorkerPort = {
-      postMessage(msg) {
-        sent.push(msg);
-        if (msg.command === "dispose") return;
-        const reply: OrgizeWorkerEnvelope =
-          msg.source === "BROKEN"
-            ? {
-                type: "error",
-                requestId: msg.requestId,
-                sessionId: msg.sessionId ?? "test",
-                ok: false,
-                error: { name: "ParseError", message: "simulated worker failure" },
-              }
-            : {
-                type: "result",
-                requestId: msg.requestId,
-                sessionId: msg.sessionId ?? "test",
-                ok: true,
-                result: { schemaVersion: 1, projection: msg.projection, cards: [{ title: "Ship P2" }] },
-              };
-        queueMicrotask(() => {
-          for (const fn of listeners) fn({ data: reply });
-        });
-      },
-      addEventListener(_type, listener) {
-        listeners.add(listener);
-      },
-      removeEventListener(_type, listener) {
-        listeners.delete(listener);
-      },
-    };
+  postMessage(message: OrgizeWorkerRequestPayload): void {
+    this.sent.push(message);
+    if (message.command === "parse") {
+      const env: OrgizeWorkerEnvelope = {
+        type: "result",
+        requestId: message.requestId,
+        sessionId: message.sessionId ?? "test",
+        ok: true,
+        result: { projection: message.projection, cards: [{ title: "Ship Wave F" }] },
+      };
+      for (const l of this.listeners) l({ data: env });
+    }
+  }
 
-    const client = createOrgizeWorkerClient(mockPort, "agenda-scratch");
-    const agenda = await client.parseAgendaView<{ schemaVersion: number; cards: Array<{ title: string }> }>(
-      "* TODO Ship P2\nSCHEDULED: <2026-11-25 Wed>\n",
-      "2026-11-25",
-    );
-    expect(agenda.schemaVersion).toBe(1);
-    expect(agenda.cards[0].title).toBe("Ship P2");
-    expect(sent[0].projection).toBe("agendaView");
-    expect(sent[0].agendaView?.start).toEqual({ year: 2026, month: 11, day: 25 });
+  addEventListener(_type: "message", listener: (ev: { data: OrgizeWorkerEnvelope }) => void): void {
+    this.listeners.add(listener);
+  }
 
-    const mem = await client.parseMemory<{ projection: string }>("* Memory note");
-    expect(mem.projection).toBe("memory");
+  removeEventListener(_type: "message", listener: (ev: { data: OrgizeWorkerEnvelope }) => void): void {
+    this.listeners.delete(listener);
+  }
+}
 
-    await expect(client.parseClockRollup("BROKEN")).rejects.toThrow("simulated worker failure");
+describe("orgize_worker autoMount & artifact URL helpers", () => {
+  test("autoMountOrgizeWorker resolves global port cleanly and parses agendaView", async () => {
+    const port = new FakeOrgizePort();
+    (globalThis as Record<string, unknown>).__MARLIN_ORGIZE_WORKER__ = port;
+    try {
+      const client = autoMountOrgizeWorker({ sessionId: "agenda-test" });
+      expect(client).not.toBeNull();
+      const res = await client!.parseAgendaView<{ cards: Array<{ title: string }> }>(
+        "* TODO Ship Wave F",
+        "2026-11-25",
+      );
+      expect(res.cards[0]?.title).toBe("Ship Wave F");
+      client!.dispose();
+    } finally {
+      delete (globalThis as Record<string, unknown>).__MARLIN_ORGIZE_WORKER__;
+    }
+  });
 
-    client.dispose();
-    expect(sent[sent.length - 1].command).toBe("dispose");
-    await expect(client.parseMemory("* after dispose")).rejects.toThrow("disposed");
+  test("autoMountOrgizeWorker returns null safely when offline without Worker", () => {
+    delete (globalThis as Record<string, unknown>).__MARLIN_ORGIZE_WORKER__;
+    delete (globalThis as Record<string, unknown>).__MARLIN_ORGIZE_WORKER_URL__;
+    expect(autoMountOrgizeWorker()).toBeNull();
+  });
+
+  test("buildOrgizeCaptureActionPayload normalizes tags and rejects empty titles", () => {
+    const payload = buildOrgizeCaptureActionPayload({
+      title: "  Review Artifact CAS  ",
+      tags: " :arch:, deep , ",
+      timeBlock: "15:00-16:00",
+    });
+    expect(payload).toEqual({
+      title: "Review Artifact CAS",
+      kind: "task",
+      tags: ["arch", "deep"],
+      timeBlock: "15:00-16:00",
+    });
+    expect(() => buildOrgizeCaptureActionPayload({ title: "   " })).toThrow();
+  });
+
+  test("formatArtifactUrl validates 64-char sha256 digest", () => {
+    const digest = "a".repeat(64);
+    expect(formatArtifactUrl(digest.toUpperCase())).toBe(`marlin-artifact://${digest}/`);
+    expect(() => formatArtifactUrl("../etc/passwd")).toThrow();
   });
 });

@@ -86,10 +86,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
       - run: just ci go-race
 
   go-fuzz-smoke:
-    name: Go Fuzz Smoke Suite (10 Protocol & Boundary Targets)
+    name: Go Fuzz Smoke Suite (11 Protocol & Boundary Targets)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +150,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v3
       - run: just ci android-kotlin-bridge
+
+  plugin-marketplace-admission:
+    name: Marketplace Plugin Certification, Signing & Perf Admission Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci plugin-admission-gate
 
   reuse-spdx:
     name: REUSE SPDX License Compliance

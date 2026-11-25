@@ -5,9 +5,10 @@
 default:
     @just --list
 
-# Explicit, Tab-completable plugin and CI subcommands: `just plugin <TAB>`, `just ci <TAB>`.
+# Explicit, Tab-completable plugin, CI, and release subcommands: `just plugin <TAB>`, `just ci <TAB>`, `just release <TAB>`.
 mod plugin 'just/plugin.just'
 mod ci 'just/ci.just'
+mod release 'just/release.just'
 
 # Quick top-level macOS/desktop studio launches (also under `just plugin show-*`):
 show-agenda:
@@ -68,18 +69,19 @@ test-swift:
 test-kotlin:
     @just plugin test-kotlin
 
-# Run short smoke fuzzing across protocol, schema, manifest, drawlist, arena, and input boundaries.
+# Run short smoke fuzzing across protocol, schema, manifest, drawlist, arena, artifact, and input boundaries.
 fuzz-smoke time="2s":
-    CGO_ENABLED=0 go test -fuzz=FuzzValidateDotIdentifier -fuzztime={{time}} ./pkg/schema
-    CGO_ENABLED=0 go test -fuzz=FuzzParseSubmissionID -fuzztime={{time}} ./pkg/schema
-    CGO_ENABLED=0 go test -fuzz=FuzzDecodeDrawList -fuzztime={{time}} ./pkg/schema
-    CGO_ENABLED=0 go test -fuzz=FuzzParsePluginManifestTOML -fuzztime={{time}} ./pkg/schema
-    CGO_ENABLED=0 go test -fuzz=FuzzArenaCompileAndDiff -fuzztime={{time}} ./engine/arena
-    CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime={{time}} ./engine/input
-    CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost
-    CGO_ENABLED=0 go test -fuzz=FuzzDecodeAndAdmitWasmUITree -fuzztime={{time}} ./runtime/pluginhost
-    CGO_ENABLED=0 go test -fuzz=FuzzParsePluginProfileTOML -fuzztime={{time}} ./control/marketplace
-    CGO_ENABLED=0 go test -fuzz=FuzzParseTrustRingTOML -fuzztime={{time}} ./control/marketplace
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzValidateDotIdentifier -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzParseSubmissionID -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeDrawList -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzParsePluginManifestTOML -fuzztime={{time}} ./pkg/schema
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzArenaCompileAndDiff -fuzztime={{time}} ./engine/arena
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzFuzzyScore -fuzztime={{time}} ./engine/input
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzWebViewProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzArtifactProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeAndAdmitWasmUITree -fuzztime={{time}} ./runtime/pluginhost
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzParsePluginProfileTOML -fuzztime={{time}} ./control/marketplace
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzParseTrustRingTOML -fuzztime={{time}} ./control/marketplace
 
 # Run TypeScript panel SDK checks and tests via Bun.
 test-ts:

@@ -56,3 +56,20 @@ ios-swift-bridge:
 android-kotlin-bridge:
     @just plugin test-kotlin
     @just plugin test-android-sdk
+
+# Certify, build, Ed25519-sign all 9 example plugins, emit trust-ring.toml, and enforce per-plugin perf budgets.
+plugin-admission-gate scale="2.5":
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace-ci
+    test -s ./dist/marketplace-ci/catalog.json
+    test -s ./dist/marketplace-ci/catalog.json.sig
+    test -s ./dist/marketplace-ci/publisher.pub
+    test -s ./dist/marketplace-ci/trust-ring.toml
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/ts-org-agenda-planner -scale {{scale}}
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/react-ai-memory-inbox -scale {{scale}}
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/react-ai-workflow-cockpit -scale {{scale}}
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/go-focus-clock-reactor -scale {{scale}}
+    CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/declarative-daily-planner-pack -scale {{scale}}
+
+# Build Rust marlin-mygo-host and run real cross-repo TLS 1.3 + Sidecar + Turso replay E2E.
+e2e-rust core="../..":
+    @just e2e-rust {{core}}

@@ -19,6 +19,16 @@ export type Uint64String = string;
 
 export const ACTION_ENDPOINT = "/__marlin/action";
 export const PANEL_EVENT_CHANNEL = "marlin:panel-event";
+export const ARTIFACT_SCHEME = "marlin-artifact";
+
+/** Formats a validated content-addressed `marlin-artifact://<sha256-hex>/` URI. */
+export function formatArtifactUrl(sha256Hex: string): string {
+  const norm = sha256Hex.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(norm)) {
+    throw new Error(`Invalid SHA-256 artifact digest: ${sha256Hex}`);
+  }
+  return `${ARTIFACT_SCHEME}://${norm}/`;
+}
 
 // Re-export generated canonical Protobuf wire types (marlin.*.v1) so plugin
 // authors get zero-drift strongly typed contracts directly from proto/.
