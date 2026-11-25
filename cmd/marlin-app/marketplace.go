@@ -301,3 +301,39 @@ func wireMarketplaceUI(
 	}
 	return nil, noopSync
 }
+
+func applyOfficialSnapshotToMarketplaceUI(mktUI *mygoshell.MarketplaceController, snap *marketplace.OfficialRegistrySnapshot) {
+	if mktUI == nil || snap == nil {
+		return
+	}
+	if len(snap.Themes) > 0 {
+		themes := make([]mygoshell.MarketplaceThemeItem, 0, len(snap.Themes))
+		for _, th := range snap.Themes {
+			themes = append(themes, mygoshell.MarketplaceThemeItem{
+				ThemeID:     string(th.Entry.ID),
+				Name:        th.Pack.Name,
+				Appearance:  th.Pack.Appearance,
+				PublisherID: string(th.Entry.PublisherID),
+				Summary:     th.Entry.Summary,
+				TrustTier:   string(th.Entry.TrustTier),
+				Base:        th.Pack.Palette,
+			})
+		}
+		mktUI.SetThemes(themes)
+	}
+	if len(snap.Layouts) > 0 {
+		layouts := make([]mygoshell.MarketplaceLayoutItem, 0, len(snap.Layouts))
+		for _, ly := range snap.Layouts {
+			layouts = append(layouts, mygoshell.MarketplaceLayoutItem{
+				LayoutID:    string(ly.Entry.ID),
+				Name:        ly.Entry.Name,
+				Perspective: ly.Spec.Perspective,
+				PublisherID: string(ly.Entry.PublisherID),
+				Summary:     ly.Entry.Summary,
+				TrustTier:   string(ly.Entry.TrustTier),
+				Spec:        ly.Spec,
+			})
+		}
+		mktUI.SetLayouts(layouts)
+	}
+}

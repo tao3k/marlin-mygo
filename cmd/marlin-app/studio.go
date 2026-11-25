@@ -216,7 +216,7 @@ func buildWorkbenchApp(
 		return registerRemoteTarget(ctx, targets, federation, targetID, displayName, endpoint, bearerToken)
 	}
 
-	wireThemeControls(app, wb, wvRuntime)
+	applyThemePreset := wireThemeControls(app, wb, wvRuntime)
 
 	// Emacs-style composable window tree & built-in buffer catalog.
 	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace Panel", Kind: "webview"}
@@ -234,6 +234,40 @@ func buildWorkbenchApp(
 	}
 
 	mktUI := mygoshell.NewMarketplaceController()
+	mktUI.SetThemes(mygoshell.DefaultOfficialMarketplaceThemes())
+	mktUI.SetLayouts(mygoshell.DefaultOfficialMarketplaceLayouts())
+	mktUI.OnApplyTheme = func(item mygoshell.MarketplaceThemeItem) error {
+		appearance := mygoshell.AppearanceDark
+		if strings.EqualFold(item.Appearance, "light") {
+			appearance = mygoshell.AppearanceLight
+		}
+		applyThemePreset(mygoshell.ThemePreset{
+			ID:         item.ThemeID,
+			Name:       item.Name,
+			Appearance: appearance,
+			Base:       item.Base,
+		})
+		return nil
+	}
+	mktUI.OnApplyLayout = func(item mygoshell.MarketplaceLayoutItem) error {
+		return app.ApplyLayoutSpec(item.Spec)
+	}
+	mktUI.OnSyncOfficial = func() error {
+		syncClient, err := marketplace.NewOfficialSyncClient(marketplace.OfficialSyncConfig{
+			RegistryURL: marketplace.DefaultOfficialRegistryURL,
+		})
+		if err != nil {
+			return err
+		}
+		syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		snap, err := syncClient.Sync(syncCtx)
+		if err != nil {
+			return err
+		}
+		applyOfficialSnapshotToMarketplaceUI(mktUI, snap)
+		return nil
+	}
 	app.Marketplace = mktUI
 	app.Commands = []input.CommandEntry{
 		{Name: "workbench.mount-kanban", Description: "Hot-plug TS Org Kanban WebView"},
@@ -255,7 +289,7 @@ func buildWorkbenchApp(
 	return app, mktUI, transcript
 }
 
-func wireThemeControls(app *mygoshell.WorkbenchApp, wb *shell.WorkbenchController, wvRuntime *mygoshell.WebViewRuntime) {
+func wireThemeControls(app *mygoshell.WorkbenchApp, wb *shell.WorkbenchController, wvRuntime *mygoshell.WebViewRuntime) func(mygoshell.ThemePreset) {
 	var (
 		themeMu     sync.RWMutex
 		activeTheme = mygoshell.ThemeByID("midnight")
@@ -291,6 +325,7 @@ func wireThemeControls(app *mygoshell.WorkbenchApp, wb *shell.WorkbenchControlle
 			applyThemePreset(mygoshell.ThemeByID(id))
 		}
 	}
+	return applyThemePreset
 }
 
 func mountShowcaseStudio(
