@@ -35,6 +35,13 @@ const (
 	CmdWindowBalance       = "window.balance"
 	CmdWindowCycleBuffer   = "window.cycle-buffer"
 	CmdWindowSwapNext      = "window.swap-next"
+	CmdBufferPick          = "buffer.pick"
+	CmdTabNew              = "tab.new"
+	CmdTabNext             = "tab.next"
+	CmdTabPrev             = "tab.prev"
+	CmdTabClose            = "tab.close"
+	CmdTabHibernate        = "tab.hibernate"
+	CmdTabTogglePin        = "tab.toggle-pin"
 	CmdPerspectiveFocus    = "window.perspective.focus"
 	CmdPerspectiveSplit    = "window.perspective.split"
 	CmdPerspectiveCockpit  = "window.perspective.cockpit"
@@ -258,6 +265,33 @@ func ExecuteWindowCommand(tree *WindowTree, cmdName string, buffers []PaneBuffer
 	case CmdWindowSwapNext:
 		tree.SwapWithNext()
 		return true, nil
+	case CmdTabNew:
+		nextBuf := secondary
+		if len(buffers) > 0 {
+			_, cur := tree.FocusedBuffer()
+			for i, b := range buffers {
+				if b.BufferID == cur.BufferID {
+					nextBuf = buffers[(i+1)%len(buffers)]
+					break
+				}
+			}
+		}
+		_, err = tree.OpenTabInFocused(nextBuf)
+		return true, err
+	case CmdTabNext:
+		tree.NextTab()
+		return true, nil
+	case CmdTabPrev:
+		tree.PrevTab()
+		return true, nil
+	case CmdTabClose:
+		return true, tree.CloseFocusedTab()
+	case CmdTabHibernate:
+		tree.HibernateFocusedTab()
+		return true, nil
+	case CmdTabTogglePin:
+		tree.TogglePinFocusedTab()
+		return true, nil
 	case CmdPerspectiveFocus:
 		tree.ApplyBuiltinPerspective("focus", primary, dock, secondary, projection)
 		return true, nil
@@ -319,6 +353,13 @@ func DefaultEmacsWindowCommands() []input.CommandEntry {
 		{Name: CmdWindowBalance, Description: "Balance split ratios (SPC w = / C-x +)"},
 		{Name: CmdWindowCycleBuffer, Description: "Cycle buffer in focused window (SPC w b)"},
 		{Name: CmdWindowSwapNext, Description: "Swap focused window buffer with next pane (SPC w x / C-x x)"},
+		{Name: CmdBufferPick, Description: "Open Emacs Minibuffer Buffer/Tab Picker (SPC b b)"},
+		{Name: CmdTabNew, Description: "Stack a new tab in focused pane (SPC b +)"},
+		{Name: CmdTabNext, Description: "Switch to next stacked tab (SPC b n)"},
+		{Name: CmdTabPrev, Description: "Switch to previous stacked tab (SPC b p)"},
+		{Name: CmdTabClose, Description: "Close active tab in focused pane (SPC b d)"},
+		{Name: CmdTabHibernate, Description: "Hibernate tab to 0MB RAM (SPC b s)"},
+		{Name: CmdTabTogglePin, Description: "Pin/unpin active tab against hibernation (SPC b P)"},
 		{Name: CmdPerspectiveFocus, Description: "Apply Focus 2-pane perspective"},
 		{Name: CmdPerspectiveSplit, Description: "Apply Split 2-pane perspective"},
 		{Name: CmdPerspectiveCockpit, Description: "Apply Cockpit 3-pane perspective"},

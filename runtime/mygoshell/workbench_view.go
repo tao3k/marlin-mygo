@@ -97,6 +97,8 @@ type WorkbenchApp struct {
 	paletteRankValid  bool
 	paletteLastQuery  string
 	paletteLastCmdLen int
+	bufferPickerOpen  bool
+	bufferPickerQuery string
 	marketplaceOpen   bool
 	settingsOpen      bool
 	projectionOpen    bool
@@ -283,6 +285,14 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.mu.Lock()
 		a.whichKeyOpen = !a.whichKeyOpen
 		a.mu.Unlock()
+	case shell.CmdBufferPick:
+		a.bufferPickerOpen = true
+		a.bufferPickerQuery = ""
+		a.paletteOpen = false
+		a.marketplaceOpen = false
+		a.settingsOpen = false
+		a.projectionOpen = false
+		a.gateOpen = false
 	default:
 		if strings.HasPrefix(commandName, "edit.") && a.OnEditCommand != nil {
 			a.OnEditCommand(commandName)
@@ -634,6 +644,8 @@ func whichKeyGroupName(k string) string {
 	switch k {
 	case "w":
 		return "window"
+	case "b":
+		return "buffer/tab"
 	case "p":
 		return "perspective"
 	case "t":
@@ -932,6 +944,100 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 			}
 		})
 	})
+
+	if a.Windows != nil {
+		ui.Modal(c, &a.bufferPickerOpen, func() {
+			wsnap := a.Windows.Snapshot()
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, "Buffer & Tab Minibuffer (SPC b b)").FontSize(16).FontWeight(700).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				AppleBadgePill(c, fmt.Sprintf("%d active · %d paused · %d hibernated (0MB)",
+					wsnap.ActiveTabs, wsnap.PausedTabs, wsnap.HibernatedTabs), dt.Accent, dt)
+			})
+			ui.Row(c).Padding(8, 12).Radius(14).
+				Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+				ui.TextInputBase(c.Key("bufpick-input"), &a.bufferPickerQuery).
+					Placeholder("Filter open tabs or stack a buffer into focused pane...").
+					FontSize(13).TextColor(toColor(dt.Ink)).Grow(1).AutoFocus()
+			})
+
+			q := strings.ToLower(strings.TrimSpace(a.bufferPickerQuery))
+			tabs := a.Windows.AllTabs()
+			ui.Text(c, "OPEN TABS ACROSS PANES").FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+			ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+				for _, entry := range tabs {
+					title := entry.Tab.Buffer.Title
+					if title == "" {
+						title = entry.Tab.Buffer.BufferID
+					}
+					if q != "" && !strings.Contains(strings.ToLower(title+" "+entry.Tab.Buffer.BufferID), q) {
+						continue
+					}
+					stateLbl := strings.ToUpper(string(entry.Tab.State))
+					tone := dt.InkMuted
+					if entry.Tab.State == shell.TabActive {
+						tone = dt.Success
+					} else if entry.Tab.State == shell.TabHibernated {
+						stateLbl = "HIBERNATED · 0MB"
+						tone = dt.Info
+					}
+					if entry.Tab.Pinned {
+						stateLbl = "PINNED · " + stateLbl
+					}
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						btnKey := fmt.Sprintf("bufpick-tab-%s-%d", entry.WindowID, entry.TabIndex)
+						btnLbl := fmt.Sprintf("%s [%s]", title, entry.WindowID)
+						if ApplePillButton(c, btnKey, btnLbl, BtnGlass, dt, nil, true).Clicked() {
+							a.Windows.SelectTab(entry.WindowID, entry.TabIndex)
+							if a.OnLayoutChanged != nil {
+								a.OnLayoutChanged(a.Windows.Snapshot())
+							}
+							a.bufferPickerOpen = false
+						}
+						AppleBadgePill(c, stateLbl, tone, dt)
+						ui.Spacer(c)
+						if entry.Tab.State != shell.TabHibernated {
+							sleepKey := fmt.Sprintf("bufpick-sleep-%s-%d", entry.WindowID, entry.TabIndex)
+							if ApplePillButton(c, sleepKey, "Sleep", BtnGlass, dt, nil, true).Clicked() {
+								a.Windows.HibernateTab(entry.WindowID, entry.TabIndex)
+								if a.OnLayoutChanged != nil {
+									a.OnLayoutChanged(a.Windows.Snapshot())
+								}
+							}
+						}
+					})
+				}
+			})
+
+			if len(a.WindowBuffers) > 0 {
+				ui.Text(c, "STACK BUFFER INTO FOCUSED PANE").FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					for _, buf := range a.WindowBuffers {
+						lbl := buf.Title
+						if lbl == "" {
+							lbl = buf.BufferID
+						}
+						if q != "" && !strings.Contains(strings.ToLower(lbl+" "+buf.BufferID), q) {
+							continue
+						}
+						if ApplePillButton(c, "bufpick-open-"+buf.BufferID, "+ "+lbl, BtnTinted, dt, nil, true).Clicked() {
+							_, _ = a.Windows.OpenTabInFocused(buf)
+							if a.OnLayoutChanged != nil {
+								a.OnLayoutChanged(a.Windows.Snapshot())
+							}
+							a.bufferPickerOpen = false
+						}
+					}
+				})
+			}
+
+			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+				if ApplePillButton(c, "close-bufpick", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
+					a.bufferPickerOpen = false
+				}
+			})
+		})
+	}
 
 	if a.Marketplace != nil {
 		ui.Modal(c, &a.marketplaceOpen, func() {

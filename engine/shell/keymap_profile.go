@@ -60,6 +60,15 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
 
+		// Stacked Buffer / Tab controls & lazy hibernation (SPC b ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "b"}, ActionKind: "buffer", CommandName: CmdBufferPick},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "+"}, ActionKind: "buffer", CommandName: CmdTabNew},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "n"}, ActionKind: "buffer", CommandName: CmdTabNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "p"}, ActionKind: "buffer", CommandName: CmdTabPrev},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "d"}, ActionKind: "buffer", CommandName: CmdTabClose},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "s"}, ActionKind: "buffer", CommandName: CmdTabHibernate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "P"}, ActionKind: "buffer", CommandName: CmdTabTogglePin},
+
 		// Perspectives (SPC p ...)
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "1"}, ActionKind: "perspective", CommandName: CmdPerspectiveFocus},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "2"}, ActionKind: "perspective", CommandName: CmdPerspectiveSplit},

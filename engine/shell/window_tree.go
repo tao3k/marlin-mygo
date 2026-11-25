@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 )
 
 // Direction specifies a 2D spatial direction for Emacs windmove-style navigation.
@@ -60,27 +61,35 @@ type PaneBuffer struct {
 }
 
 // WindowNode is an immutable snapshot node of the binary split tree.
+// Leaf nodes carry both Buffer (active tab shortcut) and Tabs/ActiveTab for
+// Emacs tab-line-mode multi-tab stacking with 3-state lazy hibernation.
 type WindowNode struct {
-	ID      WindowID
-	IsSplit bool
-	Axis    SplitAxis
-	Ratio   float32 // 0.20 .. 0.80 (default 0.50)
-	First   *WindowNode
-	Second  *WindowNode
-	Buffer  PaneBuffer
+	ID        WindowID
+	IsSplit   bool
+	Axis      SplitAxis
+	Ratio     float32 // 0.20 .. 0.80 (default 0.50)
+	First     *WindowNode
+	Second    *WindowNode
+	Buffer    PaneBuffer
+	Tabs      []PaneTab
+	ActiveTab int
 }
 
 // WindowTreeSnapshot is a read-only point-in-time layout snapshot consumed at
 // 120Hz by MyGo GPU renderers with zero heap allocations on steady frames.
 type WindowTreeSnapshot struct {
-	Version     uint64
-	Perspective string
-	Root        *WindowNode
-	FocusedID   WindowID
-	Zoomed      bool
-	LeafCount   int
-	CanUndo     bool
-	CanRedo     bool
+	Version        uint64
+	Perspective    string
+	Root           *WindowNode
+	FocusedID      WindowID
+	Zoomed         bool
+	LeafCount      int
+	CanUndo        bool
+	CanRedo        bool
+	TotalTabs      int
+	ActiveTabs     int
+	PausedTabs     int
+	HibernatedTabs int
 }
 
 type windowHistoryEntry struct {
@@ -95,25 +104,26 @@ type windowHistoryEntry struct {
 // cycling, 2D spatial navigation, Winner-Mode undo/redo history, per-pane
 // buffer assignment, zoom/maximize, balance, and named workspace perspectives.
 type WindowTree struct {
-	mu          sync.RWMutex
-	perspective string
-	root        *WindowNode
-	focusedID   WindowID
-	zoomed      bool
-	nextSeq     uint64
-	version     uint64
-	cachedSnap  WindowTreeSnapshot
-	snapDirty   bool
-	undoStack   []windowHistoryEntry
-	redoStack   []windowHistoryEntry
+	mu             sync.RWMutex
+	perspective    string
+	root           *WindowNode
+	focusedID      WindowID
+	zoomed         bool
+	nextSeq        uint64
+	version        uint64
+	cachedSnap     WindowTreeSnapshot
+	snapDirty      bool
+	undoStack      []windowHistoryEntry
+	redoStack      []windowHistoryEntry
+	tabPolicy      TabBudgetPolicy
+	clock          func() time.Time
+	OnTabLifecycle func(ev TabLifecycleEvent)
 }
 
 // NewWindowTree initializes a single-window tree displaying initialBuffer.
 func NewWindowTree(initialBuffer PaneBuffer) *WindowTree {
-	root := &WindowNode{
-		ID:     "win-1",
-		Buffer: initialBuffer,
-	}
+	now := time.Now()
+	root := newLeafNode("win-1", initialBuffer, now)
 	wt := &WindowTree{
 		perspective: "zen",
 		root:        root,
@@ -121,9 +131,33 @@ func NewWindowTree(initialBuffer PaneBuffer) *WindowTree {
 		nextSeq:     1,
 		version:     1,
 		snapDirty:   true,
+		tabPolicy:   DefaultTabBudgetPolicy(),
+		clock:       time.Now,
 	}
 	wt.rebuildSnapshotLocked()
 	return wt
+}
+
+func (t *WindowTree) nowLocked() time.Time {
+	if t.clock != nil {
+		return t.clock()
+	}
+	return time.Now()
+}
+
+func newLeafNode(id WindowID, buf PaneBuffer, now time.Time) *WindowNode {
+	return &WindowNode{
+		ID:     id,
+		Buffer: buf,
+		Tabs: []PaneTab{
+			{
+				Buffer:       buf,
+				State:        TabActive,
+				LastActiveAt: now,
+			},
+		},
+		ActiveTab: 0,
+	}
 }
 
 func (t *WindowTree) allocIDLocked(prefix string) WindowID {
@@ -132,15 +166,21 @@ func (t *WindowTree) allocIDLocked(prefix string) WindowID {
 }
 
 func (t *WindowTree) rebuildSnapshotLocked() {
+	normalizeTreeTabs(t.root, t.nowLocked())
+	totalTabs, activeTabs, pausedTabs, hibTabs := countTabStates(t.root)
 	t.cachedSnap = WindowTreeSnapshot{
-		Version:     t.version,
-		Perspective: t.perspective,
-		Root:        cloneWindowNode(t.root),
-		FocusedID:   t.focusedID,
-		Zoomed:      t.zoomed,
-		LeafCount:   countLeaves(t.root),
-		CanUndo:     len(t.undoStack) > 0,
-		CanRedo:     len(t.redoStack) > 0,
+		Version:        t.version,
+		Perspective:    t.perspective,
+		Root:           cloneWindowNode(t.root),
+		FocusedID:      t.focusedID,
+		Zoomed:         t.zoomed,
+		LeafCount:      countLeaves(t.root),
+		CanUndo:        len(t.undoStack) > 0,
+		CanRedo:        len(t.redoStack) > 0,
+		TotalTabs:      totalTabs,
+		ActiveTabs:     activeTabs,
+		PausedTabs:     pausedTabs,
+		HibernatedTabs: hibTabs,
 	}
 	t.snapDirty = false
 }
@@ -245,15 +285,16 @@ func (t *WindowTree) splitWindow(targetID WindowID, axis SplitAxis, ratio float3
 		return "", ErrWindowNotFound
 	}
 	t.pushUndoLocked("")
+	now := t.nowLocked()
+	normalizeLeafTabs(leaf, now)
 	existingCopy := &WindowNode{
-		ID:     leaf.ID,
-		Buffer: leaf.Buffer,
+		ID:        leaf.ID,
+		Buffer:    leaf.Buffer,
+		Tabs:      clonePaneTabs(leaf.Tabs),
+		ActiveTab: leaf.ActiveTab,
 	}
 	newID := t.allocIDLocked("win")
-	newLeaf := &WindowNode{
-		ID:     newID,
-		Buffer: newBuffer,
-	}
+	newLeaf := newLeafNode(newID, newBuffer, now)
 	leaf.ID = t.allocIDLocked("split")
 	leaf.IsSplit = true
 	leaf.Axis = axis
@@ -261,6 +302,8 @@ func (t *WindowTree) splitWindow(targetID WindowID, axis SplitAxis, ratio float3
 	leaf.First = existingCopy
 	leaf.Second = newLeaf
 	leaf.Buffer = PaneBuffer{}
+	leaf.Tabs = nil
+	leaf.ActiveTab = 0
 	t.focusedID = newID
 	t.zoomed = false
 	t.perspective = "custom"
@@ -338,7 +381,7 @@ func (t *WindowTree) FocusNext() WindowID {
 	return t.focusedID
 }
 
-// SetWindowBuffer mounts buf into targetID (`switch-to-buffer` / `SPC b b`).
+// SetWindowBuffer mounts buf into targetID's active tab (`switch-to-buffer`).
 func (t *WindowTree) SetWindowBuffer(targetID WindowID, buf PaneBuffer) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -347,7 +390,12 @@ func (t *WindowTree) SetWindowBuffer(targetID WindowID, buf PaneBuffer) bool {
 		return false
 	}
 	t.pushUndoLocked("")
+	now := t.nowLocked()
+	normalizeLeafTabs(n, now)
 	n.Buffer = buf
+	n.Tabs[n.ActiveTab].Buffer = buf
+	n.Tabs[n.ActiveTab].State = TabActive
+	n.Tabs[n.ActiveTab].LastActiveAt = now
 	t.markDirtyLocked()
 	return true
 }
@@ -474,6 +522,8 @@ func cloneWindowNode(n *WindowNode) *WindowNode {
 	if n.IsSplit {
 		cp.First = cloneWindowNode(n.First)
 		cp.Second = cloneWindowNode(n.Second)
+	} else if len(n.Tabs) > 0 {
+		cp.Tabs = clonePaneTabs(n.Tabs)
 	}
 	return &cp
 }
@@ -557,9 +607,15 @@ func (t *WindowTree) ReplaceBuffer(oldBufferID string, fallback PaneBuffer) int 
 	leaves := collectLeaves(t.root, nil)
 	replaced := 0
 	for _, leaf := range leaves {
+		normalizeLeafTabs(leaf, t.nowLocked())
+		for i := range leaf.Tabs {
+			if leaf.Tabs[i].Buffer.BufferID == oldBufferID {
+				leaf.Tabs[i].Buffer = fallback
+				replaced++
+			}
+		}
 		if leaf.Buffer.BufferID == oldBufferID {
 			leaf.Buffer = fallback
-			replaced++
 		}
 	}
 	if replaced > 0 {
@@ -577,11 +633,15 @@ func (t *WindowTree) SwapWithNext() bool {
 	if len(leaves) < 2 {
 		return false
 	}
+	now := t.nowLocked()
 	for i, leaf := range leaves {
 		if leaf.ID == t.focusedID {
 			t.pushUndoLocked("")
 			next := leaves[(i+1)%len(leaves)]
+			normalizeLeafTabs(leaf, now)
+			normalizeLeafTabs(next, now)
 			leaf.Buffer, next.Buffer = next.Buffer, leaf.Buffer
+			leaf.Tabs[leaf.ActiveTab].Buffer, next.Tabs[next.ActiveTab].Buffer = next.Tabs[next.ActiveTab].Buffer, leaf.Tabs[leaf.ActiveTab].Buffer
 			t.focusedID = next.ID
 			t.markDirtyLocked()
 			return true

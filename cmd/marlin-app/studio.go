@@ -116,6 +116,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		}
 
 		fireHook, publishProjection := wireLazyTriggers(ctx, app, lazySess, syncMarketplace, win)
+		wireWindowTabLazyLifecycle(ctx, app, lazySess, syncMarketplace, cfg.idleReapInterval, win)
 		startDevPluginWatcher(ctx, cfg.devPluginDir, host, mktUI, win)
 
 		if conn.liveTarget != nil {
@@ -424,6 +425,65 @@ func wireLazyTriggers(
 		}()
 	}
 	return fireHook, publishProjection
+}
+
+// wireWindowTabLazyLifecycle connects WindowTree's 3-state tab hibernation
+// (Active -> Paused -> Hibernated 0MB) to LazySession so sleeping background
+// plugin tabs reclaim runtime RAM automatically and wake transparently on click.
+func wireWindowTabLazyLifecycle(
+	ctx context.Context,
+	app *mygoshell.WorkbenchApp,
+	lazySess *marketplace.LazySession,
+	syncMarketplace func(),
+	idleCheckInterval time.Duration,
+	win *mygo.Window,
+) {
+	if app == nil || app.Windows == nil {
+		return
+	}
+	app.Windows.OnTabLifecycle = func(ev shell.TabLifecycleEvent) {
+		if lazySess == nil || !strings.HasPrefix(ev.Buffer.BufferID, "plugin:") {
+			return
+		}
+		pluginID := schema.PluginID(strings.TrimPrefix(ev.Buffer.BufferID, "plugin:"))
+		switch ev.To {
+		case shell.TabHibernated:
+			if !app.Windows.BufferStillWarm(ev.Buffer.BufferID) {
+				go func() {
+					if err := lazySess.Sleep(pluginID); err == nil {
+						syncMarketplace()
+						win.Invalidate()
+					}
+				}()
+			}
+		case shell.TabActive:
+			if ev.From == shell.TabHibernated {
+				go func() {
+					if _, err := lazySess.Wake(ctx, pluginID); err == nil {
+						syncMarketplace()
+						win.Invalidate()
+					}
+				}()
+			}
+		}
+	}
+	if idleCheckInterval <= 0 {
+		idleCheckInterval = 15 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(idleCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if reaped := app.Windows.ReapIdleTabs(now); len(reaped) > 0 && win != nil {
+					win.Invalidate()
+				}
+			}
+		}
+	}()
 }
 
 func startDevPluginWatcher(

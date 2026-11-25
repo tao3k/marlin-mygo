@@ -233,6 +233,12 @@ func renderWindowLeaf(
 				}
 			}
 			if cb.NextBufferFor != nil {
+				if ApplePillButton(c, "wtabnew-"+string(leaf.ID), "+ Tab", BtnGlass, dt, nil, true).Clicked() {
+					tree.FocusWindow(leaf.ID)
+					if _, err := tree.OpenTab(leaf.ID, cb.NextBufferFor(leaf.Buffer)); err == nil && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
+				}
 				if ApplePillButton(c, "wbuf-"+string(leaf.ID), "Buf", BtnGlass, dt, nil, true).Clicked() {
 					tree.FocusWindow(leaf.ID)
 					tree.SetWindowBuffer(leaf.ID, cb.NextBufferFor(leaf.Buffer))
@@ -291,7 +297,54 @@ func renderWindowLeaf(
 			}
 		})
 
-		// Pane Body: renders mounted WebView slot, Go WASI GPU slot, or Native GPU buffer.
+		// Emacs tab-line-mode stacked tab strip (renders only when pane has >1 tab).
+		// Inactive tabs paint ZERO body widgets: Paused tabs stay warm; Hibernated
+		// tabs occupy 0MB runtime RAM and wake transparently on click.
+		if len(leaf.Tabs) > 1 {
+			ui.Row(c.Key("wtabs-"+string(leaf.ID))).Padding(4, 10).Gap(6).AlignItems(ui.Center).
+				Background(toColor(dt.SurfaceRecessed)).BorderWidth(0, 0, 1, 0).BorderColor(glassBorderColor(dt)).Children(func() {
+				for idx, tab := range leaf.Tabs {
+					tabTitle := tab.Buffer.Title
+					if tabTitle == "" {
+						tabTitle = tab.Buffer.BufferID
+					}
+					var glyph string
+					variant := BtnGlass
+					switch tab.State {
+					case shell.TabActive:
+						glyph = "●"
+						variant = BtnTinted
+					case shell.TabHibernated:
+						glyph = "☾"
+					default:
+						glyph = "○"
+					}
+					if tab.Pinned {
+						glyph = "★"
+					}
+					lbl := fmt.Sprintf("%s %s", glyph, tabTitle)
+					key := fmt.Sprintf("wtab-%s-%d", leaf.ID, idx)
+					if ApplePillButton(c, key, lbl, variant, dt, nil, true).Clicked() {
+						if tree.SelectTab(leaf.ID, idx) && cb.OnLayoutChanged != nil {
+							cb.OnLayoutChanged(tree.Snapshot())
+						}
+					}
+				}
+				ui.Spacer(c)
+				if ApplePillButton(c, "wtabsleep-"+string(leaf.ID), "Sleep Tab", BtnGlass, dt, nil, true).Clicked() {
+					if tree.HibernateTab(leaf.ID, leaf.ActiveTab) && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
+				}
+				if ApplePillButton(c, "wtabclose-"+string(leaf.ID), "Close Tab", BtnDestructive, dt, nil, true).Clicked() {
+					if err := tree.CloseTab(leaf.ID, leaf.ActiveTab); err == nil && cb.OnLayoutChanged != nil {
+						cb.OnLayoutChanged(tree.Snapshot())
+					}
+				}
+			})
+		}
+
+		// Pane Body: renders ONLY the active tab (paused & hibernated tabs do 0 GPU work).
 		ui.Column(c.Key("wbody-"+string(leaf.ID))).Grow(1).MinWidth(0).MinHeight(0).Padding(8).AlignItems(ui.Stretch).Children(func() {
 			if cb.RenderBuffer != nil {
 				cb.RenderBuffer(c, t, dt, leaf.ID, leaf.Buffer)
