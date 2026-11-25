@@ -74,6 +74,29 @@ func ParsePluginManifestTOML(raw []byte) (*PluginManifest, error) {
 		}
 		key := strings.TrimSpace(line[:eq])
 		valRaw := strings.TrimSpace(line[eq+1:])
+		if strings.HasPrefix(valRaw, "[") && !tomlArrayClosed(valRaw) {
+			startLine := lineNum
+			var buf strings.Builder
+			buf.WriteString(valRaw)
+			closed := false
+			for scanner.Scan() {
+				lineNum++
+				next := strings.TrimSpace(stripTOMLComment(scanner.Text()))
+				if next == "" {
+					continue
+				}
+				buf.WriteByte(' ')
+				buf.WriteString(next)
+				if tomlArrayClosed(buf.String()) {
+					closed = true
+					break
+				}
+			}
+			if !closed {
+				return nil, fmt.Errorf("%w: line %d (%s.%s): unterminated string array", ErrInvalidManifest, startLine, section, key)
+			}
+			valRaw = buf.String()
+		}
 		if err := assignManifestField(m, section, key, valRaw); err != nil {
 			return nil, fmt.Errorf("%w: line %d (%s.%s): %v", ErrInvalidManifest, lineNum, section, key, err)
 		}
@@ -296,6 +319,39 @@ func assignManifestField(m *PluginManifest, section, key, valRaw string) error {
 	}
 
 	return fmt.Errorf("unsupported table [%s]", section)
+}
+
+func tomlArrayClosed(raw string) bool {
+	inQuotes := false
+	escaped := false
+	depth := 0
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inQuotes {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inQuotes = !inQuotes
+			continue
+		}
+		if inQuotes {
+			continue
+		}
+		if c == '[' {
+			depth++
+		} else if c == ']' {
+			depth--
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func stripTOMLComment(line string) string {

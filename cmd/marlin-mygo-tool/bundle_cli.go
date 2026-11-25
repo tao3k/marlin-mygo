@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -195,62 +196,35 @@ func runBuildExamples(args []string) error {
 		return err
 	}
 
-	// Stage go-graph-inspector-reactor with freshly compiled GOOS=wasip1 panel.wasm.
-	tmpReactor, err := os.MkdirTemp("", "marlin-reactor-stage-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmpReactor)
-
-	reactorManifest, err := os.ReadFile(filepath.Join("examples", "plugins", "go-graph-inspector-reactor", "marlin-plugin.toml"))
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(tmpReactor, "marlin-plugin.toml"), reactorManifest, 0o644); err != nil {
-		return err
-	}
-	wasmOut := filepath.Join(tmpReactor, "panel.wasm")
-	buildCmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", wasmOut, "./examples/plugins/go-graph-inspector-reactor")
-	buildCmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0")
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("compile reactor wasm: %w\n%s", err, string(out))
-	}
-
 	var rev [20]byte
-	bundles := []struct {
-		dir  string
-		name string
-	}{
-		{dir: tmpReactor, name: "tao3k.graph-inspector-0.2.0.marlinpkg"},
-		{dir: filepath.Join("examples", "plugins", "ts-org-kanban"), name: "tao3k.org-kanban-0.2.0.marlinpkg"},
-		{dir: filepath.Join("examples", "plugins", "ios-personal-overlay"), name: "tao3k.ios-personal-capture-0.2.0.marlinpkg"},
+	exampleDirs := []string{
+		filepath.Join("examples", "plugins", "go-graph-inspector-reactor"),
+		filepath.Join("examples", "plugins", "go-focus-clock-reactor"),
+		filepath.Join("examples", "plugins", "ts-org-kanban"),
+		filepath.Join("examples", "plugins", "ts-session-radar"),
+		filepath.Join("examples", "plugins", "ts-org-agenda-planner"),
+		filepath.Join("examples", "plugins", "ios-personal-overlay"),
+		filepath.Join("examples", "plugins", "declarative-daily-planner-pack"),
 	}
-	var pkgPaths []string
-	for _, b := range bundles {
-		pkgBytes, _, err := marketplace.PackBundle(b.dir, schema.PublisherID(*publisher), rev, priv)
+	ctx := context.Background()
+	var totalEntries int
+	for _, dir := range exampleDirs {
+		rcpt, err := marketplace.PublishPlugin(ctx, marketplace.PublishConfig{
+			PluginDir:       dir,
+			PublisherID:     schema.PublisherID(*publisher),
+			PrivateKey:      priv,
+			PublicKey:       pub,
+			SourceRev:       rev,
+			OutCatalogDir:   *outDir,
+			ReplaceExisting: true,
+		})
 		if err != nil {
-			return fmt.Errorf("pack %s: %w", b.name, err)
+			return fmt.Errorf("publish example %s: %w", dir, err)
 		}
-		dest := filepath.Join(*outDir, b.name)
-		if err := os.WriteFile(dest, pkgBytes, 0o644); err != nil {
-			return err
-		}
-		pkgPaths = append(pkgPaths, dest)
+		totalEntries = rcpt.CatalogEntries
+		fmt.Printf("  - %-30s (%s, %d bytes, %d audit checks)\n", rcpt.PluginID, rcpt.Runtime, rcpt.PackageBytes, rcpt.AuditChecks)
 	}
-	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{
-		schema.PublisherID(*publisher): pub,
-	})
-	rawJSON, sig, idx, err := marketplace.BuildSignedCatalog(pkgPaths, schema.PublisherID(*publisher), rev, trust, priv)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(*outDir, "catalog.json"), rawJSON, 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(*outDir, "catalog.json.sig"), []byte(hex.EncodeToString(sig)+"\n"), 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("Built & signed %d example .marlinpkg bundles + catalog.json in %s\n", len(idx.Entries), *outDir)
+	fmt.Printf("Built, certified & signed %d example .marlinpkg bundles + catalog.json in %s\n", totalEntries, *outDir)
 	return nil
 }
 

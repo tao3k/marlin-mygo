@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Complex Reference Use Case: 120Hz GPU-Native Focus Alarm, Org Clock Rollup,
+# Next-Agenda Preview & Quick Note Log (Go 1.27 zero-unsafe WASI Reactor).
+# Zero WebView RAM — renders directly on MyGo Metal/D3D11/OpenGL GPU via UI-IR + DrawList.
+id = "tao3k.focus-clock-reactor"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "wasm-ui-ir-v1"]
+
+[capabilities.read_clock]
+kind = "projection.read"
+surface = "org.clock"
+
+[capabilities.read_agenda]
+kind = "projection.read"
+surface = "org.agenda"
+
+[contributions.focus_clock_panel]
+kind = "ui-panel"
+requires = ["read_clock", "read_agenda"]
+
+[contributions.focus_clock_panel.panel]
+runtime = "wasm-ui-ir"
+slot_id = "workbench.inspector"
+cardinality = "single"
+entry_path = "panel.wasm"
+read_scopes = ["org.clock", "org.agenda"]
+declared_actions = ["org.clock.in", "org.clock.out", "org.capture.plan"]
+activation = "on-topic"
+triggers = ["org.clock", "org.agenda"]
+idle_unload_sec = 600

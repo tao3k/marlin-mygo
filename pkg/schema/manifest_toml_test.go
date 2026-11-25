@@ -26,8 +26,26 @@ func TestParseCanonicalExampleManifests(t *testing.T) {
 			wantRT:   schema.RuntimeWasmUIIR,
 		},
 		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "go-focus-clock-reactor", "marlin-plugin.toml"),
+			wantID:   "tao3k.focus-clock-reactor",
+			wantSlot: "workbench.inspector",
+			wantRT:   schema.RuntimeWasmUIIR,
+		},
+		{
 			rel:      filepath.Join("..", "..", "examples", "plugins", "ts-org-kanban", "marlin-plugin.toml"),
 			wantID:   "tao3k.org-kanban",
+			wantSlot: "workbench.main",
+			wantRT:   schema.RuntimeWebViewUntrusted,
+		},
+		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "ts-session-radar", "marlin-plugin.toml"),
+			wantID:   "tao3k.session-radar",
+			wantSlot: "workbench.main",
+			wantRT:   schema.RuntimeWebViewUntrusted,
+		},
+		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "ts-org-agenda-planner", "marlin-plugin.toml"),
+			wantID:   "tao3k.org-agenda-planner",
 			wantSlot: "workbench.main",
 			wantRT:   schema.RuntimeWebViewUntrusted,
 		},
@@ -35,6 +53,12 @@ func TestParseCanonicalExampleManifests(t *testing.T) {
 			rel:      filepath.Join("..", "..", "examples", "plugins", "ios-personal-overlay", "marlin-plugin.toml"),
 			wantID:   "tao3k.ios-personal-capture",
 			wantSlot: "workbench.main",
+			wantRT:   schema.RuntimeDeclarative,
+		},
+		{
+			rel:      filepath.Join("..", "..", "examples", "plugins", "declarative-daily-planner-pack", "marlin-plugin.toml"),
+			wantID:   "tao3k.daily-planner-pack",
+			wantSlot: "workbench.inspector",
 			wantRT:   schema.RuntimeDeclarative,
 		},
 	}
@@ -114,6 +138,7 @@ declared_actions = ["c.d"]
 `))
 	f.Add([]byte(`id = ""`))
 	f.Add([]byte(`[bad.section.depth.four]`))
+	f.Add([]byte("id = \"tao3k.multi\"\nversion = \"0.1.0\"\ncontract_major = 1\n[contributions.p]\nkind = \"ui-panel\"\n[contributions.p.panel]\nruntime = \"declarative\"\nslot_id = \"workbench.main\"\ndeclared_actions = [\n  \"org.capture.plan\",\n  \"org.clock.in\",\n]\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		m, err := schema.ParsePluginManifestTOML(data)
 		if err == nil {

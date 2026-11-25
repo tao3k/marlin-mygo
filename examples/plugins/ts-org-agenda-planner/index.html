@@ -1,0 +1,202 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Marlin Org Agenda &amp; Daily Planner (orgize DTOs)</title>
+    <style>
+      :root {
+        --bg: var(--marlin-canvas, #282c34);
+        --bar: var(--marlin-bar, #1c1f24);
+        --fg: var(--marlin-ink, #bbc2cf);
+        --accent: var(--marlin-accent, #c678dd);
+        --info: var(--marlin-info, #51afef);
+        --ok: var(--marlin-success, #98be65);
+        --warn: var(--marlin-warning, #ecbe7b);
+        --muted: var(--marlin-muted, #73797e);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 16px;
+        font: 13px/1.5 system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .subtitle { color: var(--muted); font-size: 12px; }
+      .capture-bar {
+        display: grid;
+        grid-template-columns: 110px 110px 1fr 130px 110px auto;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      .capture-bar input,
+      .capture-bar select {
+        padding: 7px 9px;
+        border-radius: 6px;
+        border: 1px solid var(--muted);
+        background: var(--bar);
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.45fr 1fr;
+        gap: 14px;
+      }
+      .card {
+        background: var(--bar);
+        border-radius: 10px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--info);
+      }
+      .pills {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      button {
+        border: 0;
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      button.primary { background: var(--accent); color: #111; }
+      button.active { background: var(--info); color: #111; }
+      .item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 6px;
+        background: var(--bg);
+        border-left: 3px solid var(--info);
+        margin-bottom: 6px;
+      }
+      .item.urgent { border-left-color: var(--warn); }
+      .item.done { opacity: 0.6; border-left-color: var(--ok); }
+      .meta { font-size: 11px; color: var(--muted); }
+      .badge {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        background: rgba(81, 175, 239, 0.16);
+        color: var(--info);
+        margin-left: 6px;
+      }
+      .badge.blocked {
+        background: rgba(236, 190, 123, 0.2);
+        color: var(--warn);
+      }
+      .conflict {
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: rgba(236, 190, 123, 0.14);
+        color: var(--warn);
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+      .clock-display {
+        font-size: 28px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--accent);
+        margin: 6px 0;
+      }
+      .receipt {
+        font-size: 12px;
+        color: var(--ok);
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <strong>Org Agenda &amp; Daily Schedule Planner</strong>
+        <div class="subtitle" id="session-badge">Powered by tao3k/orgize DTOs (zero JS Org parsing)</div>
+      </div>
+      <div class="subtitle" id="clock-rollup-badge">Clocked today: 0m</div>
+    </header>
+
+    <form class="capture-bar" id="capture-form">
+      <select id="capture-kind" aria-label="Capture Kind">
+        <option value="task">Task</option>
+        <option value="note">Note</option>
+        <option value="idea">Idea</option>
+        <option value="decision">Decision</option>
+      </select>
+      <select id="capture-target" aria-label="Capture Target">
+        <option value="inbox">Inbox</option>
+        <option value="datetree">Datetree</option>
+      </select>
+      <input id="capture-title" type="text" placeholder="Capture title (routed to orgize capturePlan)" />
+      <input id="capture-tags" type="text" placeholder="tags: deep,arch" />
+      <input id="capture-window" type="text" placeholder="14:00-15:00" />
+      <button class="primary" type="submit">Capture</button>
+    </form>
+
+    <div class="grid">
+      <section>
+        <div class="card">
+          <h3>Orgize Agenda Queue</h3>
+          <div class="pills" id="filter-pills"></div>
+          <div id="conflicts"></div>
+          <div id="agenda-list"></div>
+        </div>
+      </section>
+
+      <aside>
+        <div class="card">
+          <h3>Focus Alarm &amp; Org Clock</h3>
+          <div class="subtitle" id="alarm-label">Deep Work Block</div>
+          <div class="clock-display" id="alarm-clock">25:00</div>
+          <div class="pills">
+            <button class="primary" id="alarm-toggle" type="button">Start 25m</button>
+            <button id="alarm-break" type="button">5m Break</button>
+            <button id="alarm-reset" type="button">Reset</button>
+          </div>
+          <div class="subtitle" id="alarm-status">Status: idle</div>
+        </div>
+
+        <div class="card">
+          <h3>Today's Time Blocks</h3>
+          <div id="timeline-list"></div>
+        </div>
+
+        <div class="receipt" id="receipt-feed">Waiting for org.agenda / org.clock DTO projections.</div>
+      </aside>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

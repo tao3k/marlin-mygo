@@ -118,3 +118,24 @@ CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish \
   -dir ./sprint-board -publisher acme.dev \
   -key ./keys/acme.key -pub ./keys/acme.pub -out ./dist/marketplace
 #+end_src
+
+* 7. Complex Reference Use Cases (Personal Planning, Schedule, Focus Alarm)
+
+Upstream (=marlin-mygo= + =tao3k/orgize=) owns the high-performance GPU renderer,
+lazy loader, sandboxed execution, and authoritative Org parsing (=tao3k/orgize=
+Rust kernel / =tao3k/orgize-wasm=). Downstream users and LLMs never duplicate
+Org syntax parsing — they consume canonical =orgize= DTO projections
+(=org.agenda=, =org.clock=) and customize views, alarms, capture templates, and
+keybindings across all three runtimes:
+
+| Example Directory | Plugin ID | Runtime | Personal Use Case |
+|--------------------------------------------------+------------------------------+----------------------+------------------------------------------------------------------------|
+| =examples/plugins/ts-org-agenda-planner=         | =tao3k.org-agenda-planner=   | =webview-untrusted=  | Org Agenda queue, time-block conflict detector, structured capture, alarm |
+| =examples/plugins/go-focus-clock-reactor=        | =tao3k.focus-clock-reactor=  | =wasm-ui-ir=         | 120Hz GPU focus countdown, next agenda card, quick log, binary sparkline  |
+| =examples/plugins/declarative-daily-planner-pack=| =tao3k.daily-planner-pack=   | =declarative=        | Zero-code calm theme, agenda blocks, capture templates, Meow/Hydra keys   |
+
+Build, certify, and sign all canonical examples into one local Marketplace catalog:
+
+#+begin_src shell
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
+#+end_src

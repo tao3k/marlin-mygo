@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Complex Reference Use Case: Zero-Code Personal Daily Planning Pack
+# (Desktop + iOS + Android App Store OTA compliant — zero executable code).
+id = "tao3k.daily-planner-pack"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "workflow-preset"]
+
+[capabilities.read_agenda]
+kind = "projection.read"
+surface = "org.agenda"
+
+[capabilities.read_clock]
+kind = "projection.read"
+surface = "org.clock"
+
+[contributions.daily_planner_preset]
+kind = "workflow-preset"
+policy_module = "marlin.personal.daily-planner"
+settings_schema = "marlin.personal.daily-planner.v1"
+requires = ["read_agenda", "read_clock"]
+
+[contributions.daily_planner_theme]
+kind = "ui-panel"
+requires = ["read_agenda", "read_clock"]
+
+[contributions.daily_planner_theme.panel]
+runtime = "declarative"
+slot_id = "workbench.inspector"
+cardinality = "single"
+entry_path = "planner-pack.toml"
+read_scopes = ["org.agenda", "org.clock"]
+declared_actions = ["org.capture.plan", "org.clock.in"]
+activation = "on-slot"
+idle_unload_sec = 300
