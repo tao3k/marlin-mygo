@@ -9,10 +9,12 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -39,6 +41,7 @@ type LazySession struct {
 	cfg      LazySessionConfig
 	manager  *Manager
 	loader   *LazyLoader
+	eventSeq atomic.Uint64
 	mu       sync.Mutex
 	curRaw   map[schema.PluginID][]byte
 	prevRaw  map[schema.PluginID][]byte
@@ -251,6 +254,40 @@ func (s *LazySession) TriggerCommand(ctx context.Context, commandName string) ([
 // TriggerSlot wakes any dormant plugins bound to slotID.
 func (s *LazySession) TriggerSlot(ctx context.Context, slotID schema.SlotID) ([]schema.PluginID, error) {
 	return s.loader.EnsureForSlot(ctx, slotID)
+}
+
+// PublishProjection wakes any dormant on-topic plugins subscribed to topic
+// (O(1) zero-alloc fast path when already warm) and delivers payload strictly
+// to active plugins authorized by their manifest read_scopes.
+func (s *LazySession) PublishProjection(ctx context.Context, topic string, payload any) (woken []schema.PluginID, delivered []schema.PluginID, err error) {
+	woken, err = s.loader.EnsureForTopic(ctx, topic)
+	if err != nil {
+		return woken, nil, err
+	}
+	var raw json.RawMessage
+	switch v := payload.(type) {
+	case json.RawMessage:
+		raw = v
+	case []byte:
+		raw = json.RawMessage(v)
+	default:
+		b, mErr := json.Marshal(v)
+		if mErr != nil {
+			return woken, nil, mErr
+		}
+		raw = b
+	}
+	evID := fmt.Sprintf("proj-%s-%d", topic, s.eventSeq.Add(1))
+	delivered, errs := s.cfg.Host.PublishTopic(evID, topic, raw)
+	for _, id := range delivered {
+		s.loader.Touch(id)
+	}
+	if len(errs) > 0 {
+		for id, dErr := range errs {
+			return woken, delivered, fmt.Errorf("deliver topic %q to %s: %w", topic, id, dErr)
+		}
+	}
+	return woken, delivered, nil
 }
 
 // ReapIdle executes an O(1) idle reclamation check against now.

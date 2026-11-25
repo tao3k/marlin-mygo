@@ -1,0 +1,48 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Marlin Session Radar (TypeScript + Bun Build)</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        font: 13px/1.5 system-ui, -apple-system, sans-serif;
+        background: var(--marlin-canvas, #282c34);
+        color: var(--marlin-ink, #bbc2cf);
+      }
+      button {
+        margin-top: 10px;
+        background: var(--marlin-accent, #c678dd);
+        color: #111;
+        border: 0;
+        border-radius: 6px;
+        padding: 6px 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      pre {
+        background: var(--marlin-bar, #1c1f24);
+        padding: 10px;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Session Radar (TypeScript SDK + Zero-Runtime Bun Bundle)</h3>
+    <pre id="summary">Waiting for scoped session.summary projections...</pre>
+    <button id="ping" type="button">Ping Scoped Action</button>
+    <div id="receipt"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

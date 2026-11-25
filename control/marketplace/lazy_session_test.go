@@ -268,3 +268,142 @@ func TestLazySessionPersistAcrossRestartHookWakeRollbackAndIdleReap(t *testing.T
 		t.Fatalf("expected host.workbench.inspector fallback restored after idle reap, got %+v", resolved)
 	}
 }
+
+type capturingRuntimeFactory struct {
+	mu     sync.Mutex
+	events map[schema.PluginID][]pluginhost.ScopedEvent
+}
+
+func (f *capturingRuntimeFactory) Kind() schema.PanelRuntimeKind { return schema.RuntimeDeclarative }
+func (f *capturingRuntimeFactory) Instantiate(_ context.Context, scope pluginhost.ScopedScope, _ *pluginhost.ScopedProxy) (pluginhost.Instance, error) {
+	return &capturingInstance{scope: scope, parent: f}, nil
+}
+
+type capturingInstance struct {
+	scope  pluginhost.ScopedScope
+	parent *capturingRuntimeFactory
+}
+
+func (c *capturingInstance) Scope() pluginhost.ScopedScope { return c.scope }
+func (c *capturingInstance) Renderer() shell.SlotRenderer {
+	return lazySessRenderer{id: string(c.scope.PluginID)}
+}
+func (c *capturingInstance) Close() error { return nil }
+func (c *capturingInstance) DeliverEvent(ev pluginhost.ScopedEvent) error {
+	c.parent.mu.Lock()
+	if c.parent.events == nil {
+		c.parent.events = make(map[schema.PluginID][]pluginhost.ScopedEvent)
+	}
+	c.parent.events[c.scope.PluginID] = append(c.parent.events[c.scope.PluginID], ev)
+	c.parent.mu.Unlock()
+	return nil
+}
+
+func TestLazySessionOnTopicProjectionWakesDormantPluginAndEnforcesReadScopes(t *testing.T) {
+	ctx := context.Background()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{"tao3k.official": pub})
+
+	makeScopedPkg := func(id, slot, topic string) []byte {
+		dir := t.TempDir()
+		manifest := `
+id = "` + id + `"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1"]
+[contributions.p]
+kind = "theme-pack"
+[contributions.p.panel]
+runtime = "declarative"
+slot_id = "` + slot + `"
+cardinality = "single"
+entry_path = "theme.toml"
+read_scopes = ["` + topic + `"]
+activation = "on-topic"
+triggers = ["` + topic + `"]
+idle_unload_sec = 300
+`
+		_ = os.WriteFile(filepath.Join(dir, "marlin-plugin.toml"), []byte(manifest), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "theme.toml"), []byte("[theme]\naccent = \"#51afef\"\n"), 0o644)
+		var rev [20]byte
+		pkg, _, err := marketplace.PackBundle(dir, "tao3k.official", rev, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkg
+	}
+
+	repoDir := t.TempDir()
+	pkgA := makeScopedPkg("tao3k.session-watcher", "workbench.main", "session.summary")
+	pkgB := makeScopedPkg("tao3k.org-watcher", "workbench.inspector", "org.tasks")
+	pA := filepath.Join(repoDir, "tao3k.session-watcher-0.1.0.marlinpkg")
+	pB := filepath.Join(repoDir, "tao3k.org-watcher-0.1.0.marlinpkg")
+	_ = os.WriteFile(pA, pkgA, 0o644)
+	_ = os.WriteFile(pB, pkgB, 0o644)
+	var rev [20]byte
+	catJSON, catSig, _, err := marketplace.BuildSignedCatalog([]string{pA, pB}, "tao3k.official", rev, trust, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(repoDir, "catalog.json"), catJSON, 0o644)
+	_ = os.WriteFile(filepath.Join(repoDir, "catalog.json.sig"), []byte(hex.EncodeToString(catSig)+"\n"), 0o644)
+
+	slots := shell.NewSlotRegistry()
+	for _, sid := range []schema.SlotID{"workbench.main", "workbench.inspector"} {
+		_ = slots.Declare(schema.SlotDeclaration{
+			SlotID: sid, Cardinality: schema.SlotSingle,
+			FallbackRenderer: "host." + string(sid), AllowUntrustedPlugin: true,
+		}, lazySessRenderer{id: "host." + string(sid)})
+	}
+	capRT := &capturingRuntimeFactory{}
+	host := pluginhost.NewHost(slots, lazySessDispatcher{})
+	host.RegisterRuntime(capRT)
+
+	reg, err := marketplace.NewRegistryClient(marketplace.RegistryConfig{
+		LocalDir: repoDir, CacheDir: filepath.Join(t.TempDir(), "cas"), CatalogPubKey: pub,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(t.TempDir(), "marlin-plugins.toml")
+	sess, err := marketplace.NewLazySession(ctx, marketplace.LazySessionConfig{
+		Registry: reg, Trust: trust, Host: host, Target: schema.TargetDesktopMacOS, ProfilePath: profilePath, MaxActiveLazy: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.InstallOrUpgrade(ctx, "tao3k.session-watcher"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.InstallOrUpgrade(ctx, "tao3k.org-watcher"); err != nil {
+		t.Fatal(err)
+	}
+	// Put both dormant (0MB RAM).
+	_ = sess.Sleep("tao3k.session-watcher")
+	_ = sess.Sleep("tao3k.org-watcher")
+
+	// Publish "session.summary" -> wakes ONLY tao3k.session-watcher and delivers scoped payload!
+	woken, delivered, err := sess.PublishProjection(ctx, "session.summary", map[string]any{"turnOrdinal": 7, "outcome": "COMPLETED"})
+	if err != nil {
+		t.Fatalf("PublishProjection failed: %v", err)
+	}
+	if len(woken) != 1 || woken[0] != "tao3k.session-watcher" {
+		t.Fatalf("expected only tao3k.session-watcher woken, got %v", woken)
+	}
+	if len(delivered) != 1 || delivered[0] != "tao3k.session-watcher" {
+		t.Fatalf("expected only tao3k.session-watcher delivered, got %v", delivered)
+	}
+	capRT.mu.Lock()
+	gotA := capRT.events["tao3k.session-watcher"]
+	gotB := capRT.events["tao3k.org-watcher"]
+	capRT.mu.Unlock()
+	if len(gotA) != 1 || gotA[0].Topic != "session.summary" || !strings.Contains(string(gotA[0].Payload), `"turnOrdinal":7`) {
+		t.Fatalf("unexpected delivered events for tao3k.session-watcher: %+v", gotA)
+	}
+	if len(gotB) != 0 {
+		t.Fatalf("tao3k.org-watcher must remain dormant and never receive session.summary, got %+v", gotB)
+	}
+}

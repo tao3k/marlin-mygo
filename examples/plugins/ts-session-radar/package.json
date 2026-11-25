@@ -1,0 +1,9 @@
+{
+  "name": "marlin-plugin-session-radar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tao3k/marlin-panel-sdk": "^0.1.0"
+  }
+}

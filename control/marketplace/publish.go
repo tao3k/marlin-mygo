@@ -152,7 +152,7 @@ func AuditPluginDir(ctx context.Context, pluginDir string) (*AuditReport, error)
 
 	switch panel.Runtime {
 	case schema.RuntimeWebViewUntrusted:
-		auditWebViewPlugin(absDir, panel, files, record)
+		auditWebViewPlugin(ctx, absDir, panel, files, record)
 	case schema.RuntimeDeclarative:
 		auditDeclarativePlugin(absDir, panel, files, record)
 	case schema.RuntimeWasmUIIR:
@@ -168,7 +168,7 @@ func AuditPluginDir(ctx context.Context, pluginDir string) (*AuditReport, error)
 	return rep, nil
 }
 
-func auditWebViewPlugin(absDir string, panel *schema.PanelContribution, files []string, record func(string, bool, string)) {
+func auditWebViewPlugin(ctx context.Context, absDir string, panel *schema.PanelContribution, files []string, record func(string, bool, string)) {
 	entry := panel.EntryPath
 	if entry == "" {
 		entry = "index.html"
@@ -180,6 +180,34 @@ func auditWebViewPlugin(absDir string, panel *schema.PanelContribution, files []
 	}
 	record("webview.entry", true, entry)
 
+	// If index.html references a TypeScript entry (.ts/.tsx), compile with `bun build`
+	// and audit the resulting browser bundle so published .marlinpkg archives run with
+	// zero runtime Bun dependency.
+	auditRoot := absDir
+	auditFiles := files
+	if _, _, isTS := DetectTSScriptEntry(entryRaw); isTS {
+		staged, cleanup, _, bundleBytes, bErr := BundleTSWebViewDir(ctx, absDir, entry)
+		if bErr != nil {
+			record("webview.ts_bundle", false, bErr.Error())
+			return
+		}
+		defer cleanup()
+		record("webview.ts_bundle", true, fmt.Sprintf("bun build produced %d-byte zero-runtime browser bundle", bundleBytes))
+		auditRoot = staged
+		auditFiles = nil
+		_ = filepath.WalkDir(staged, func(p string, d fs.DirEntry, wErr error) error {
+			if wErr == nil && !d.IsDir() {
+				if rel, rErr := filepath.Rel(staged, p); rErr == nil {
+					auditFiles = append(auditFiles, filepath.ToSlash(rel))
+				}
+			}
+			return nil
+		})
+		if stagedHTML, rErr := os.ReadFile(filepath.Join(staged, filepath.FromSlash(entry))); rErr == nil {
+			entryRaw = stagedHTML
+		}
+	}
+
 	htmlLower := strings.ToLower(string(entryRaw))
 	hasCSP := strings.Contains(htmlLower, "content-security-policy")
 	noUnsafeEval := !strings.Contains(htmlLower, "unsafe-eval")
@@ -190,12 +218,12 @@ func auditWebViewPlugin(absDir string, panel *schema.PanelContribution, files []
 	// Scan JS/TS/HTML sources for forbidden dynamic code execution or host-bypass patterns.
 	forbidden := []string{"eval(", "new Function(", "MARLIN_BRIDGE_TOKEN", "mygo.Bind("}
 	var violation string
-	for _, rel := range files {
+	for _, rel := range auditFiles {
 		lower := strings.ToLower(rel)
 		if !strings.HasSuffix(lower, ".html") && !strings.HasSuffix(lower, ".js") && !strings.HasSuffix(lower, ".ts") && !strings.HasSuffix(lower, ".mjs") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(absDir, filepath.FromSlash(rel)))
+		raw, err := os.ReadFile(filepath.Join(auditRoot, filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}
@@ -309,7 +337,22 @@ func PublishPlugin(ctx context.Context, cfg PublishConfig) (*PublishReceipt, err
 	}
 
 	stageDir := cfg.PluginDir
-	if audit.Runtime == schema.RuntimeWasmUIIR {
+	if audit.Runtime == schema.RuntimeWebViewUntrusted {
+		manifest, _ := schema.ParsePluginManifestTOML(mustRead(filepath.Join(cfg.PluginDir, "marlin-plugin.toml")))
+		entry := "index.html"
+		for _, c := range manifest.Contributions {
+			if c.Panel != nil && c.Panel.EntryPath != "" {
+				entry = c.Panel.EntryPath
+				break
+			}
+		}
+		tsStage, tsClean, _, _, bErr := BundleTSWebViewDir(ctx, cfg.PluginDir, entry)
+		if bErr != nil {
+			return nil, bErr
+		}
+		defer tsClean()
+		stageDir = tsStage
+	} else if audit.Runtime == schema.RuntimeWasmUIIR {
 		tmpStage, err := os.MkdirTemp("", "marlin-publish-stage-*")
 		if err != nil {
 			return nil, err

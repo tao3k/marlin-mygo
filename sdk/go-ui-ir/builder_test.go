@@ -48,4 +48,20 @@ func TestRenderResultAndDrawListResultHostHelpers(t *testing.T) {
 	if n := DrawListResult(cmds); n == 0 {
 		t.Fatalf("expected non-zero DrawListResult for valid DrawCmd slice")
 	}
+
+	btn := ActionButton("Inspect", "graph.node.inspect", `{"nodeId":"n1"}`, schema.ToneAccent)
+	if btn.Kind != schema.ElemButton || btn.Action != "graph.node.inspect" {
+		t.Fatalf("unexpected ActionButton: %+v", btn)
+	}
+	if AllocBuffer(128) != 128 || AllocBuffer(0) != 0 {
+		t.Fatal("unexpected AllocBuffer bounds behavior")
+	}
+	var gotTopic string
+	rc := DispatchEventBytes([]byte(`{"eventId":"ev-1","topic":"graph.nodes","payload":{"count":3}}`), func(ev Event) error {
+		gotTopic = ev.Topic
+		return nil
+	})
+	if rc != 0 || gotTopic != "graph.nodes" {
+		t.Fatalf("expected DispatchEventBytes rc=0 topic=graph.nodes, got rc=%d topic=%q", rc, gotTopic)
+	}
 }

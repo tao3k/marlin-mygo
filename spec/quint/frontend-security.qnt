@@ -2,23 +2,27 @@
 //
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
-// Formal adversarial security model for the marlin-mygo Frontend Engine boundary.
-// Models:
-//   1. Marketplace release verification (tampered assets cannot activate).
-//   2. Slot trust boundaries (restricted slots like approval.gate never mount untrusted plugins).
+// Formal adversarial security model for the marlin-mygo Frontend Engine & Plugin Ecosystem.
+// Models 10 formal safety invariants:
+//   1. Restricted slot trust (approval.gate never mounts untrusted plugins).
+//   2. Marketplace Ed25519 release verification (tampered/rogue bundles cannot activate).
 //   3. Untrusted WebView CallerPage == Host origin pinning & action allowlists.
-//   4. Monotonic activation generation pinning across hot-reload races.
-//   5. Circuit breaker fault isolation with atomic host fallback restoration.
-//   6. Mutating platform device capabilities (device.ios.* / device.android.*) requiring Rust one-shot GateReceipt + OS permission.
+//   4. Scoped read_scopes enforcement (host.secrets never delivered to untrusted plugins).
+//   5. Mutating platform device writes require one-shot Rust GateReceipt + OS permission.
+//   6. Circuit breaker fault isolation with atomic host fallback restoration.
+//   7. Lockfile pinned_sha256 integrity on lazy wake (pin mismatch never activates).
+//   8. Emacs-style lazy Dormant/Sleep/ReapIdle isolation (dormant plugins own no slot).
+//   9. Bounded O(1) LRU working-set cap (evictable active count <= maxActiveLazy).
+//  10. Anti-silent upgrade privilege escalation (added permissions require user confirmation).
 //
-// Includes 7 explicit adversarial negative-control step actions (badStep*) — one
-// per security invariant — that MUST violate `safe` when checked by
-// `marlin-mygo-tool model-gate`.
+// Includes 11 explicit adversarial negative-control step actions (badStep*) — one
+// per threat vector — that MUST violate `safe` when checked by `marlin-mygo-tool model-gate`.
 module frontendPluginSecurity {
   val plugins = Set("pA", "pB", "pEvil")
-  val slots = Set("workbench.main", "approval.gate")
+  val slots = Set("workbench.main", "workbench.inspector", "approval.gate")
   val actions = Set("org.move", "diff.view", "shell.exec")
   val topics = Set("org.tasks", "workspace.diff", "host.secrets")
+  val maxActiveLazy = 1
 
   pure def declaredActions(p: str): Set[str] =
     if (p == "pA") Set("org.move")
@@ -30,11 +34,16 @@ module frontendPluginSecurity {
     else if (p == "pB") Set("workspace.diff")
     else Set()
 
+  pure def isEvictableLazy(p: str): bool =
+    p == "pA" or p == "pB"
+
   pure def slotFallback(sl: str): str =
-    if (sl == "workbench.main") "host.main" else "host.gate"
+    if (sl == "workbench.main") "host.main"
+    else if (sl == "workbench.inspector") "host.inspector"
+    else "host.gate"
 
   pure def slotAllowsUntrusted(sl: str): bool =
-    sl == "workbench.main"
+    sl == "workbench.main" or sl == "workbench.inspector"
 
   type ActionRecord = { plugin: str, caller: str, gen: int, act: str }
   type EventRecord = { plugin: str, gen: int, topic: str }
@@ -43,10 +52,15 @@ module frontendPluginSecurity {
   type State = {
     verified: str -> bool,
     tampered: str -> bool,
+    pinMatch: str -> bool,
+    dormant: str -> bool,
     gen: str -> int,
     breakerOpen: str -> bool,
     slotOwner: str -> str,
     slotTrusted: str -> bool,
+    pendingEscalation: str -> bool,
+    escalationConfirmed: str -> bool,
+    escalatedActive: str -> bool,
     gateId: int,
     gateState: str, // "none" | "pending" | "approved" | "rejected" | "claimed"
     admittedActions: List[ActionRecord],
@@ -59,10 +73,23 @@ module frontendPluginSecurity {
   action init = s' = {
     verified: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
     tampered: Map("pA" -> false, "pB" -> false, "pEvil" -> true),
+    pinMatch: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
+    dormant: Map("pA" -> true, "pB" -> true, "pEvil" -> true),
     gen: Map("pA" -> 0, "pB" -> 0, "pEvil" -> 0),
     breakerOpen: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
-    slotOwner: Map("workbench.main" -> "host.main", "approval.gate" -> "host.gate"),
-    slotTrusted: Map("workbench.main" -> true, "approval.gate" -> true),
+    slotOwner: Map(
+      "workbench.main" -> "host.main",
+      "workbench.inspector" -> "host.inspector",
+      "approval.gate" -> "host.gate"
+    ),
+    slotTrusted: Map(
+      "workbench.main" -> true,
+      "workbench.inspector" -> true,
+      "approval.gate" -> true
+    ),
+    pendingEscalation: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
+    escalationConfirmed: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
+    escalatedActive: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
     gateId: 0,
     gateState: "none",
     admittedActions: [],
@@ -70,14 +97,18 @@ module frontendPluginSecurity {
     deviceWrites: [],
   }
 
-  // Marketplace Ed25519 + SHA-256 staging gate: tampered bundles are never verified.
+  // Marketplace Ed25519 + SHA-256 staging gate: tampered/rogue bundles are never verified.
   action stageRelease(p: str, assetTampered: bool): bool = all {
     plugins.contains(p),
-    s.gen.get(p) == 0,
+    s.dormant.get(p),
     s' = if (assetTampered or p == "pEvil")
-      s.with("tampered", s.tampered.set(p, true)).with("verified", s.verified.set(p, false))
+      s.with("tampered", s.tampered.set(p, true))
+       .with("verified", s.verified.set(p, false))
+       .with("pinMatch", s.pinMatch.set(p, false))
     else
-      s.with("tampered", s.tampered.set(p, false)).with("verified", s.verified.set(p, true)),
+      s.with("tampered", s.tampered.set(p, false))
+       .with("verified", s.verified.set(p, true))
+       .with("pinMatch", s.pinMatch.set(p, true)),
   }
 
   action stageAnyRelease = {
@@ -86,19 +117,52 @@ module frontendPluginSecurity {
     stageRelease(p, bad)
   }
 
-  // Activate a verified plugin into a slot that permits untrusted renderers.
+  // Adversarial supply-chain drift: remote bundle changes so lockfile pin no longer matches.
+  action driftLockfilePin(p: str): bool = all {
+    plugins.contains(p),
+    s.dormant.get(p),
+    s' = s.with("pinMatch", s.pinMatch.set(p, false)),
+  }
+
+  action driftAnyPin = {
+    nondet p = plugins.oneOf()
+    driftLockfilePin(p)
+  }
+
+  // Activate or lazily wake a verified, pin-matched plugin into a non-restricted slot.
+  // Enforces bounded LRU working-set cap (evicting other active evictable plugins atomically).
   action activate(p: str, sl: str): bool = all {
     plugins.contains(p),
     slots.contains(sl),
     s.verified.get(p),
     not(s.tampered.get(p)),
+    s.pinMatch.get(p),
     slotAllowsUntrusted(sl),
     s.gen.get(p) < 4,
+    val evicted = plugins.filter(q =>
+      q != p and isEvictableLazy(q) and not(s.dormant.get(q))
+    )
+    val nextDormant = plugins.mapBy(q =>
+      if (q == p) false
+      else if (evicted.contains(q)) true
+      else s.dormant.get(q)
+    )
+    val nextOwners = slots.mapBy(curSl =>
+      if (curSl == sl) p
+      else if (evicted.contains(s.slotOwner.get(curSl))) slotFallback(curSl)
+      else s.slotOwner.get(curSl)
+    )
+    val nextTrusted = slots.mapBy(curSl =>
+      if (curSl == sl) false
+      else if (evicted.contains(s.slotOwner.get(curSl))) true
+      else s.slotTrusted.get(curSl)
+    )
     s' = s
       .with("gen", s.gen.set(p, s.gen.get(p) + 1))
+      .with("dormant", nextDormant)
       .with("breakerOpen", s.breakerOpen.set(p, false))
-      .with("slotOwner", s.slotOwner.set(sl, p))
-      .with("slotTrusted", s.slotTrusted.set(sl, false)),
+      .with("slotOwner", nextOwners)
+      .with("slotTrusted", nextTrusted),
   }
 
   action activateAny = {
@@ -107,9 +171,10 @@ module frontendPluginSecurity {
     activate(p, sl)
   }
 
-  // Hot-reload bumps generation atomically while keeping verified status.
+  // Hot-reload bumps generation atomically while active and pin-verified.
   action hotReload(p: str): bool = all {
     plugins.contains(p),
+    not(s.dormant.get(p)),
     s.gen.get(p) > 0,
     s.gen.get(p) < 4,
     s' = s
@@ -120,6 +185,27 @@ module frontendPluginSecurity {
   action hotReloadAny = {
     nondet p = plugins.oneOf()
     hotReload(p)
+  }
+
+  // Emacs-style Sleep / O(1) ReapIdle: unloads plugin to dormant (0MB RAM) and restores host fallback.
+  action sleepOrReap(p: str): bool = all {
+    plugins.contains(p),
+    not(s.dormant.get(p)),
+    val nextOwners = slots.mapBy(sl =>
+      if (s.slotOwner.get(sl) == p) slotFallback(sl) else s.slotOwner.get(sl)
+    )
+    val nextTrusted = slots.mapBy(sl =>
+      if (s.slotOwner.get(sl) == p) true else s.slotTrusted.get(sl)
+    )
+    s' = s
+      .with("dormant", s.dormant.set(p, true))
+      .with("slotOwner", nextOwners)
+      .with("slotTrusted", nextTrusted),
+  }
+
+  action sleepAny = {
+    nondet p = plugins.oneOf()
+    sleepOrReap(p)
   }
 
   // Fault/circuit-breaker trip or unmount: atomically restores host fallback on any owned slot.
@@ -134,6 +220,7 @@ module frontendPluginSecurity {
     )
     s' = s
       .with("breakerOpen", s.breakerOpen.set(p, true))
+      .with("dormant", s.dormant.set(p, true))
       .with("slotOwner", nextOwners)
       .with("slotTrusted", nextTrusted),
   }
@@ -143,7 +230,52 @@ module frontendPluginSecurity {
     tripBreakerOrUnmount(p)
   }
 
-  // Scoped action ingress: enforces CallerPage == Host, live generation, declared allowlist, closed breaker.
+  // Upgrade privilege escalation two-step confirmation protocol.
+  action proposeEscalatingUpgrade(p: str): bool = all {
+    plugins.contains(p),
+    not(s.dormant.get(p)),
+    s.verified.get(p),
+    not(s.pendingEscalation.get(p)),
+    not(s.escalatedActive.get(p)),
+    s' = s
+      .with("pendingEscalation", s.pendingEscalation.set(p, true))
+      .with("escalationConfirmed", s.escalationConfirmed.set(p, false)),
+  }
+
+  action proposeAnyEscalation = {
+    nondet p = plugins.oneOf()
+    proposeEscalatingUpgrade(p)
+  }
+
+  action confirmEscalation(p: str): bool = all {
+    plugins.contains(p),
+    s.pendingEscalation.get(p),
+    s' = s.with("escalationConfirmed", s.escalationConfirmed.set(p, true)),
+  }
+
+  action confirmAnyEscalation = {
+    nondet p = plugins.oneOf()
+    confirmEscalation(p)
+  }
+
+  action applyEscalatedUpgrade(p: str): bool = all {
+    plugins.contains(p),
+    not(s.dormant.get(p)),
+    s.pendingEscalation.get(p),
+    s.escalationConfirmed.get(p),
+    s.gen.get(p) < 4,
+    s' = s
+      .with("pendingEscalation", s.pendingEscalation.set(p, false))
+      .with("escalatedActive", s.escalatedActive.set(p, true))
+      .with("gen", s.gen.set(p, s.gen.get(p) + 1)),
+  }
+
+  action applyAnyEscalatedUpgrade = {
+    nondet p = plugins.oneOf()
+    applyEscalatedUpgrade(p)
+  }
+
+  // Scoped action ingress: enforces CallerPage == Host, active (non-dormant), live generation, allowlist, closed breaker.
   action submitAction(caller: str, host: str, act: str, reqGen: int): bool = all {
     plugins.contains(caller),
     plugins.contains(host),
@@ -151,6 +283,7 @@ module frontendPluginSecurity {
     s.admittedActions.length() < 6,
     val allowed = all {
       caller == host,
+      not(s.dormant.get(caller)),
       s.gen.get(caller) > 0,
       reqGen == s.gen.get(caller),
       not(s.breakerOpen.get(caller)),
@@ -169,12 +302,13 @@ module frontendPluginSecurity {
     submitAction(caller, host, act, g)
   }
 
-  // Scoped event routing: enforces live generation, closed breaker, and read_scopes allowlist.
+  // Scoped event routing: enforces active (non-dormant), live generation, closed breaker, and read_scopes allowlist.
   action routeEvent(p: str, topic: str, evGen: int): bool = all {
     plugins.contains(p),
     topics.contains(topic),
     s.deliveredEvents.length() < 6,
     val allowed = all {
+      not(s.dormant.get(p)),
       s.gen.get(p) > 0,
       evGen == s.gen.get(p),
       not(s.breakerOpen.get(p)),
@@ -226,9 +360,14 @@ module frontendPluginSecurity {
 
   action step = any {
     stageAnyRelease,
+    driftAnyPin,
     activateAny,
     hotReloadAny,
+    sleepAny,
     tripAnyBreaker,
+    proposeAnyEscalation,
+    confirmAnyEscalation,
+    applyAnyEscalatedUpgrade,
     submitAnyAction,
     routeAnyEvent,
     openDeviceGate,
@@ -236,12 +375,13 @@ module frontendPluginSecurity {
     invokeAnyDeviceWrite,
   }
 
-  // --- Adversarial negative controls (each deliberately breaks one security gate) ---
+  // --- 11 Adversarial Negative Controls (each deliberately breaks ONE security gate) ---
 
   // Control 1: forgets CallerPage == Host check in marlin-plugin:// handler.
   action badStepOriginSpoof = any {
     step,
     all {
+      not(s.dormant.get("pA")),
       s.gen.get("pA") > 0,
       s' = s.with("admittedActions", s.admittedActions.append({
         plugin: "pA", caller: "pEvil", gen: s.gen.get("pA"), act: "org.move",
@@ -285,7 +425,9 @@ module frontendPluginSecurity {
     step,
     all {
       s.gen.get("pEvil") == 0,
-      s' = s.with("gen", s.gen.set("pEvil", 1)),
+      s' = s
+        .with("gen", s.gen.set("pEvil", 1))
+        .with("dormant", s.dormant.set("pEvil", false)),
     },
   }
 
@@ -293,6 +435,7 @@ module frontendPluginSecurity {
   action badStepSecretTopicLeak = any {
     step,
     all {
+      not(s.dormant.get("pA")),
       s.gen.get("pA") > 0,
       s' = s.with("deliveredEvents", s.deliveredEvents.append({
         plugin: "pA", gen: s.gen.get("pA"), topic: "host.secrets",
@@ -312,13 +455,66 @@ module frontendPluginSecurity {
     },
   }
 
-  // --- Formal Safety Invariants ---
+  // Control 8: LazyLoader wakes a verified plugin whose bundle digest drifted from lockfile pinned_sha256.
+  action badStepPinMismatchWake = any {
+    step,
+    all {
+      s.verified.get("pA"),
+      s.dormant.get("pA"),
+      not(s.pinMatch.get("pA")),
+      s' = s
+        .with("dormant", s.dormant.set("pA", false))
+        .with("gen", s.gen.set("pA", s.gen.get("pA") + 1)),
+    },
+  }
+
+  // Control 9: Sleep / ReapIdle marks a lazy plugin dormant but forgets to restore slot host.* fallback.
+  action badStepDormantForgetsFallback = any {
+    step,
+    all {
+      s.slotOwner.get("workbench.main") == "pA",
+      not(s.dormant.get("pA")),
+      s' = s.with("dormant", s.dormant.set("pA", true)),
+    },
+  }
+
+  // Control 10: Wakes a second evictable lazy plugin without evicting LRU victim (breaks MaxActiveLazy cap).
+  action badStepLRUCapExceeded = any {
+    step,
+    all {
+      s.verified.get("pA"),
+      s.verified.get("pB"),
+      s.pinMatch.get("pA"),
+      s.pinMatch.get("pB"),
+      not(s.dormant.get("pA")),
+      s.dormant.get("pB"),
+      s' = s
+        .with("dormant", s.dormant.set("pB", false))
+        .with("gen", s.gen.set("pB", s.gen.get("pB") + 1))
+        .with("slotOwner", s.slotOwner.set("workbench.inspector", "pB"))
+        .with("slotTrusted", s.slotTrusted.set("workbench.inspector", false)),
+    },
+  }
+
+  // Control 11: Silently installs an upgrade that adds new permissions without explicit user confirmation.
+  action badStepSilentPrivilegeEscalation = any {
+    step,
+    all {
+      s.pendingEscalation.get("pA"),
+      not(s.escalationConfirmed.get("pA")),
+      s' = s
+        .with("pendingEscalation", s.pendingEscalation.set("pA", false))
+        .with("escalatedActive", s.escalatedActive.set("pA", true)),
+    },
+  }
+
+  // --- 10 Formal Safety Invariants ---
 
   val invRestrictedSlotAlwaysTrusted =
     s.slotOwner.get("approval.gate") == "host.gate" and s.slotTrusted.get("approval.gate")
 
   val invNoTamperedPluginActive =
-    plugins.forall(p => s.gen.get(p) > 0 implies (s.verified.get(p) and not(s.tampered.get(p))))
+    plugins.forall(p => not(s.dormant.get(p)) implies (s.gen.get(p) > 0 and s.verified.get(p) and not(s.tampered.get(p))))
 
   val invNoCrossOriginOrUndeclaredAction =
     s.admittedActions.foldl(true, (acc, r) => acc and all {
@@ -345,6 +541,20 @@ module frontendPluginSecurity {
       s.breakerOpen.get(p) implies slots.forall(sl => s.slotOwner.get(sl) != p)
     )
 
+  val invPinMismatchNeverActive =
+    plugins.forall(p => not(s.dormant.get(p)) implies s.pinMatch.get(p))
+
+  val invDormantOwnsNoSlot =
+    plugins.forall(p =>
+      s.dormant.get(p) implies slots.forall(sl => s.slotOwner.get(sl) != p)
+    )
+
+  val invWorkingSetBoundedByLRUCap =
+    plugins.filter(p => isEvictableLazy(p) and not(s.dormant.get(p))).size() <= maxActiveLazy
+
+  val invNoUnconfirmedEscalationUpgrade =
+    plugins.forall(p => s.escalatedActive.get(p) implies s.escalationConfirmed.get(p))
+
   val safe = all {
     invRestrictedSlotAlwaysTrusted,
     invNoTamperedPluginActive,
@@ -352,6 +562,10 @@ module frontendPluginSecurity {
     invNoUnauthorizedTopicDelivered,
     invDeviceWritesHaveReceiptAndUniqueClaim,
     invOpenBreakerOwnsNoSlot,
+    invPinMismatchNeverActive,
+    invDormantOwnsNoSlot,
+    invWorkingSetBoundedByLRUCap,
+    invNoUnconfirmedEscalationUpgrade,
   }
 
   // --- Executable Quint Tests ---
@@ -402,6 +616,41 @@ module frontendPluginSecurity {
         assert(safe),
         assert(s.admittedActions.length() == 1),
         assert(s.deliveredEvents.length() == 0),
+        s' = s,
+      })
+  }
+
+  run lazyPinWakeSleepAndLRUEvictionTest = {
+    init
+      .then(stageRelease("pA", false))
+      .then(stageRelease("pB", false))
+      .then(activate("pA", "workbench.main"))
+      .then(activate("pB", "workbench.inspector")) // evicts pA back to dormant + restores host.main!
+      .then(submitAction("pA", "pA", "org.move", 1)) // dormant evicted pA -> rejected
+      .then(sleepOrReap("pB"))                       // idle reap pB -> restores host.inspector
+      .then(all {
+        assert(safe),
+        assert(s.dormant.get("pA")),
+        assert(s.dormant.get("pB")),
+        assert(s.slotOwner.get("workbench.main") == "host.main"),
+        assert(s.slotOwner.get("workbench.inspector") == "host.inspector"),
+        assert(s.admittedActions.length() == 0),
+        s' = s,
+      })
+  }
+
+  run upgradePrivilegeEscalationConfirmationTest = {
+    init
+      .then(stageRelease("pA", false))
+      .then(activate("pA", "workbench.main"))
+      .then(proposeEscalatingUpgrade("pA"))
+      .then(confirmEscalation("pA"))
+      .then(applyEscalatedUpgrade("pA"))
+      .then(all {
+        assert(safe),
+        assert(s.escalatedActive.get("pA")),
+        assert(s.escalationConfirmed.get("pA")),
+        assert(s.gen.get("pA") == 2),
         s' = s,
       })
   }

@@ -313,14 +313,32 @@ func (r *DevReloader) prepareStageDir(ctx context.Context) (string, func(), erro
 	}
 
 	var wasmEntry string
+	var webEntry string
 	for _, c := range parsed.Contributions {
-		if c.Panel != nil && c.Panel.Runtime == schema.RuntimeWasmUIIR {
+		if c.Panel == nil {
+			continue
+		}
+		if c.Panel.Runtime == schema.RuntimeWasmUIIR {
 			wasmEntry = c.Panel.EntryPath
 			break
 		}
+		if c.Panel.Runtime == schema.RuntimeWebViewUntrusted {
+			webEntry = c.Panel.EntryPath
+			if webEntry == "" {
+				webEntry = "index.html"
+			}
+			break
+		}
+	}
+	if webEntry != "" {
+		stageDir, cleanup, _, _, err := BundleTSWebViewDir(ctx, r.cfg.PluginDir, webEntry)
+		if err != nil {
+			return "", func() {}, err
+		}
+		return stageDir, cleanup, nil
 	}
 	if wasmEntry == "" {
-		// TS WebView or Declarative plugin: stage directly from PluginDir.
+		// Declarative pack: stage directly from PluginDir.
 		return r.cfg.PluginDir, func() {}, nil
 	}
 

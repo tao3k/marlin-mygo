@@ -43,6 +43,26 @@ func Slot(slotID schema.SlotID) schema.UIElement {
 	return schema.UIElement{Kind: schema.ElemSlot, SlotID: slotID}
 }
 
+// ActionButton renders an interactive native GPU button inside a WASM-IR panel
+// that submits a manifest-declared scoped action through the host's ScopedProxy.
+func ActionButton(label, action, argsJSON string, tone schema.UITone) schema.UIElement {
+	return schema.UIElement{
+		Kind:       schema.ElemButton,
+		Title:      label,
+		Tone:       tone,
+		Action:     action,
+		ActionArgs: argsJSON,
+	}
+}
+
+// Event represents one host-scoped projection event delivered into a Go WASI
+// Reactor plugin via `marlin_ui_on_event`.
+type Event struct {
+	EventID string          `json:"eventId"`
+	Topic   string          `json:"topic"`
+	Payload json.RawMessage `json:"payload"`
+}
+
 // Encode validates MAR-UI-R03 bounds before serializing the tree across the
 // wazero guest-to-host memory boundary.
 func Encode(root schema.UIElement) ([]byte, error) {

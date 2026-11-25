@@ -78,6 +78,8 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: Run Pure-Go zero-cgo unit, property, and resident WASM tests
         run: CGO_ENABLED=0 go test -v ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
 
@@ -94,6 +96,8 @@ jobs:
           CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime=3s ./engine/input
           CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime=3s ./runtime/pluginhost
           CGO_ENABLED=0 go test -fuzz=FuzzDecodeAndAdmitWasmUITree -fuzztime=3s ./runtime/pluginhost
+          CGO_ENABLED=0 go test -fuzz=FuzzParsePluginProfileTOML -fuzztime=3s ./control/marketplace
+          CGO_ENABLED=0 go test -fuzz=FuzzParseTrustRingTOML -fuzztime=3s ./control/marketplace
 
       - name: Run static analysis & verify zero-cgo desktop binary build
         run: |

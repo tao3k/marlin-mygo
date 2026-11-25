@@ -49,6 +49,8 @@ fuzz-smoke time="2s":
     CGO_ENABLED=0 go test -fuzz=FuzzFuzzyScore -fuzztime={{time}} ./engine/input
     CGO_ENABLED=0 go test -fuzz=FuzzWebViewProtocolHTTP -fuzztime={{time}} ./runtime/pluginhost
     CGO_ENABLED=0 go test -fuzz=FuzzDecodeAndAdmitWasmUITree -fuzztime={{time}} ./runtime/pluginhost
+    CGO_ENABLED=0 go test -fuzz=FuzzParsePluginProfileTOML -fuzztime={{time}} ./control/marketplace
+    CGO_ENABLED=0 go test -fuzz=FuzzParseTrustRingTOML -fuzztime={{time}} ./control/marketplace
 
 # Run TypeScript panel SDK checks and tests via Bun.
 test-ts:

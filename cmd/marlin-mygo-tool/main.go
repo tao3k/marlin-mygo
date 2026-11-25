@@ -54,6 +54,10 @@ var quintNegativeControls = []string{
 	"badStepTamperedPluginActive",
 	"badStepSecretTopicLeak",
 	"badStepDeviceWriteReplay",
+	"badStepPinMismatchWake",
+	"badStepDormantForgetsFallback",
+	"badStepLRUCapExceeded",
+	"badStepSilentPrivilegeEscalation",
 }
 
 var restrictedSlots = []string{

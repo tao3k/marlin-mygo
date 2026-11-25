@@ -74,6 +74,7 @@ func main() {
 	catalogURL := flag.String("catalog-url", "", "optional HTTP/HTTPS signed Marketplace catalog URL (e.g. http://127.0.0.1:8787)")
 	catalogDir := flag.String("catalog-dir", "", "optional local directory containing signed catalog.json and .marlinpkg archives")
 	catalogPub := flag.String("catalog-pub", "", "optional hex Ed25519 public key file verifying the Marketplace catalog")
+	trustRingFile := flag.String("trust-ring", "", "optional multi-publisher trust-ring.toml overriding single -catalog-pub key")
 	catalogPublisher := flag.String("catalog-publisher", "tao3k.official", "trusted Marketplace publisher identifier")
 	pluginsProfile := flag.String("plugins-profile", "", "optional declarative marlin-plugins.toml lockfile persisted across restarts (Emacs-style lazy loading)")
 	maxActiveLazy := flag.Int("max-active-lazy", 8, "maximum simultaneously active lazy plugins in O(1) LRU working set (0 = unbounded)")
@@ -287,7 +288,7 @@ func main() {
 
 		lazySess, syncMarketplace := wireMarketplaceUI(
 			ctx, mktUI, host, win,
-			*catalogURL, *catalogDir, *catalogPub, *catalogPublisher,
+			*catalogURL, *catalogDir, *catalogPub, *trustRingFile, *catalogPublisher,
 			*pluginsProfile, *maxActiveLazy, *idleReapInterval,
 		)
 		fireHook := func(hookName string) {
@@ -296,6 +297,17 @@ func main() {
 			}
 			go func() {
 				if woken, err := lazySess.TriggerHook(ctx, hookName); err == nil && len(woken) > 0 {
+					syncMarketplace()
+					win.Invalidate()
+				}
+			}()
+		}
+		publishProjection := func(topic string, payload any) {
+			if lazySess == nil {
+				return
+			}
+			go func() {
+				if woken, delivered, err := lazySess.PublishProjection(ctx, topic, payload); err == nil && (len(woken) > 0 || len(delivered) > 0) {
 					syncMarketplace()
 					win.Invalidate()
 				}
@@ -423,6 +435,11 @@ func main() {
 						if upd.HasOutcome {
 							transcript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
 							fireHook("after-turn-complete")
+							publishProjection("session.summary", map[string]any{
+								"sessionId":   *sessionID,
+								"turnOrdinal": upd.TurnOrdinal,
+								"outcome":     upd.Outcome.String(),
+							})
 							win.Invalidate()
 						}
 					})
@@ -478,6 +495,11 @@ func main() {
 					fmt.Sprintf("[standalone demo] Received %q — launch with -sidecar <marlin-mygo-host> -real-session for live Rust streaming.", prompt))
 				transcript.CompleteTurn(ord, "DEMO_COMPLETED")
 				fireHook("after-turn-complete")
+				publishProjection("session.summary", map[string]any{
+					"sessionId":   *sessionID,
+					"turnOrdinal": ord,
+					"outcome":     "DEMO_COMPLETED",
+				})
 				win.Invalidate()
 			}
 		}
@@ -521,26 +543,47 @@ func wireMarketplaceUI(
 	mktUI *mygoshell.MarketplaceController,
 	host *pluginhost.Host,
 	win *mygo.Window,
-	catalogURL, catalogDir, catalogPubFile, publisherID, profilePath string,
+	catalogURL, catalogDir, catalogPubFile, trustRingFile, publisherID, profilePath string,
 	maxActiveLazy int,
 	idleReapInterval time.Duration,
 ) (*marketplace.LazySession, func()) {
 	noopSync := func() {}
-	if (strings.TrimSpace(catalogURL) != "" || strings.TrimSpace(catalogDir) != "") && strings.TrimSpace(catalogPubFile) != "" {
-		rawHex, err := os.ReadFile(catalogPubFile)
-		if err != nil {
-			mktUI.SetStatus(fmt.Sprintf("read -catalog-pub failed: %v", err), true)
-			return nil, noopSync
+	hasSource := strings.TrimSpace(catalogURL) != "" || strings.TrimSpace(catalogDir) != ""
+	hasTrust := strings.TrimSpace(trustRingFile) != "" || strings.TrimSpace(catalogPubFile) != ""
+	if hasSource && hasTrust {
+		var (
+			trust *schema.ReleaseTrust
+			pub   ed25519.PublicKey
+		)
+		if strings.TrimSpace(trustRingFile) != "" {
+			ring, err := marketplace.LoadTrustRingFile(strings.TrimSpace(trustRingFile))
+			if err != nil {
+				mktUI.SetStatus(fmt.Sprintf("read -trust-ring failed: %v", err), true)
+				return nil, noopSync
+			}
+			trust = ring.ReleaseTrust()
+			k, ok := ring.CatalogKey(schema.PublisherID(publisherID))
+			if !ok {
+				mktUI.SetStatus("no catalog verification key found in -trust-ring", true)
+				return nil, noopSync
+			}
+			pub = k
+		} else {
+			rawHex, err := os.ReadFile(catalogPubFile)
+			if err != nil {
+				mktUI.SetStatus(fmt.Sprintf("read -catalog-pub failed: %v", err), true)
+				return nil, noopSync
+			}
+			pubBytes, err := hex.DecodeString(strings.TrimSpace(string(rawHex)))
+			if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+				mktUI.SetStatus("invalid Ed25519 public key in -catalog-pub", true)
+				return nil, noopSync
+			}
+			pub = ed25519.PublicKey(pubBytes)
+			trust = schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{
+				schema.PublisherID(publisherID): pub,
+			})
 		}
-		pubBytes, err := hex.DecodeString(strings.TrimSpace(string(rawHex)))
-		if err != nil || len(pubBytes) != ed25519.PublicKeySize {
-			mktUI.SetStatus("invalid Ed25519 public key in -catalog-pub", true)
-			return nil, noopSync
-		}
-		pub := ed25519.PublicKey(pubBytes)
-		trust := schema.NewReleaseTrust(map[schema.PublisherID]ed25519.PublicKey{
-			schema.PublisherID(publisherID): pub,
-		})
 		regClient, err := marketplace.NewRegistryClient(marketplace.RegistryConfig{
 			BaseURL:       catalogURL,
 			LocalDir:      catalogDir,

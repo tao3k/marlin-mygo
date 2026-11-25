@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sync"
+	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -269,7 +270,19 @@ func (r *Runtime) Instantiate(ctx context.Context, scope pluginhost.ScopedScope,
 			eng:         eng,
 			tree:        tree,
 		}
-		inst.renderer = mygoshell.NewUIElementRenderer(string(scope.PluginID), false, r.slots, inst.currentTree)
+		rend := mygoshell.NewUIElementRenderer(string(scope.PluginID), false, r.slots, inst.currentTree)
+		if proxy != nil {
+			var actionSeq atomic.Uint64
+			rend.OnAction = func(action, argsJSON string) {
+				var raw json.RawMessage
+				if argsJSON != "" {
+					raw = json.RawMessage(argsJSON)
+				}
+				idemp := fmt.Sprintf("wasm-ui-%s-%d", scope.PluginID, actionSeq.Add(1))
+				_, _ = proxy.SubmitAction(context.Background(), action, raw, idemp)
+			}
+		}
+		inst.renderer = rend
 		return inst, nil
 	}
 

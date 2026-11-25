@@ -5,19 +5,19 @@
 //go:build wasip1
 
 // Reactor build of go-graph-inspector compiled with:
-//   GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o panel.wasm ./examples/plugins/go-graph-inspector-reactor
 //
-// Demonstrates the complete bidirectional zero-cgo Go WASM-IR Reactor ABI:
-//   - marlin_alloc: host-to-guest linear memory allocator
-//   - marlin_ui_on_event: receives host-scoped events and calls marlin_host_v1.emit_action
-//   - marlin_ui_render: emits declarative schema.UIElement trees
-//   - marlin_ui_render_drawlist: emits zero-JSON binary GPU DrawList commands
+//	GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -buildmode=c-shared -o panel.wasm ./examples/plugins/go-graph-inspector-reactor
+//
+// Demonstrates the complete zero-unsafe Go WASM-IR Reactor ABI:
+//   - marlin_alloc: delegates to gouir.AllocBuffer
+//   - marlin_ui_on_event: delegates to gouir.DispatchEvent + gouir.EmitAction
+//   - marlin_ui_render: returns gouir.RenderResult with interactive GPU ActionButton
+//   - marlin_ui_render_drawlist: returns gouir.DrawListResult (zero-JSON binary GPU cmds)
 package main
 
 import (
 	"encoding/json"
 	"fmt"
-	"unsafe"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	gouir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
@@ -27,54 +27,38 @@ var (
 	frameSeq     uint64
 	focusedNode  = "plan_org_context"
 	lastAdmitted bool
-	inBuf        []byte
-	renderBuf    []byte
 	drawCmds     [64]schema.DrawCmd
-	drawBuf      []byte
 )
 
-type incomingEvent struct {
-	EventID string `json:"eventId"`
-	Topic   string `json:"topic"`
-	Payload struct {
-		NodeID       string `json:"nodeId"`
-		TriggerProbe bool   `json:"triggerProbe"`
-	} `json:"payload"`
+type graphEventPayload struct {
+	NodeID       string `json:"nodeId"`
+	TriggerProbe bool   `json:"triggerProbe"`
 }
 
 //go:wasmexport marlin_alloc
 func marlinAlloc(size uint32) uint32 {
-	if size == 0 || size > 64*1024 {
-		return 0
-	}
-	if uint32(cap(inBuf)) < size {
-		inBuf = make([]byte, size)
-	} else {
-		inBuf = inBuf[:size]
-	}
-	return uint32(uintptr(unsafe.Pointer(&inBuf[0])))
+	return gouir.AllocBuffer(size)
 }
 
 //go:wasmexport marlin_ui_on_event
 func marlinUIOnEvent(ptr, size uint32) int32 {
-	if size == 0 || size > uint32(len(inBuf)) {
-		return -1
-	}
-	var ev incomingEvent
-	if err := json.Unmarshal(inBuf[:size], &ev); err != nil {
-		return -2
-	}
-	if ev.Payload.NodeID != "" {
-		focusedNode = ev.Payload.NodeID
-	}
-	if ev.Payload.TriggerProbe {
-		// Adversarial probe: attempt undeclared action; host ScopedProxy MUST deny.
-		lastAdmitted = gouir.EmitAction("shell.exec", []byte(`{"cmd":"whoami"}`), "probe-"+ev.EventID)
-		return 0
-	}
-	args, _ := json.Marshal(map[string]string{"nodeId": focusedNode})
-	lastAdmitted = gouir.EmitAction("graph.node.inspect", args, "inspect-"+ev.EventID)
-	return 0
+	return gouir.DispatchEvent(ptr, size, func(ev gouir.Event) error {
+		var p graphEventPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return err
+		}
+		if p.NodeID != "" {
+			focusedNode = p.NodeID
+		}
+		if p.TriggerProbe {
+			// Adversarial probe: attempt undeclared action; host ScopedProxy MUST deny.
+			lastAdmitted = gouir.EmitAction("shell.exec", []byte(`{"cmd":"whoami"}`), "probe-"+ev.EventID)
+			return nil
+		}
+		args, _ := json.Marshal(map[string]string{"nodeId": focusedNode})
+		lastAdmitted = gouir.EmitAction("graph.node.inspect", args, "inspect-"+ev.EventID)
+		return nil
+	})
 }
 
 //go:wasmexport marlin_ui_render
@@ -84,7 +68,8 @@ func marlinUIRender() uint64 {
 	if lastAdmitted {
 		status = "action-admitted"
 	}
-	tree := gouir.Panel(
+	argsJSON := fmt.Sprintf(`{"nodeId":%q}`, focusedNode)
+	return gouir.RenderResult(gouir.Panel(
 		"Graph Trajectory (Resident Reactor)",
 		schema.ToneInfo,
 		gouir.Rows(
@@ -96,14 +81,9 @@ func marlinUIRender() uint64 {
 				gouir.Span("• "+focusedNode+"  ", schema.ToneNormal),
 				gouir.Span("[receipt: sha256:9a4f]", schema.ToneMuted),
 			),
+			gouir.ActionButton("Inspect "+focusedNode, "graph.node.inspect", argsJSON, schema.ToneAccent),
 		),
-	)
-	raw, err := gouir.Encode(tree)
-	if err != nil {
-		return 0
-	}
-	renderBuf = raw
-	return gouir.PackBytes(renderBuf)
+	))
 }
 
 //go:wasmexport marlin_ui_render_drawlist
@@ -119,14 +99,10 @@ func marlinUIRenderDrawList() uint64 {
 			H:      12,
 			RGBA:   0x51afefFF,
 			Extra0: uint32(frameSeq),
+			Extra1: uint32(i),
 		}
 	}
-	enc, err := schema.EncodeDrawList(drawCmds[:], drawBuf[:0])
-	if err != nil {
-		return 0
-	}
-	drawBuf = enc
-	return gouir.PackBytes(drawBuf)
+	return gouir.DrawListResult(drawCmds[:])
 }
 
 func main() {}

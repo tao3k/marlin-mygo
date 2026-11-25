@@ -17,7 +17,7 @@ verify, hot-reload, and publish secure, high-performance Marlin plugins in
 | =webview-untrusted= (TS)| Rich HTML/CSS layouts, boards, charts, editors | Strict CSP + =CallerPage= origin pinning       |
 | =declarative= (TOML)    | Themes, overlays, keymaps (Desktop + iOS/And.) | Zero executable code (App Store compliant)     |
 
-* 2. Minimal Go 1.27 WASI Reactor Plugin (Zero =unsafe= Boilerplate)
+* 2. Minimal Go 1.27 WASI Reactor Plugin (100% Zero =unsafe= + Interactive GPU Button)
 
 #+begin_src go
 //go:build wasip1
@@ -29,17 +29,33 @@ import (
     uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
 )
 
+//go:wasmexport marlin_alloc
+func marlinAlloc(size uint32) uint32 { return uiir.AllocBuffer(size) }
+
+//go:wasmexport marlin_ui_on_event
+func marlinUIOnEvent(ptr, size uint32) int32 {
+    return uiir.DispatchEvent(ptr, size, func(ev uiir.Event) error { return nil })
+}
+
 //go:wasmexport marlin_ui_render
 func marlinUIRender() uint64 {
     return uiir.RenderResult(uiir.Panel("My Panel", schema.ToneAccent,
-        uiir.Text(uiir.Span("Live GPU metrics", schema.ToneSuccess)),
+        uiir.Rows(
+            uiir.Text(uiir.Span("Live GPU metrics", schema.ToneSuccess)),
+            uiir.ActionButton("Inspect", "graph.node.inspect", `{"nodeId":"n1"}`, schema.ToneAccent),
+        ),
     ))
 }
 
 func main() {}
 #+end_src
 
-* 3. Minimal TypeScript Untrusted WebView Plugin
+* 3. Minimal TypeScript Untrusted WebView Plugin (Auto-Bundled by =bun build=)
+
+Write normal modern TypeScript (React, Preact, D3, Tailwind, or vanilla DOM +
+=@tao3k/marlin-panel-sdk=). During =dev-plugin=, =doctor=, and =publish=,
+=marlin-mygo-tool= automatically runs =bun build= into a self-contained browser
+=bundle.js= with *zero runtime Bun/Node dependency* inside the signed =.marlinpkg=:
 
 #+begin_src typescript
 import { defineMarlinPanel } from "@tao3k/marlin-panel-sdk";

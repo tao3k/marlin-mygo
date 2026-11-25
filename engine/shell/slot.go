@@ -31,6 +31,7 @@ type RenderContext struct {
 	SessionID string
 	Facts     map[string]bool
 	Bindings  map[string]string
+	OnAction  func(action, argsJSON string)
 }
 
 // HostEvent represents a mediated UI event routed from the shell to a slot.

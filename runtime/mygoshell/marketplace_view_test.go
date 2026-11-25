@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -449,5 +450,124 @@ func TestBuiltInMarketplaceLazyDormantWakeAndSleepLifecycle(t *testing.T) {
 	}
 	if resolved := slots.Resolve("workbench.inspector"); len(resolved) != 1 || resolved[0].ID() != "host.inspector" {
 		t.Fatalf("expected host.inspector fallback restored after Sleep, got %+v", resolved)
+	}
+}
+
+func TestUIElementActionButtonAndUntrustedWebViewContentRules(t *testing.T) {
+	// 1. Verify MyGo WebKit ContentRules JSON blocks third-party http(s):// and wss:// egress.
+	var rules []struct {
+		Trigger struct {
+			URLFilter string `json:"url-filter"`
+		} `json:"trigger"`
+		Action struct {
+			Type string `json:"type"`
+		} `json:"action"`
+	}
+	if err := json.Unmarshal([]byte(mygoshell.UntrustedPluginContentRulesJSON), &rules); err != nil {
+		t.Fatalf("invalid UntrustedPluginContentRulesJSON: %v", err)
+	}
+	if len(rules) < 2 || rules[0].Action.Type != "block" || rules[1].Action.Type != "block" {
+		t.Fatalf("expected >=2 block rules for http(s) and wss egress, got %+v", rules)
+	}
+
+	// 2. Verify interactive ElemButton inside UIElement routes clicks to ScopedProxy.
+	var gotAction, gotArgs string
+	slots := shell.NewSlotRegistry()
+	rend := mygoshell.NewUIElementRenderer("tao3k.graph-inspector", false, slots, func() schema.UIElement {
+		return schema.UIElement{
+			Kind:  schema.ElemPanel,
+			Title: "Interactive WASM Panel",
+			Tone:  schema.ToneInfo,
+			Children: []schema.UIElement{
+				{
+					Kind:       schema.ElemButton,
+					Title:      "Inspect Node",
+					Tone:       schema.ToneAccent,
+					Action:     "graph.node.inspect",
+					ActionArgs: `{"nodeId":"plan_01"}`,
+				},
+			},
+		}
+	})
+	rend.OnAction = func(action, argsJSON string) {
+		gotAction = action
+		gotArgs = argsJSON
+	}
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		rend.Render(shell.RenderContext{Surface: c, Theme: schema.DefaultUITheme()})
+	}, 640, 400)
+	if !tt.HasText("Inspect Node") {
+		t.Fatalf("expected ActionButton label in rendered GPU UI, got %q", tt.Texts())
+	}
+	if err := tt.Click("Inspect Node"); err != nil {
+		t.Fatalf("clicking GPU ActionButton failed: %v", err)
+	}
+	tt.Frame()
+	if gotAction != "graph.node.inspect" || gotArgs != `{"nodeId":"plan_01"}` {
+		t.Fatalf("expected action graph.node.inspect with args, got action=%q args=%q", gotAction, gotArgs)
+	}
+}
+
+func TestBuiltInMarketplaceUpgradePrivilegeEscalationRequiresConfirmation(t *testing.T) {
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(mktTestTarget{meta: transport.TargetMeta{
+		ID: "local-mac", DisplayName: "Local Mac", Mode: transport.ModeLocalSidecar,
+		TargetKind: schema.TargetDesktopMacOS, Phase: transport.PhaseReady,
+	}})
+
+	mktUI := mygoshell.NewMarketplaceController()
+	upgraded := 0
+	mktUI.OnUpgrade = func(pluginID string) error {
+		upgraded++
+		mktUI.MarkInstalled(pluginID, "0.2.0", 2, "HEALTHY")
+		return nil
+	}
+	mktUI.SetItems([]mygoshell.MarketplaceItem{{
+		PluginID:             "acme.board",
+		Version:              "0.2.0",
+		PublisherID:          "acme.community",
+		Summary:              "Community board requesting write action in v0.2.0",
+		SlotID:               "workbench.main",
+		Runtime:              schema.RuntimeWebViewUntrusted,
+		SignatureVerified:    true,
+		Installed:            true,
+		InstalledVersion:     "0.1.0",
+		ActiveGeneration:     1,
+		ReadScopes:           []string{"org.tasks"},
+		DeclaredActions:      []string{"org.task.move-state"},
+		AddedDeclaredActions: []string{"org.task.move-state"},
+	}})
+
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Marketplace = mktUI
+	tt := ui.NewTester(app.View, 1200, 800)
+
+	if err := tt.Click("Marketplace"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("NEW PERMISSIONS ON UPGRADE: +actions:[org.task.move-state]") {
+		t.Fatalf("expected visible privilege escalation warning, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// First click on Upgrade MUST NOT upgrade immediately; it must require explicit confirmation.
+	if err := tt.Click("Upgrade acme.board"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if upgraded != 0 || !tt.HasText("Confirm Upgrade acme.board") {
+		t.Fatalf("expected 1st click to block upgrade and show Confirm Upgrade button (upgraded=%d), got %q", upgraded, strings.Join(tt.Texts(), " | "))
+	}
+
+	// Explicit 2nd click confirms the permission expansion and executes OnUpgrade.
+	if err := tt.Click("Confirm Upgrade acme.board"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if upgraded != 1 {
+		t.Fatalf("expected OnUpgrade called once after explicit confirmation, got %d", upgraded)
 	}
 }

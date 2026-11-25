@@ -124,6 +124,25 @@ func RenderUIElement(c *ui.Context, node schema.UIElement, slots *shell.SlotRegi
 			}
 		})
 
+	case schema.ElemButton:
+		label := interpolateBindings(node.Title, rctx.Bindings)
+		if label == "" {
+			label = node.Action
+		}
+		key := string(node.ID)
+		if key == "" {
+			key = "ir-btn-" + node.Action + "-" + label
+		}
+		var clicked bool
+		if node.Tone == schema.ToneAccent {
+			clicked = ui.PrimaryButton(c.Key(key), label).Clicked()
+		} else {
+			clicked = ui.Button(c.Key(key), label).Clicked()
+		}
+		if clicked && rctx.OnAction != nil && node.Action != "" {
+			rctx.OnAction(node.Action, node.ActionArgs)
+		}
+
 	default:
 		if node.Title != "" {
 			ui.Text(c, node.Title).TextColor(t.TextMuted)
@@ -189,10 +208,11 @@ func interpolateBindings(raw string, bindings map[string]string) string {
 // UIElementRenderer adapts a static or dynamically refreshed schema.UIElement
 // tree into a shell.SlotRenderer (used for native fallbacks and wazero plugins).
 type UIElementRenderer struct {
-	id      string
-	trusted bool
-	slots   *shell.SlotRegistry
-	getTree func() schema.UIElement
+	id       string
+	trusted  bool
+	slots    *shell.SlotRegistry
+	getTree  func() schema.UIElement
+	OnAction func(action, argsJSON string)
 }
 
 func NewUIElementRenderer(id string, trusted bool, slots *shell.SlotRegistry, getTree func() schema.UIElement) *UIElementRenderer {
@@ -208,6 +228,9 @@ func (r *UIElementRenderer) Render(ctx shell.RenderContext) {
 	c, ok := ctx.Surface.(*ui.Context)
 	if !ok || c == nil || r.getTree == nil {
 		return
+	}
+	if r.OnAction != nil {
+		ctx.OnAction = r.OnAction
 	}
 	RenderUIElement(c, r.getTree(), r.slots, ctx)
 }

@@ -8,6 +8,7 @@ package mygoshell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -18,6 +19,15 @@ import (
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
+
+// UntrustedPluginContentRulesJSON leverages MyGo's native OS WebKit Content
+// Blocker (mygo.CompileContentRules) as defense-in-depth on top of HTML CSP and
+// PageOptions{Untrusted: true}: blocks any third-party http(s):// or wss://
+// network exfiltration directly inside the OS WebView engine.
+const UntrustedPluginContentRulesJSON = `[
+  {"trigger": {"url-filter": "^https?://"}, "action": {"type": "block"}},
+  {"trigger": {"url-filter": "^wss?://"}, "action": {"type": "block"}}
+]`
 
 // PanelEvent delivers host-scoped plugin events strictly via EmitPage to an
 // Untrusted WebView plugin. Broadcast and window-wide Emit never reach it.
@@ -30,8 +40,10 @@ type WebViewRuntime struct {
 	win      *mygo.Window
 	protocol *pluginhost.WebViewProtocolHandler
 
-	mu         sync.RWMutex
-	pageOwners map[*mygo.Page]schema.PluginID
+	mu           sync.RWMutex
+	pageOwners   map[*mygo.Page]schema.PluginID
+	contentRules []*mygo.ContentRules
+	rulesOnce    sync.Once
 }
 
 // NewWebViewRuntime wires a WebViewProtocolHandler using mygo.CallerPage(ctx)
@@ -60,11 +72,31 @@ func (r *WebViewRuntime) RegisterProtocol() error {
 	return mygo.Protocol.Handle(pluginhost.PluginScheme, r.protocol)
 }
 
-// AttachWindow binds the host native-UI window once created inside App.WhenReady.
+// AttachWindow binds the host native-UI window once created inside App.WhenReady
+// and lazily compiles MyGo's native WebKit ContentRules egress blocker.
 func (r *WebViewRuntime) AttachWindow(win *mygo.Window) {
 	r.mu.Lock()
 	r.win = win
 	r.mu.Unlock()
+	r.ensureContentRules()
+}
+
+func (r *WebViewRuntime) ensureContentRules() []*mygo.ContentRules {
+	r.rulesOnce.Do(func() {
+		rules, err := mygo.CompileContentRules("marlin.untrusted.egress-block", UntrustedPluginContentRulesJSON)
+		if err == nil && rules != nil {
+			r.mu.Lock()
+			r.contentRules = []*mygo.ContentRules{rules}
+			r.mu.Unlock()
+		} else if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+			// Best-effort defense-in-depth on platforms without WebKit Content Blockers;
+			// HTML CSP + PageOptions{Untrusted: true} + CallerPage remain strictly enforced.
+			_ = err
+		}
+	})
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.contentRules
 }
 
 func (r *WebViewRuntime) Kind() schema.PanelRuntimeKind { return r.kind }
@@ -81,7 +113,8 @@ func (r *WebViewRuntime) Instantiate(_ context.Context, scope pluginhost.ScopedS
 	wv, err := win.NewWebView(mygo.WebViewOptions{
 		URL: fmt.Sprintf("%s://%s/", pluginhost.PluginScheme, scope.PluginID),
 		Page: mygo.PageOptions{
-			Untrusted: true,
+			Untrusted:    true,
+			ContentRules: r.ensureContentRules(),
 		},
 	})
 	if err != nil {

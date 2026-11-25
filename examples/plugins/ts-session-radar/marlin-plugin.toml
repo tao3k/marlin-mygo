@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = "tao3k.session-radar"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_session]
+kind = "projection.read"
+surface = "session.summary"
+
+[contributions.radar_panel]
+kind = "ui-panel"
+requires = ["read_session"]
+
+[contributions.radar_panel.panel]
+runtime = "webview-untrusted"
+slot_id = "workbench.main"
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = ["session.summary"]
+declared_actions = ["session.radar.ping"]
+activation = "on-topic"
+triggers = ["session.summary"]
+idle_unload_sec = 300

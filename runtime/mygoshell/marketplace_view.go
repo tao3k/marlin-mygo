@@ -43,28 +43,32 @@ type MarketplaceItem struct {
 	SignatureVerified bool
 	PackageBytes      int64
 
-	Installed        bool
-	Dormant          bool // Emacs-style lazy-loaded: registered in profile with 0 runtime RAM until triggered
-	ActivationPolicy string
-	Triggers         []string
-	InstalledVersion string
-	PreviousVersion  string
-	ActiveGeneration uint64
-	LastWakeDuration time.Duration
-	HealthState      string // "HEALTHY", "BREAKER_OPEN", "HOT_RELOADING", "DORMANT", "IDLE"
-	LastMessage      string
+	Installed            bool
+	Dormant              bool // Emacs-style lazy-loaded: registered in profile with 0 runtime RAM until triggered
+	ActivationPolicy     string
+	Triggers             []string
+	InstalledVersion     string
+	PreviousVersion      string
+	ActiveGeneration     uint64
+	LastWakeDuration     time.Duration
+	HealthState          string // "HEALTHY", "BREAKER_OPEN", "HOT_RELOADING", "DORMANT", "IDLE"
+	LastMessage          string
+	AddedReadScopes      []string // non-empty when an upgrade expands read_scopes
+	AddedDeclaredActions []string // non-empty when an upgrade expands declared_actions
 
 	// Precomputed display labels to minimize per-frame allocations.
-	titleLine     string
-	trustBadge    string
-	permLine      string
-	healthBadge   string
-	installLabel  string
-	upgradeLabel  string
-	rollbackLabel string
-	disableLabel  string
-	wakeLabel     string
-	sleepLabel    string
+	titleLine           string
+	trustBadge          string
+	permLine            string
+	escalationWarn      string
+	healthBadge         string
+	installLabel        string
+	upgradeLabel        string
+	confirmUpgradeLabel string
+	rollbackLabel       string
+	disableLabel        string
+	wakeLabel           string
+	sleepLabel          string
 }
 
 func (it *MarketplaceItem) refreshLabels() {
@@ -83,6 +87,18 @@ func (it *MarketplaceItem) refreshLabels() {
 		actions = strings.Join(it.DeclaredActions, ", ")
 	}
 	it.permLine = fmt.Sprintf("scopes:[%s]  actions:[%s]", scopes, actions)
+	if len(it.AddedReadScopes) > 0 || len(it.AddedDeclaredActions) > 0 {
+		var parts []string
+		if len(it.AddedReadScopes) > 0 {
+			parts = append(parts, "+scopes:["+strings.Join(it.AddedReadScopes, ", ")+"]")
+		}
+		if len(it.AddedDeclaredActions) > 0 {
+			parts = append(parts, "+actions:["+strings.Join(it.AddedDeclaredActions, ", ")+"]")
+		}
+		it.escalationWarn = "NEW PERMISSIONS ON UPGRADE: " + strings.Join(parts, "  ")
+	} else {
+		it.escalationWarn = ""
+	}
 	if it.Installed && it.Dormant {
 		pol := it.ActivationPolicy
 		if pol == "" {
@@ -104,6 +120,7 @@ func (it *MarketplaceItem) refreshLabels() {
 	}
 	it.installLabel = "Install " + it.PluginID
 	it.upgradeLabel = "Upgrade " + it.PluginID
+	it.confirmUpgradeLabel = "Confirm Upgrade " + it.PluginID
 	it.rollbackLabel = "Rollback " + it.PluginID
 	it.disableLabel = "Disable " + it.PluginID
 	it.wakeLabel = "Wake " + it.PluginID
@@ -122,13 +139,14 @@ type MarketplaceController struct {
 	OnSleep    func(pluginID string) error
 	OnRefresh  func() error
 
-	mu            sync.RWMutex
-	items         []MarketplaceItem
-	query         string
-	runtimeFilter schema.PanelRuntimeKind // empty = All
-	statusBanner  string
-	statusIsErr   bool
-	profilerLine  string
+	mu                sync.RWMutex
+	items             []MarketplaceItem
+	query             string
+	runtimeFilter     schema.PanelRuntimeKind // empty = All
+	statusBanner      string
+	statusIsErr       bool
+	profilerLine      string
+	pendingEscalation map[string]bool
 
 	// Reused scratch slices to avoid per-frame allocations.
 	renderMu      sync.Mutex
@@ -279,6 +297,13 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 	statusMsg := m.statusBanner
 	statusErr := m.statusIsErr
 	profilerLine := m.profilerLine
+	var pendingEsc map[string]bool
+	if len(m.pendingEscalation) > 0 {
+		pendingEsc = make(map[string]bool, len(m.pendingEscalation))
+		for k, v := range m.pendingEscalation {
+			pendingEsc[k] = v
+		}
+	}
 	m.renderItems = append(m.renderItems[:0], m.items...)
 	m.mu.RUnlock()
 
@@ -322,6 +347,7 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 		doClose       bool
 		doInstallID   string
 		doUpgradeID   string
+		armEscalateID string
 		doRollbackID  string
 		doDisableID   string
 		doWakeID      string
@@ -409,6 +435,9 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 							ui.Text(c, it.Summary).FontSize(12)
 						}
 						ui.Text(c, it.permLine).FontSize(11).TextColor(t.TextMuted)
+						if it.escalationWarn != "" {
+							ui.Text(c, it.escalationWarn).FontSize(11).Bold().TextColor(t.Warning)
+						}
 						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 							ui.Text(c, it.healthBadge).FontSize(11).Bold().TextColor(t.Accent)
 							ui.Spacer(c)
@@ -429,8 +458,18 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 								}
 							} else {
 								if it.Version != "" && it.InstalledVersion != "" && it.Version != it.InstalledVersion && m.OnUpgrade != nil {
-									if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
-										doUpgradeID = it.PluginID
+									if it.escalationWarn != "" && !pendingEsc[it.PluginID] {
+										if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
+											armEscalateID = it.PluginID
+										}
+									} else if it.escalationWarn != "" {
+										if ui.PrimaryButton(c.Key("mkt-upg-confirm-"+it.PluginID), it.confirmUpgradeLabel).Clicked() {
+											doUpgradeID = it.PluginID
+										}
+									} else {
+										if ui.PrimaryButton(c.Key("mkt-upg-"+it.PluginID), it.upgradeLabel).Clicked() {
+											doUpgradeID = it.PluginID
+										}
 									}
 								}
 								if it.PreviousVersion != "" && m.OnRollback != nil {
@@ -479,7 +518,19 @@ func (m *MarketplaceController) Render(c *ui.Context, t *ui.Theme, onClose func(
 	if doInstallID != "" {
 		runAction("Install "+doInstallID, func() error { return m.OnInstall(doInstallID) })
 	}
+	if armEscalateID != "" {
+		m.mu.Lock()
+		if m.pendingEscalation == nil {
+			m.pendingEscalation = make(map[string]bool)
+		}
+		m.pendingEscalation[armEscalateID] = true
+		m.mu.Unlock()
+		m.SetStatus("Review added permissions for "+armEscalateID+" and click Confirm Upgrade to proceed", true)
+	}
 	if doUpgradeID != "" {
+		m.mu.Lock()
+		delete(m.pendingEscalation, doUpgradeID)
+		m.mu.Unlock()
 		runAction("Upgrade "+doUpgradeID, func() error { return m.OnUpgrade(doUpgradeID) })
 	}
 	if doRollbackID != "" {

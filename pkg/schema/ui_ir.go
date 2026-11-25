@@ -94,20 +94,23 @@ const (
 	ElemChoice   UIElementKind = "choice"
 	ElemSized    UIElementKind = "sized"
 	ElemRegion   UIElementKind = "region"
+	ElemButton   UIElementKind = "button"
 )
 
 // UIElement is the bounded declarative UI IR shared by Scheme workbenches,
 // MyGo native layout mapping, and wazero WASM-IR plugins.
 type UIElement struct {
-	Kind     UIElementKind `json:"kind"`
-	ID       ComponentID   `json:"id,omitempty"`
-	SlotID   SlotID        `json:"slotId,omitempty"`
-	Title    string        `json:"title,omitempty"`
-	Tone     UITone        `json:"tone,omitempty"`
-	Flex     uint16        `json:"flex,omitempty"`
-	Cells    uint16        `json:"cells,omitempty"`
-	Spans    []UISpan      `json:"spans,omitempty"`
-	Children []UIElement   `json:"children,omitempty"`
+	Kind       UIElementKind `json:"kind"`
+	ID         ComponentID   `json:"id,omitempty"`
+	SlotID     SlotID        `json:"slotId,omitempty"`
+	Title      string        `json:"title,omitempty"`
+	Tone       UITone        `json:"tone,omitempty"`
+	Flex       uint16        `json:"flex,omitempty"`
+	Cells      uint16        `json:"cells,omitempty"`
+	Action     string        `json:"action,omitempty"`
+	ActionArgs string        `json:"actionArgs,omitempty"`
+	Spans      []UISpan      `json:"spans,omitempty"`
+	Children   []UIElement   `json:"children,omitempty"`
 }
 
 // ValidateBounds enforces MAR-UI-R03 bounded tree depth and node count before
