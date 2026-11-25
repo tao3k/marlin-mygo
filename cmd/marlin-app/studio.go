@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/notify"
+	"github.com/tao3k/marlin-mygo/engine/richtext"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -89,6 +91,16 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 	host.RegisterRuntime(&pluginhost.DeclarativeRuntimeFactory{})
 
 	app, mktUI, transcript := buildWorkbenchApp(ctx, cfg, targets, federation, slots, wb, wvRuntime, conn.liveTarget, notifyCenter, notifyBridge)
+	if wasmPath, source, found := wazeroir.DiscoverOrgWasmBinary(""); found {
+		if rawWasm, rErr := os.ReadFile(wasmPath); rErr == nil {
+			if docParser, pErr := wazeroir.NewWasmDocumentParser(ctx, rawWasm, wazeroir.WasmDocumentParserConfig{Engine: wasmEng}); pErr == nil {
+				transcript.OnParseRichDoc = func(format richtext.Format, docID, src string) ([]richtext.Block, error) {
+					return docParser.ParseDocument(ctx, format, docID, src)
+				}
+				log.Printf("hooked orgize WASI document parser (%s via %s)", wasmPath, source)
+			}
+		}
+	}
 
 	var stopLiveSession func()
 	var mounted atomic.Bool
@@ -173,6 +185,10 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				if app.OnCycleTheme != nil {
 					app.OnCycleTheme()
 				}
+			case "studio.export-workspace-profile":
+				exportStudioWorkspaceProfile(app, notifyCenter)
+			case "studio.import-workspace-profile":
+				importStudioWorkspaceProfile(app, notifyCenter)
 			case "prompt:plan":
 				transcript.SetComposerText("Draft a step-by-step architecture plan for: ")
 			case "prompt:review":
@@ -464,6 +480,8 @@ func buildWorkbenchApp(
 		{Name: "studio.open-auth", Description: "Open Tier-0 Account & OAuth Sign-In Center"},
 		{Name: "studio.open-notifications", Description: "Open Tier-0 Notifications & Activity Center"},
 		{Name: "studio.open-keymap-inspector", Description: "Open Tier-0 Searchable Keymap Inspector (SPC + Emacs)"},
+		{Name: "studio.export-workspace-profile", Description: "Export WindowTree layout & theme profile JSON"},
+		{Name: "studio.import-workspace-profile", Description: "Import saved WindowTree layout & theme profile JSON"},
 		{Name: "workbench.probe-federation", Description: "Probe all local, remote, and mobile agents"},
 		{Name: "gate.review-pending", Description: "Inspect pending human approval gate"},
 	}
@@ -746,5 +764,82 @@ func wireDemoHotPlugToggle(
 			mounted.Store(true)
 		}
 		win.Invalidate()
+	}
+}
+
+func workspaceProfilePath() string {
+	if env := strings.TrimSpace(os.Getenv("MARLIN_WORKSPACE_PROFILE")); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "workspace-profile.json"
+	}
+	return filepath.Join(home, ".config", "marlin", "workspace-profile.json")
+}
+
+func exportStudioWorkspaceProfile(app *mygoshell.WorkbenchApp, nc *notify.Center) {
+	themeID := "midnight"
+	if app.ActiveThemeNameFn != nil {
+		themeID = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(app.ActiveThemeNameFn()), " ", "-"))
+	}
+	prof := shell.ExportWorkspaceProfile("studio-default", themeID, app.IsSidebarCollapsed(), "", app.Windows)
+	raw, err := shell.EncodeWorkspaceProfileJSON(prof)
+	if err != nil {
+		return
+	}
+	dst := workspaceProfilePath()
+	_ = os.MkdirAll(filepath.Dir(dst), 0o700)
+	if wErr := os.WriteFile(dst, raw, 0o600); wErr != nil {
+		if nc != nil {
+			_, _ = nc.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityError, Source: notify.SourceHost,
+				Title: "Export Workspace Failed", Message: wErr.Error(),
+			})
+		}
+		return
+	}
+	if nc != nil {
+		_, _ = nc.Publish(notify.NotificationSpec{
+			Severity: notify.SeveritySuccess, Source: notify.SourceHost,
+			Title: "Workspace Profile Exported", Message: dst,
+		})
+	}
+}
+
+func importStudioWorkspaceProfile(app *mygoshell.WorkbenchApp, nc *notify.Center) {
+	src := workspaceProfilePath()
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		if nc != nil {
+			_, _ = nc.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityWarning, Source: notify.SourceHost,
+				Title: "No Saved Workspace Profile", Message: src,
+			})
+		}
+		return
+	}
+	prof, err := shell.DecodeWorkspaceProfileJSON(raw)
+	if err != nil {
+		if nc != nil {
+			_, _ = nc.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityError, Source: notify.SourceHost,
+				Title: "Invalid Workspace Profile", Message: err.Error(),
+			})
+		}
+		return
+	}
+	app.SidebarCollapsed = prof.SidebarCollapsed
+	if prof.Layout != nil {
+		_ = app.ApplyLayoutSpec(*prof.Layout)
+	}
+	if app.OnSaveSettings != nil && prof.ThemeID != "" {
+		app.OnSaveSettings(map[string]any{"theme": prof.ThemeID})
+	}
+	if nc != nil {
+		_, _ = nc.Publish(notify.NotificationSpec{
+			Severity: notify.SeveritySuccess, Source: notify.SourceHost,
+			Title: "Workspace Profile Restored", Message: fmt.Sprintf("Applied %q (theme=%s)", prof.Name, prof.ThemeID),
+		})
 	}
 }

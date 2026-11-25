@@ -8,6 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,4 +188,36 @@ func wasmAllocWrite(ctx context.Context, allocFn api.Function, mem api.Memory, d
 		return 0, fmt.Errorf("wazeroir: memory write [%d:+%d] out of bounds", ptr, len(data))
 	}
 	return ptr, nil
+}
+
+// DiscoverOrgWasmBinary locates a compiled wasm32-wasip1 orgize reactor binary
+// using explicit path -> MARLIN_ORG_WASM -> ~/.config/marlin/orgize_wasm.wasm
+// -> sibling orgize workspace target path.
+func DiscoverOrgWasmBinary(explicitPath string) (path string, source string, ok bool) {
+	check := func(candidate, src string) (string, string, bool) {
+		c := strings.TrimSpace(candidate)
+		if c == "" {
+			return "", "", false
+		}
+		info, err := os.Stat(c)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			return "", "", false
+		}
+		return c, src, true
+	}
+	if p, s, found := check(explicitPath, "flag"); found {
+		return p, s, true
+	}
+	if p, s, found := check(os.Getenv("MARLIN_ORG_WASM"), "env:MARLIN_ORG_WASM"); found {
+		return p, s, true
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if p, s, found := check(filepath.Join(home, ".config", "marlin", "orgize_wasm.wasm"), "user-config"); found {
+			return p, s, true
+		}
+		if p, s, found := check(filepath.Join(home, "ghq", "github.com", "tao3k", "orgize", "wasm", "target", "wasm32-wasip1", "release", "orgize_wasm.wasm"), "ghq-orgize"); found {
+			return p, s, true
+		}
+	}
+	return "", "", false
 }

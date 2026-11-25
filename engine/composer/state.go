@@ -110,6 +110,8 @@ func DefaultSlashCommands() []SlashCommand {
 		{Name: "/activity", Description: "Open Tier-0 Notification & Activity Center", ActionID: "studio.open-notifications"},
 		{Name: "/marketplace", Description: "Open Official Marketplace (Plugins, Themes, Layouts)", ActionID: "studio.open-marketplace"},
 		{Name: "/theme", Description: "Cycle active Studio theme preset", ActionID: "studio.cycle-theme"},
+		{Name: "/export-layout", Description: "Export current WindowTree layout & theme profile JSON", ActionID: "studio.export-workspace-profile"},
+		{Name: "/import-layout", Description: "Import saved WindowTree layout & theme profile JSON", ActionID: "studio.import-workspace-profile"},
 	}
 }
 
