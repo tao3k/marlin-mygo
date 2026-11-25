@@ -484,3 +484,186 @@ func TestRealTursoCrashRestartRecoveryAndCancellationReceipt(t *testing.T) {
 		t.Fatalf("expected Turso-recovered cancellation receipt in fresh GPU frame, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }
+
+// TestRealSIGKILLAutoRestartAndTursoSelfHealing proves autonomous crash
+// self-healing across a REAL abrupt SIGKILL of the Rust `marlin-mygo-host`
+// sidecar process:
+//   - Launches ResilientSidecarTarget backed by Turso SQLite and registered in
+//     TargetRegistry + FederationSupervisor.
+//   - Completes Turn #1 ("Before unexpected SIGKILL").
+//   - Abruptly terminates Process #1 with OS SIGKILL (zero graceful shutdown).
+//   - Verifies ResilientSidecarTarget detects the crash, rotates a brand-new
+//     64-hex ephemeral Bearer token, respawns Process #2 (fresh PID), invokes
+//     OnRecovered to rehydrate the Turso session via OpenSession(Existing) +
+//     ReplayTurnHistory, refreshes FederationSupervisor to PhaseReady, and
+//     executes Turn #2 ("After automatic self-healing") rendered in MyGo GPU UI.
+func TestRealSIGKILLAutoRestartAndTursoSelfHealing(t *testing.T) {
+	binPath := os.Getenv("MARLIN_RUST_SIDECAR_BIN")
+	if binPath == "" {
+		t.Skip("MARLIN_RUST_SIDECAR_BIN not set; run via `marlin-mygo-tool e2e-rust`")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tursoPath := filepath.Join(t.TempDir(), "sigkill-heal.turso")
+	const sessionID = "sigkill-heal-session"
+
+	targets := transport.NewTargetRegistry()
+	federation := transport.NewFederationSupervisor(targets)
+	healedTranscript := mygoshell.NewTranscriptController()
+
+	recoveredCh := make(chan error, 1)
+	var stderr bytes.Buffer
+	resilient, err := grpcwire.LaunchResilientSidecar(ctx, grpcwire.ResilientSidecarConfig{
+		ID:             "local-self-healing",
+		DisplayName:    "Self-Healing Rust Turso Sidecar",
+		InitialBackoff: 40 * time.Millisecond,
+		MaxBackoff:     200 * time.Millisecond,
+		MaxRestarts:    3,
+		Sidecar: transport.SidecarConfig{
+			BinaryPath: binPath,
+			ExtraEnv: []string{
+				"MARLIN_BRIDGE_REAL_SESSION=1",
+				"MARLIN_BRIDGE_TURSO_PATH=" + tursoPath,
+				"MARLIN_BRIDGE_CHUNK_DELAY_MS=2",
+			},
+			StartTimeout: 8 * time.Second,
+			Stderr:       &stderr,
+		},
+		OnRecovered: func(rc context.Context, newTarget *grpcwire.Target, _ int) {
+			ctrl := grpcwire.NewTurnStreamController(newTarget)
+			if _, err := ctrl.OpenSession(rc, sessionID, false); err != nil {
+				recoveredCh <- err
+				return
+			}
+			_, _, err := ctrl.ReplayTurnHistory(rc, sessionID, func(upd grpcwire.TurnStreamUpdate) {
+				if upd.Started {
+					healedTranscript.BeginAssistantTurn(upd.TurnOrdinal)
+				}
+				if upd.TextDelta != "" {
+					healedTranscript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+				}
+				if upd.HasOutcome {
+					healedTranscript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
+				}
+			})
+			if err != nil {
+				recoveredCh <- err
+				return
+			}
+			federation.ProbeAll(rc, 3*time.Second)
+			recoveredCh <- nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("LaunchResilientSidecar failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+
+	if err := targets.Register(resilient); err != nil {
+		_ = resilient.Close()
+		t.Fatalf("Register resilient target failed: %v", err)
+	}
+	federation.ProbeAll(ctx, 3*time.Second)
+	if resilient.Meta().Phase != transport.PhaseReady {
+		_ = resilient.Close()
+		t.Fatalf("expected initial PhaseReady, got %s", resilient.Meta().Phase)
+	}
+
+	pid1 := resilient.PID()
+	token1 := resilient.Sidecar().Token()
+
+	ctrl1 := grpcwire.NewTurnStreamController(resilient.CurrentTarget())
+	if _, err := ctrl1.OpenSession(ctx, sessionID, true); err != nil {
+		_ = resilient.Close()
+		t.Fatalf("OpenSession(Create) failed: %v", err)
+	}
+	turn1, _, outcome1, err := ctrl1.StartAndWatchTurn(ctx, sessionID, "Before unexpected SIGKILL", 0, "heal-sub-1", nil)
+	if err != nil || turn1.GetOrdinal() != 1 || outcome1 != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {
+		_ = resilient.Close()
+		t.Fatalf("Turn #1 before SIGKILL failed: turn=%+v outcome=%v err=%v", turn1, outcome1, err)
+	}
+
+	// Abruptly kill Rust Process #1 with real OS SIGKILL!
+	proc1, err := os.FindProcess(pid1)
+	if err != nil {
+		_ = resilient.Close()
+		t.Fatalf("FindProcess(%d): %v", pid1, err)
+	}
+	if err := proc1.Kill(); err != nil {
+		_ = resilient.Close()
+		t.Fatalf("SIGKILL(%d): %v", pid1, err)
+	}
+
+	// Wait for autonomous recovery, token rotation, Turso rehydration, and federation re-probe.
+	select {
+	case healErr := <-recoveredCh:
+		if healErr != nil {
+			_ = resilient.Close()
+			t.Fatalf("OnRecovered self-healing failed: %v\nstderr:\n%s", healErr, stderr.String())
+		}
+	case <-ctx.Done():
+		_ = resilient.Close()
+		t.Fatalf("timed out waiting for SIGKILL auto-recovery\nstderr:\n%s", stderr.String())
+	}
+
+	pid2 := resilient.PID()
+	token2 := resilient.Sidecar().Token()
+	if resilient.Restarts() != 1 || pid2 == 0 || pid2 == pid1 {
+		_ = resilient.Close()
+		t.Fatalf("expected 1 restart with fresh PID: restarts=%d pid1=%d pid2=%d", resilient.Restarts(), pid1, pid2)
+	}
+	if token2 == "" || token2 == token1 {
+		_ = resilient.Close()
+		t.Fatalf("expected fresh rotated ephemeral Bearer token after SIGKILL respawn")
+	}
+	if resilient.Meta().Phase != transport.PhaseReady {
+		_ = resilient.Close()
+		t.Fatalf("expected PhaseReady after recovery, got %s", resilient.Meta().Phase)
+	}
+
+	// Continue seamlessly with Turn #2 on the newly healed Process #2!
+	ctrl2 := grpcwire.NewTurnStreamController(resilient.CurrentTarget())
+	turn2, _, outcome2, err := ctrl2.StartAndWatchTurn(ctx, sessionID, "After automatic self-healing", 1, "heal-sub-2", func(upd grpcwire.TurnStreamUpdate) {
+		if upd.Started {
+			healedTranscript.BeginAssistantTurn(upd.TurnOrdinal)
+		}
+		if upd.TextDelta != "" {
+			healedTranscript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+		}
+		if upd.HasOutcome {
+			healedTranscript.CompleteTurn(upd.TurnOrdinal, upd.Outcome.String())
+		}
+	})
+	if err != nil || turn2.GetOrdinal() != 2 || outcome2 != appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {
+		_ = resilient.Close()
+		t.Fatalf("Turn #2 after SIGKILL self-healing failed: turn=%+v outcome=%v err=%v", turn2, outcome2, err)
+	}
+
+	// Render live WorkbenchApp with ui.NewTester confirming both pre-crash & post-heal turns appear!
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Federation = federation
+	app.Transcript = healedTranscript
+
+	tt := ui.NewTester(app.View, 1180, 760)
+	want1 := `[marlin-core] processed "Before unexpected SIGKILL" via durable ConversationJournal.`
+	want2 := `[marlin-core] processed "After automatic self-healing" via durable ConversationJournal.`
+	if !tt.HasText(want1) || !tt.HasText(want2) {
+		_ = resilient.Close()
+		t.Fatalf("expected both pre-SIGKILL and post-healing turns in GPU frame, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Clean graceful shutdown of healed Process #2 must exit 0 with zero extra restarts.
+	sidecar2 := resilient.Sidecar()
+	if err := resilient.Close(); err != nil {
+		t.Fatalf("resilient.Close() failed: %v", err)
+	}
+	if exitErr := sidecar2.ExitErr(); exitErr != nil {
+		t.Fatalf("expected clean exit 0 from healed Process #2, got %v", exitErr)
+	}
+	if resilient.Restarts() != 1 {
+		t.Fatalf("expected no spurious restart on intentional Close, got %d", resilient.Restarts())
+	}
+}

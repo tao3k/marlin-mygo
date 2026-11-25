@@ -296,7 +296,7 @@ func runE2ERust(args []string) error {
 		hostBin = filepath.Join(absCore, "target", "debug", "marlin-mygo-host")
 	}
 	fmt.Printf("[2/2] Running real cross-process Rust <-> Go E2E suite against %s...\n", hostBin)
-	testCmd := exec.Command("go", "test", "-v", "-race", "-run", "Test(ManagedSidecarLaunchesRealRustBridge|GrandUnifiedFullStackRealIntegration|RealDurableSessionStreamingToMyGoTranscript|RealTursoCrashRestartRecoveryAndCancellationReceipt)", "./control/grpcwire")
+	testCmd := exec.Command("go", "test", "-v", "-race", "-run", "Test(ManagedSidecarLaunchesRealRustBridge|GrandUnifiedFullStackRealIntegration|RealDurableSessionStreamingToMyGoTranscript|RealTursoCrashRestartRecoveryAndCancellationReceipt|RealSIGKILLAutoRestartAndTursoSelfHealing)", "./control/grpcwire")
 	testCmd.Env = append(os.Environ(), "CGO_ENABLED=0", "MARLIN_RUST_SIDECAR_BIN="+hostBin)
 	testCmd.Stdout = os.Stdout
 	testCmd.Stderr = os.Stderr

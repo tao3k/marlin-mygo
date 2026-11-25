@@ -124,18 +124,29 @@ func main() {
 		if strings.TrimSpace(*tursoPath) != "" {
 			extraEnv = append(extraEnv, "MARLIN_BRIDGE_TURSO_PATH="+strings.TrimSpace(*tursoPath))
 		}
-		managed, err := grpcwire.LaunchSidecarTarget(ctx, "local-rust-sidecar", "Rust Authority Sidecar", transport.SidecarConfig{
-			BinaryPath:      *sidecarBin,
-			PublisherKeyHex: pubHex,
-			ExtraEnv:        extraEnv,
-			Stderr:          os.Stderr,
+		resilient, err := grpcwire.LaunchResilientSidecar(ctx, grpcwire.ResilientSidecarConfig{
+			ID:          "local-rust-sidecar",
+			DisplayName: "Rust Authority Sidecar",
+			Sidecar: transport.SidecarConfig{
+				BinaryPath:      *sidecarBin,
+				PublisherKeyHex: pubHex,
+				ExtraEnv:        extraEnv,
+				Stderr:          os.Stderr,
+			},
+			OnCrash: func(attempt int, exitErr error) {
+				log.Printf("supervised sidecar exited unexpectedly (attempt %d): %v", attempt, exitErr)
+			},
+			OnRecovered: func(rc context.Context, newTarget *grpcwire.Target, restarts int) {
+				log.Printf("supervised sidecar auto-recovered (restart #%d) at %s", restarts, newTarget.Meta().Address)
+				federation.ProbeAll(rc, 2*time.Second)
+			},
 		})
 		if err != nil {
 			log.Fatalf("launch supervised sidecar %s: %v", *sidecarBin, err)
 		}
-		defer managed.Close()
-		liveTarget = managed.Target
-		if err := targets.Register(managed); err != nil {
+		defer resilient.Close()
+		liveTarget = resilient.CurrentTarget()
+		if err := targets.Register(resilient); err != nil {
 			log.Fatal(err)
 		}
 		federation.ProbeAll(ctx, 2*time.Second)

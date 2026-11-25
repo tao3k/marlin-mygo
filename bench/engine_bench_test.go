@@ -416,3 +416,38 @@ func BenchmarkMyGoShell_HeadlessFrame(b *testing.B) {
 		tt.Frame()
 	}
 }
+
+func BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame(b *testing.B) {
+	targets := transport.NewTargetRegistry()
+	_ = targets.Register(benchTarget{meta: transport.TargetMeta{
+		ID: "local", DisplayName: "Local Mac", Mode: transport.ModeLocalSidecar,
+		TargetKind: schema.TargetDesktopMacOS, Phase: transport.PhaseReady,
+	}})
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+
+	tc := mygoshell.NewTranscriptController()
+	for i := 0; i < 100_000; i++ {
+		tc.AppendUser("streaming turn history entry")
+	}
+	tc.UpsertToolCall(mygoshell.ToolCallCardView{
+		CallID: "call-1", ToolName: "workspace.diff", Phase: "SUCCEEDED",
+		Kind: "DIFF", Title: "session.rs", Summary: "+12 -2", ReceiptID: "rcpt-1",
+	}, false)
+	tc.ApplyCancellationReceipt(mygoshell.CancellationReceiptView{
+		TurnOrdinal: 1, Completed: true, CancellationRequested: true,
+		TrackerClosed: true, TrackedTasks: 1, RemainingTasks: 0,
+		Status:  "RUNTIME_RETIREMENT_STATUS_COMPLETED",
+		Outcome: "SESSION_TURN_OUTCOME_REMOTE_UNCERTAIN",
+	})
+
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+	app.Transcript = tc
+	tt := ui.NewTester(app.View, 1280, 800)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tt.Frame()
+	}
+}
