@@ -28,6 +28,7 @@ import {
 
 const INITIAL_STATUS: GitStatusProjection = {
   repoName: "tao3k/marlin-mygo",
+  repoUrl: "https://github.com/tao3k/marlin-mygo",
   branch: "feat/marlin-mygo-frontend-engine",
   upstream: "origin/feat/marlin-mygo-frontend-engine",
   ahead: 1,
@@ -63,6 +64,7 @@ function parseGitStatus(raw: unknown): GitStatusProjection | undefined {
   if (r && typeof r.branch === "string" && Array.isArray(r.changes)) {
     return {
       repoName: r.repoName ?? "workspace",
+      repoUrl: typeof r.repoUrl === "string" ? r.repoUrl : undefined,
       branch: r.branch,
       upstream: r.upstream ?? "",
       ahead: typeof r.ahead === "number" ? r.ahead : 0,
@@ -128,12 +130,14 @@ const GitChangeRow = memo(function GitChangeRow({
 export function GitWorkbenchApp() {
   const gitProj = useMarlinProjection("git.status", INITIAL_STATUS, parseGitStatus);
   const layout = useMarlinLayout();
+  const connectAct = useMarlinAction("git.repo.connect");
   const stageAct = useMarlinAction("git.file.stage");
   const unstageAct = useMarlinAction("git.file.unstage");
   const commitAct = useMarlinAction("git.commit.create");
   const checkoutAct = useMarlinAction("git.branch.checkout");
 
   const [filter, setFilter] = useState<GitFilter>("all");
+  const [repoInput, setRepoInput] = useState("");
   const [commitMsg, setCommitMsg] = useState("");
   const [toast, setToast] = useState("");
 
@@ -188,11 +192,21 @@ export function GitWorkbenchApp() {
     }
   }
 
+  async function handleConnectRepo() {
+    const trimmed = repoInput.trim();
+    if (!trimmed) return;
+    const r = await connectAct.submit({ repoUrl: trimmed });
+    if (r.admitted) {
+      setToast(`Connected Git URL: ${trimmed}`);
+      setRepoInput("");
+    }
+  }
+
   return (
     <PanelShell>
       <PanelHeader
         title="Git Workbench"
-        caption={`${gitProj.data.repoName} · ${gitProj.data.branch} · ${layout.perspective} (${layout.leafCount}p)`}
+        caption={`${gitProj.data.repoUrl ?? gitProj.data.repoName} · ${gitProj.data.branch} · ${layout.perspective} (${layout.leafCount}p)`}
         actions={
           <div className="m-row-gap">
             {gitProj.data.recentBranches.slice(0, 2).map((br) => (
@@ -210,6 +224,24 @@ export function GitWorkbenchApp() {
       />
 
       <StatStrip items={stats} />
+
+      <div className="m-row-gap" style={{ marginBottom: 10 }}>
+        <input
+          className="m-input"
+          style={{ flex: 1 }}
+          placeholder="Mount Git / GitHub URL (e.g. https://github.com/tao3k/marlin-mygo)..."
+          value={repoInput}
+          onChange={(e) => setRepoInput(e.target.value)}
+        />
+        <button
+          className="m-btn"
+          type="button"
+          disabled={!repoInput.trim() || connectAct.pending}
+          onClick={() => void handleConnectRepo()}
+        >
+          Mount URL
+        </button>
+      </div>
 
       <div className="m-row-gap" style={{ marginBottom: 12 }}>
         <input

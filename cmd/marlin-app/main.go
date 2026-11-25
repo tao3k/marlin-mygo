@@ -40,6 +40,7 @@ type appConfig struct {
 	devPluginDir     string
 	showcase         bool
 	showcasePlugin   string
+	repoURL          string
 }
 
 func parseFlags() appConfig {
@@ -64,8 +65,9 @@ func parseFlags() appConfig {
 	flag.DurationVar(&cfg.idleReapInterval, "idle-reap-interval", 15*time.Second, "background O(1) idle plugin reclamation check interval")
 	flag.StringVar(&cfg.wasmCacheDir, "wasm-cache-dir", "", "optional persistent disk directory for wazero AOT compiled WASM cache (defaults to user cache dir)")
 	flag.StringVar(&cfg.devPluginDir, "dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
-	flag.BoolVar(&cfg.showcase, "showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 AI workflow + Go WASI GPU Focus Clock with live cross-runtime sync")
-	flag.StringVar(&cfg.showcasePlugin, "showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow")
+	flag.BoolVar(&cfg.showcase, "showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 AI/Git/GitHub workflows + Go WASI GPU Focus Clock with live cross-runtime sync")
+	flag.StringVar(&cfg.showcasePlugin, "showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow | git | github")
+	flag.StringVar(&cfg.repoURL, "repo-url", "", "optional Git or GitHub repository URL projected into Git & GitHub Workbench panels (auto-detects local git origin when empty)")
 	flag.Parse()
 	return cfg
 }

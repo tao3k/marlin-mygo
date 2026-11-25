@@ -1150,5 +1150,48 @@ func DefaultOfficialMarketplaceLayouts() []MarketplaceLayoutItem {
 				},
 			},
 		},
+		{
+			LayoutID:    "tao3k.layout-dev-git-github",
+			Name:        "Git + GitHub Composable Studio",
+			Perspective: "dev-git-github",
+			PublisherID: "tao3k.official",
+			Summary:     "4-pane composable studio combining Primary (Git), Secondary (GitHub), AI Transcript, and WASI Focus Clock.",
+			TrustTier:   "official",
+			Spec: shell.LayoutSpec{
+				Perspective: "dev-git-github",
+				Root: &shell.LayoutNodeSpec{
+					Axis:  shell.SplitRow,
+					Ratio: 0.58,
+					First: &shell.LayoutNodeSpec{
+						Axis:  shell.SplitColumn,
+						Ratio: 0.50,
+						First: &shell.LayoutNodeSpec{
+							BufferID: "slot:workbench.main",
+							Title:    "Git Workbench",
+							Kind:     "webview",
+						},
+						Second: &shell.LayoutNodeSpec{
+							BufferID: "slot:workbench.secondary",
+							Title:    "GitHub Workbench",
+							Kind:     "webview",
+						},
+					},
+					Second: &shell.LayoutNodeSpec{
+						Axis:  shell.SplitColumn,
+						Ratio: 0.65,
+						First: &shell.LayoutNodeSpec{
+							BufferID: "builtin:transcript",
+							Title:    "AI Transcript",
+							Kind:     "native-gpu",
+						},
+						Second: &shell.LayoutNodeSpec{
+							BufferID: "slot:workbench.inspector",
+							Title:    "Focus Clock",
+							Kind:     "wasm-gpu",
+						},
+					},
+				},
+			},
+		},
 	}
 }

@@ -29,6 +29,7 @@ cardinality = "single"
 entry_path = "index.html"
 read_scopes = ["github.workspace", "session.summary"]
 declared_actions = [
+  "github.repo.connect",
   "github.pr.review",
   "github.pr.checkout",
   "github.checks.rerun",

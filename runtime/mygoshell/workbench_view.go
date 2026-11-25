@@ -407,6 +407,10 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			a.OnQuickPluginSelect(a.QuickPlugins[1].PluginID)
 		} else if len(a.QuickPlugins) > 2 && c.Shortcut(ui.Cmd, ui.Key3) {
 			a.OnQuickPluginSelect(a.QuickPlugins[2].PluginID)
+		} else if len(a.QuickPlugins) > 3 && c.Shortcut(ui.Cmd, ui.Key4) {
+			a.OnQuickPluginSelect(a.QuickPlugins[3].PluginID)
+		} else if len(a.QuickPlugins) > 4 && c.Shortcut(ui.Cmd, ui.Key5) {
+			a.OnQuickPluginSelect(a.QuickPlugins[4].PluginID)
 		}
 	}
 

@@ -27,6 +27,7 @@ import {
 
 const INITIAL_WORKSPACE: GitHubWorkspaceProjection = {
   repo: "tao3k/marlin-mygo",
+  repoUrl: "https://github.com/tao3k/marlin-mygo",
   defaultBranch: "main",
   items: [
     {
@@ -69,6 +70,7 @@ function parseGitHubWorkspace(raw: unknown): GitHubWorkspaceProjection | undefin
   if (r && typeof r.repo === "string" && Array.isArray(r.items)) {
     return {
       repo: r.repo,
+      repoUrl: typeof r.repoUrl === "string" ? r.repoUrl : undefined,
       defaultBranch: r.defaultBranch ?? "main",
       items: r.items,
     };
@@ -152,12 +154,14 @@ const GitHubWorkRow = memo(function GitHubWorkRow({
 export function GitHubWorkbenchApp() {
   const ghProj = useMarlinProjection("github.workspace", INITIAL_WORKSPACE, parseGitHubWorkspace);
   const layout = useMarlinLayout();
+  const connectAct = useMarlinAction("github.repo.connect");
   const reviewAct = useMarlinAction("github.pr.review");
   const checkoutAct = useMarlinAction("github.pr.checkout");
   const rerunAct = useMarlinAction("github.checks.rerun");
   const triageAct = useMarlinAction("github.issue.triage");
 
   const [filter, setFilter] = useState<GitHubFilter>("all");
+  const [repoInput, setRepoInput] = useState("");
   const [toast, setToast] = useState("");
 
   const summary = useMemo(() => summarizeGitHubWorkspace(ghProj.data), [ghProj.data]);
@@ -211,14 +215,42 @@ export function GitHubWorkbenchApp() {
     [triageAct],
   );
 
+  async function handleConnectRepo() {
+    const trimmed = repoInput.trim();
+    if (!trimmed) return;
+    const r = await connectAct.submit({ repoUrl: trimmed });
+    if (r.admitted) {
+      setToast(`Mounted GitHub URL: ${trimmed}`);
+      setRepoInput("");
+    }
+  }
+
   return (
     <PanelShell>
       <PanelHeader
         title="GitHub Workbench"
-        caption={`${ghProj.data.repo} · default ${ghProj.data.defaultBranch} · ${layout.perspective} (${layout.leafCount}p)`}
+        caption={`${ghProj.data.repoUrl ?? ghProj.data.repo} · default ${ghProj.data.defaultBranch} · ${layout.perspective} (${layout.leafCount}p)`}
       />
 
       <StatStrip items={stats} />
+
+      <div className="m-row-gap" style={{ marginBottom: 10 }}>
+        <input
+          className="m-input"
+          style={{ flex: 1 }}
+          placeholder="Mount GitHub URL (e.g. https://github.com/tao3k/marlin-ui-marketplace)..."
+          value={repoInput}
+          onChange={(e) => setRepoInput(e.target.value)}
+        />
+        <button
+          className="m-btn"
+          type="button"
+          disabled={!repoInput.trim() || connectAct.pending}
+          onClick={() => void handleConnectRepo()}
+        >
+          Mount URL
+        </button>
+      </div>
 
       <div style={{ marginBottom: 12 }}>
         <SegmentedControl options={FILTERS} value={filter} onChange={setFilter} />

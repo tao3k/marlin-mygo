@@ -15,6 +15,7 @@ export interface GitFileChange {
 
 export interface GitStatusProjection {
   repoName: string;
+  repoUrl?: string;
   branch: string;
   upstream: string;
   ahead: number;

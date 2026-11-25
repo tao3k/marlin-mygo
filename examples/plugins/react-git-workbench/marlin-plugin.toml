@@ -28,6 +28,7 @@ cardinality = "single"
 entry_path = "index.html"
 read_scopes = ["git.status", "session.summary"]
 declared_actions = [
+  "git.repo.connect",
   "git.file.stage",
   "git.file.unstage",
   "git.commit.create",

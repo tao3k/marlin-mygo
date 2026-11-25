@@ -53,8 +53,9 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	var showcaseDisp *showcaseDispatcher
 	var dispatcher pluginhost.ActionDispatcher = demoDispatcher{}
+	repoCtx := detectInitialRepoContext(cfg.repoURL)
 	if cfg.showcase {
-		showcaseDisp = &showcaseDispatcher{}
+		showcaseDisp = newShowcaseDispatcher(repoCtx)
 		dispatcher = showcaseDisp
 	}
 
@@ -164,6 +165,10 @@ func declareDefaultSlots() (*shell.SlotRegistry, error) {
 		"Ready — open Official Marketplace or click 'Mount Plugin' to hot-plug a panel.", true); err != nil {
 		return nil, err
 	}
+	if err := declare("workbench.secondary", "host.secondary", "Composable Secondary Slot (workbench.secondary)",
+		"Ready — split Emacs windows to compose Git Workbench + GitHub Workbench side-by-side.", true); err != nil {
+		return nil, err
+	}
 	if err := declare("workbench.inspector", "host.inspector", "Host Inspector Fallback (workbench.inspector)",
 		"Ready — mount a signed Go WASM-IR Reactor (.marlinpkg) for 25us GPU rendering.", true); err != nil {
 		return nil, err
@@ -220,13 +225,14 @@ func buildWorkbenchApp(
 
 	// Emacs-style composable window tree & built-in buffer catalog.
 	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace Panel", Kind: "webview"}
+	bufSecondary := shell.PaneBuffer{BufferID: "slot:workbench.secondary", Title: "Secondary Panel", Kind: "webview"}
 	bufDock := shell.PaneBuffer{BufferID: "slot:workbench.inspector", Title: "Focus Clock", Kind: "wasm-gpu"}
 	bufChat := shell.PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
 	bufProj := shell.PaneBuffer{BufferID: "builtin:projection", Title: "Projection Inspector", Kind: "native-gpu"}
 	winTree := shell.NewWindowTree(bufMain)
 	winTree.ApplyBuiltinPerspective("focus", bufMain, bufDock, bufChat, bufProj)
 	app.Windows = winTree
-	app.WindowBuffers = []shell.PaneBuffer{bufMain, bufChat, bufProj, bufDock}
+	app.WindowBuffers = []shell.PaneBuffer{bufMain, bufSecondary, bufChat, bufProj, bufDock}
 	app.OnLayoutChanged = wvRuntime.BroadcastLayoutSnapshot
 	app.OnSelectPerspective = func(name string) {
 		winTree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
@@ -362,6 +368,8 @@ func mountShowcaseStudio(
 		{PluginID: "tao3k.org-agenda-planner", Label: "Org Agenda (React 19)"},
 		{PluginID: "tao3k.ai-memory-inbox", Label: "AI Memory Inbox (React 19)"},
 		{PluginID: "tao3k.ai-workflow-cockpit", Label: "AI Workflow Cockpit (React 19)"},
+		{PluginID: "tao3k.git-workbench", Label: "Git Workbench (React 19)"},
+		{PluginID: "tao3k.github-workbench", Label: "GitHub Workbench (React 19)"},
 	}
 	app.ActiveQuickPluginID = switcher.ActiveID
 	app.OnQuickPluginSelect = switcher.Select
@@ -371,6 +379,7 @@ func mountShowcaseStudio(
 		if _, err := lazySess.InstallOrUpgrade(ctx, "tao3k.focus-clock-reactor"); err != nil {
 			log.Printf("[showcase] mount inspector focus-clock failed: %v", err)
 		}
+		showcaseDisp.publishRepoProjections()
 		syncMarketplace()
 		win.Invalidate()
 	}()

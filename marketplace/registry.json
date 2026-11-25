@@ -207,6 +207,14 @@
       "trust_tier": "official",
       "publisher_id": "tao3k.official",
       "summary": "3-pane review studio pairing Workspace Panel, Projection Inspector, and AI Transcript."
+    },
+    {
+      "id": "tao3k.layout-dev-git-github",
+      "name": "Git + GitHub Composable Studio",
+      "perspective": "dev-git-github",
+      "trust_tier": "official",
+      "publisher_id": "tao3k.official",
+      "summary": "4-pane composable studio pairing Git Workbench, GitHub Workbench, AI Transcript, and WASI Focus Clock."
     }
   ]
 }

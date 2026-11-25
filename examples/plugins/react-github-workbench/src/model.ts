@@ -20,6 +20,7 @@ export interface GitHubWorkItem {
 
 export interface GitHubWorkspaceProjection {
   repo: string;
+  repoUrl?: string;
   defaultBranch: string;
   items: GitHubWorkItem[];
 }
