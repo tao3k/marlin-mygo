@@ -4,11 +4,11 @@ SPDX-FileCopyrightText: 2026 tao3k team and Contributors
 SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 -->
 
-# Marlin Official Marketplace Registry
+# Marlin UI Official Marketplace Registry
 
-This directory maintains the canonical **Official Marketplace Registry** (`registry.json`) for Marlin Studio and Mobile Companions.
+This directory maintains the canonical **Official UI Marketplace Registry** (`registry.json`) for Marlin Studio and Mobile Companions.
 
-> **Standalone Repository Ready**: `marketplace/registry.json` uses a self-contained schema (`schema_version = 1`, `canonical_repo = "https://github.com/tao3k/marlin-marketplace"`). It lives at the top level of `marlin-mygo` during bootstrap and can be mirrored or extracted directly into a dedicated `tao3k/marlin-marketplace` repository with zero client or tooling changes.
+> **Standalone Repository**: `marketplace/registry.json` mirrors the dedicated [`tao3k/marlin-ui-marketplace`](https://github.com/tao3k/marlin-ui-marketplace) repository (`schema_version = 1`, `canonical_repo = "https://github.com/tao3k/marlin-ui-marketplace"`). Community plugins (Git UI, GitHub UI, AI workflows), themes, and Emacs layouts are submitted directly to `tao3k/marlin-ui-marketplace`.
 
 ## Security Model (Official-Only Admission)
 

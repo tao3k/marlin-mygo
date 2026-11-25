@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 tao3k team and Contributors
 SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 -->
 
-# Publishing a Plugin to the Marlin Official Marketplace
+# Publishing a Plugin to the Marlin UI Official Marketplace
 
 Marlin supports 4 plugin runtimes — all hot-pluggable, zero-authority, and verified by the Official Marketplace before reaching end users:
 
@@ -51,7 +51,7 @@ CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./my-git-ui -perf
 ## Step 4: Submit a PR to the Official Marketplace Registry
 
 1. Push your plugin repository to GitHub (HTTPS) and note the exact 40-character `commit_sha` of your release commit.
-2. Open a Pull Request to `marketplace/registry.json` (or the dedicated `tao3k/marlin-marketplace` repository once mirrored) adding your entry:
+2. Open a Pull Request to [`tao3k/marlin-ui-marketplace`](https://github.com/tao3k/marlin-ui-marketplace) `registry.json` adding your entry:
 
 ```json
 {

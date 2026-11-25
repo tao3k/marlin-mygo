@@ -31,8 +31,8 @@ func TestRegistryManifestRejectsInsecureCommunitySubmissions(t *testing.T) {
 	validBase := func() *marketplace.RegistryManifest {
 		return &marketplace.RegistryManifest{
 			SchemaVersion: 1,
-			MarketplaceID: "tao3k.marlin-official",
-			CanonicalRepo: "https://github.com/tao3k/marlin-marketplace",
+			MarketplaceID: "tao3k.marlin-ui-official",
+			CanonicalRepo: "https://github.com/tao3k/marlin-ui-marketplace",
 			Categories:    []string{"developer-tools"},
 			Plugins: []marketplace.RegistryPluginEntry{
 				{

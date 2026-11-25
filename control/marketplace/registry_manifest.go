@@ -66,9 +66,9 @@ type RegistryLayoutEntry struct {
 	Summary     string             `json:"summary"`
 }
 
-// RegistryManifest is the canonical schema for the Official Marketplace
-// (`tao3k/marlin-marketplace` registry.json), governing plugins, curated themes,
-// and shareable Emacs workspace layouts with pinned Git commit SHAs.
+// RegistryManifest is the canonical schema for the Official UI Marketplace
+// (`tao3k/marlin-ui-marketplace` registry.json), governing UI plugins, curated
+// themes, and shareable Emacs workspace layouts with pinned Git commit SHAs.
 type RegistryManifest struct {
 	SchemaVersion int                   `json:"schema_version"`
 	MarketplaceID string                `json:"marketplace_id"`
