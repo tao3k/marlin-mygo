@@ -31,13 +31,31 @@ import {
 } from "./index";
 
 import {
+  applyMarlinLayoutDensity,
   applyMarlinThemeTokens,
   injectMarlinBaseStyles,
 } from "./theme";
 export * from "./ui";
 
+export interface MarlinLayoutSnapshot {
+  perspective: string;
+  focusedId: string;
+  zoomed: boolean;
+  leafCount: number;
+  compact: boolean;
+}
+
+const DEFAULT_LAYOUT: MarlinLayoutSnapshot = {
+  perspective: "focus",
+  focusedId: "win-1",
+  zoomed: false,
+  leafCount: 1,
+  compact: false,
+};
+
 const MarlinPanelContext = createContext<PanelClient | null>(null);
 const MarlinThemeContext = createContext<MarlinThemeTokens | null>(null);
+const MarlinLayoutContext = createContext<MarlinLayoutSnapshot>(DEFAULT_LAYOUT);
 
 export interface MarlinPanelProviderProps {
   pluginId: string;
@@ -96,22 +114,52 @@ export function MarlinPanelProvider({
     [pluginId, fetchImpl, bridge],
   );
   const [theme, setTheme] = useState<MarlinThemeTokens>(() => readDocumentThemeTokens());
+  const [layout, setLayout] = useState<MarlinLayoutSnapshot>(DEFAULT_LAYOUT);
 
   useEffect(() => {
     injectMarlinBaseStyles();
-    return client.onEvent<Record<string, string>>("theme.live", (ev) => {
+    const offTheme = client.onEvent<Record<string, string>>("theme.live", (ev) => {
       if (ev.payload && typeof ev.payload === "object") {
         applyMarlinThemeTokens(ev.payload);
         setTheme(parseThemeTokens(ev.payload));
       }
     });
+    const offLayout = client.onEvent<Partial<MarlinLayoutSnapshot>>("layout.live", (ev) => {
+      if (ev.payload && typeof ev.payload === "object") {
+        const leafCount = typeof ev.payload.leafCount === "number" ? ev.payload.leafCount : 1;
+        const zoomed = Boolean(ev.payload.zoomed);
+        const density = applyMarlinLayoutDensity(leafCount, zoomed);
+        setLayout({
+          perspective: typeof ev.payload.perspective === "string" ? ev.payload.perspective : "focus",
+          focusedId: typeof ev.payload.focusedId === "string" ? ev.payload.focusedId : "win-1",
+          zoomed,
+          leafCount,
+          compact: density === "compact",
+        });
+      }
+    });
+    return () => {
+      offTheme();
+      offLayout();
+    };
   }, [client]);
 
   return createElement(
     MarlinPanelContext,
     { value: client },
-    createElement(MarlinThemeContext, { value: theme }, children),
+    createElement(
+      MarlinThemeContext,
+      { value: theme },
+      createElement(MarlinLayoutContext, { value: layout }, children),
+    ),
   );
+}
+
+/**
+ * Reads the live Emacs WindowTree layout snapshot broadcast by the host via `layout.live`.
+ */
+export function useMarlinLayout(): MarlinLayoutSnapshot {
+  return useContext(MarlinLayoutContext);
 }
 
 /**

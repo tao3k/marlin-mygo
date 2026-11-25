@@ -6,6 +6,7 @@ package shell
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/tao3k/marlin-mygo/engine/input"
@@ -101,5 +102,45 @@ func TestDefaultEmacsWindowKeyTrieAndCommandExecution(t *testing.T) {
 	}
 	if snap := tree.Snapshot(); snap.Perspective != "zen" || snap.LeafCount != 1 {
 		t.Fatalf("expected zen perspective with 1 leaf, got %+v", snap)
+	}
+}
+
+func TestLayoutSpecSaveRestoreRoundTripSwapAndReplaceBuffer(t *testing.T) {
+	catalog := map[string]PaneBuffer{
+		"slot:workbench.main":      {BufferID: "slot:workbench.main", Title: "Agenda", Kind: "webview"},
+		"builtin:transcript":       {BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"},
+		"slot:workbench.inspector": {BufferID: "slot:workbench.inspector", Title: "Focus Clock", Kind: "wasm-gpu"},
+	}
+	src := NewWindowTree(catalog["slot:workbench.main"])
+	_, _ = src.SplitRight(catalog["builtin:transcript"])
+	_, _ = src.SplitBelow(catalog["slot:workbench.inspector"])
+
+	// SwapWithNext rotates buffers between focused and next pane.
+	_, before := src.FocusedBuffer()
+	if !src.SwapWithNext() {
+		t.Fatal("expected SwapWithNext to succeed on 3-pane tree")
+	}
+	_, after := src.FocusedBuffer()
+	if after.BufferID != before.BufferID {
+		t.Fatalf("expected focused pane to keep swapped buffer %q, got %q", before.BufferID, after.BufferID)
+	}
+
+	// Save & restore full binary split layout via JSON file.
+	layoutPath := filepath.Join(t.TempDir(), "workspace-layout.json")
+	if err := SaveLayoutSpecFile(layoutPath, src); err != nil {
+		t.Fatalf("SaveLayoutSpecFile: %v", err)
+	}
+	dst := NewWindowTree(catalog["slot:workbench.main"])
+	if err := LoadLayoutSpecFile(layoutPath, dst, catalog); err != nil {
+		t.Fatalf("LoadLayoutSpecFile: %v", err)
+	}
+	if dst.Snapshot().LeafCount != 3 {
+		t.Fatalf("expected 3 restored panes, got %d", dst.Snapshot().LeafCount)
+	}
+
+	// Hot-unplug buffer replacement migrates affected panes cleanly.
+	migrated := dst.ReplaceBuffer("slot:workbench.inspector", catalog["builtin:transcript"])
+	if migrated != 1 {
+		t.Fatalf("expected 1 migrated pane, got %d", migrated)
 	}
 }

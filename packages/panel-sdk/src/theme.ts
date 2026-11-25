@@ -68,6 +68,21 @@ html, body {
   padding: 18px 22px 24px;
   max-width: 1180px;
   margin: 0 auto;
+  transition: padding 140ms ease;
+}
+
+:root[data-density="compact"] .m-panel {
+  padding: 10px 12px 14px;
+}
+
+:root[data-density="compact"] .m-header {
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+:root[data-density="compact"] .m-card {
+  padding: 10px 12px;
 }
 
 .m-header {
@@ -434,6 +449,19 @@ export function applyMarlinThemeTokens(tokens: Record<string, string>): void {
   if (tokens["--marlin-theme-id"]) {
     root.dataset.themeId = tokens["--marlin-theme-id"];
   }
+}
+
+/**
+ * Applies adaptive layout density (`compact` when 3+ Emacs panes are open and
+ * unzoomed; `comfortable` otherwise) on the document root so WebView panels
+ * adapt seamlessly to Emacs split geometry without reflow thrashing.
+ */
+export function applyMarlinLayoutDensity(leafCount: number, zoomed: boolean): "compact" | "comfortable" {
+  const density: "compact" | "comfortable" = leafCount >= 3 && !zoomed ? "compact" : "comfortable";
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.dataset.density = density;
+  }
+  return density;
 }
 
 /**

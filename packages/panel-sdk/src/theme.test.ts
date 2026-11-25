@@ -7,6 +7,7 @@ import { Window } from "happy-dom";
 import {
   MARLIN_STYLE_ELEMENT_ID,
   MARLIN_THEME_CSS,
+  applyMarlinLayoutDensity,
   applyMarlinThemeTokens,
   injectMarlinBaseStyles,
 } from "./theme";
@@ -38,6 +39,12 @@ describe("Marlin unified token-driven theme stylesheet", () => {
       expect(win.document.documentElement.dataset.appearance).toBe("light");
       expect(win.document.documentElement.dataset.themeId).toBe("paper");
       expect(win.document.documentElement.style.getPropertyValue("--marlin-canvas")).toBe("#f6f7fa");
+
+      expect(applyMarlinLayoutDensity(3, false)).toBe("compact");
+      expect(win.document.documentElement.dataset.density).toBe("compact");
+      expect(applyMarlinLayoutDensity(3, true)).toBe("comfortable");
+      expect(win.document.documentElement.dataset.density).toBe("comfortable");
+      expect(applyMarlinLayoutDensity(2, false)).toBe("comfortable");
     } finally {
       (globalThis as unknown as { document: Document }).document = prevDoc;
       win.close();

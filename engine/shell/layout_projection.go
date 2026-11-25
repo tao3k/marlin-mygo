@@ -5,8 +5,11 @@
 package shell
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tao3k/marlin-mygo/engine/input"
@@ -274,4 +277,93 @@ func DefaultEmacsWindowCommands() []input.CommandEntry {
 		{Name: CmdPerspectiveCockpit, Description: "Apply Cockpit 3-pane perspective"},
 		{Name: CmdPerspectiveZen, Description: "Apply Zen single-pane perspective"},
 	}
+}
+
+const maxLayoutSpecBytes = 64 * 1024
+
+// ExportLayoutSpec serializes the current WindowTree state into a declarative
+// LayoutSpec suitable for workspace persistence or Scheme projection round-trips.
+func ExportLayoutSpec(tree *WindowTree) LayoutSpec {
+	if tree == nil {
+		return LayoutSpec{}
+	}
+	snap := tree.Snapshot()
+	return LayoutSpec{
+		Perspective: snap.Perspective,
+		Root:        exportNodeSpec(snap.Root),
+	}
+}
+
+func exportNodeSpec(n *WindowNode) *LayoutNodeSpec {
+	if n == nil {
+		return nil
+	}
+	if n.IsSplit {
+		return &LayoutNodeSpec{
+			Axis:   n.Axis,
+			Ratio:  n.Ratio,
+			First:  exportNodeSpec(n.First),
+			Second: exportNodeSpec(n.Second),
+		}
+	}
+	return &LayoutNodeSpec{
+		BufferID: n.Buffer.BufferID,
+		Title:    n.Buffer.Title,
+		Kind:     n.Buffer.Kind,
+	}
+}
+
+// MarshalLayoutSpecJSON encodes spec into deterministic formatted JSON.
+func MarshalLayoutSpecJSON(spec LayoutSpec) ([]byte, error) {
+	if spec.Root == nil || countSpecLeaves(spec.Root) <= 0 {
+		return nil, ErrInvalidLayoutSpec
+	}
+	return json.MarshalIndent(spec, "", "  ")
+}
+
+// UnmarshalLayoutSpecJSON decodes and validates a bounded LayoutSpec JSON blob.
+func UnmarshalLayoutSpecJSON(raw []byte) (LayoutSpec, error) {
+	if len(raw) == 0 || len(raw) > maxLayoutSpecBytes {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	var spec LayoutSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return LayoutSpec{}, fmt.Errorf("%w: %v", ErrInvalidLayoutSpec, err)
+	}
+	if spec.Root == nil {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	leaves := countSpecLeaves(spec.Root)
+	if leaves <= 0 {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	if leaves > MaxOpenWindows {
+		return LayoutSpec{}, ErrMaxWindowsReached
+	}
+	return spec, nil
+}
+
+// SaveLayoutSpecFile atomically persists tree's current layout perspective to disk.
+func SaveLayoutSpecFile(path string, tree *WindowTree) error {
+	raw, err := MarshalLayoutSpecJSON(ExportLayoutSpec(tree))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+// LoadLayoutSpecFile restores a persisted workspace LayoutSpec onto tree.
+func LoadLayoutSpecFile(path string, tree *WindowTree, catalog map[string]PaneBuffer) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	spec, err := UnmarshalLayoutSpecJSON(raw)
+	if err != nil {
+		return err
+	}
+	return ApplyLayoutSpec(tree, spec, catalog)
 }
