@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/device"
 )
@@ -126,6 +127,7 @@ type MobileCompanionApp struct {
 	Device          MobileDeviceSpec
 	Theme           schema.UITheme
 	Transcript      *TranscriptController
+	Windows         *shell.WindowTree
 	OnSendPrompt    func(prompt string)
 	OnCancelTurn    func()
 	OnGateDecision  func(gateID string, approve bool)
@@ -225,7 +227,11 @@ func (m *MobileCompanionApp) AppendMobileMessage(fromUser bool, sender, text, me
 
 // SetThemePreset applies one of Marlin's 5 curated themes to the mobile shell.
 func (m *MobileCompanionApp) SetThemePreset(id string) {
-	preset := ThemeByID(id)
+	m.ApplyCustomTheme(ThemeByID(id))
+}
+
+// ApplyCustomTheme applies any Official Marketplace ThemePreset to the mobile shell.
+func (m *MobileCompanionApp) ApplyCustomTheme(preset ThemePreset) {
 	m.mu.Lock()
 	m.themePresetID = preset.ID
 	m.Theme = preset.Base
@@ -813,6 +819,56 @@ func (m *MobileCompanionApp) renderPacksTab(
 			}
 		})
 	})
+
+	// Shared Workspace Tabs & 0MB Memory Saver card (synced live with Desktop/Web WindowTree).
+	if m.Windows != nil {
+		wsnap := m.Windows.Snapshot()
+		allTabs := m.Windows.AllTabs()
+		ui.Text(c, "WORKSPACE TABS & MEMORY SAVER").FontSize(10.5).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
+		AppleGlassCard(c, "mwintabs-card", dt, 20, 14, 6, func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, "Synced Tabs").FontSize(13).FontWeight(700).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				AppleBadgePill(c, fmt.Sprintf("%d active · %d sleep 0MB", wsnap.ActiveTabs, wsnap.HibernatedTabs), dt.Accent, dt)
+			})
+			limit := min(len(allTabs), 6)
+			for i := 0; i < limit; i++ {
+				entry := allTabs[i]
+				title := entry.Tab.Buffer.Title
+				if title == "" {
+					title = entry.Tab.Buffer.BufferID
+				}
+				glyph := "○"
+				tone := dt.InkMuted
+				if entry.Tab.State == shell.TabActive {
+					glyph = "●"
+					tone = dt.Success
+				} else if entry.Tab.State == shell.TabHibernated {
+					glyph = "☾"
+					tone = dt.Info
+				}
+				if entry.Tab.Pinned {
+					glyph = "★"
+				}
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Textf(c, "%s %s", glyph, title).FontSize(12).FontWeight(600).TextColor(toColor(dt.Ink))
+					AppleBadgePill(c, strings.ToUpper(string(entry.Tab.State)), tone, dt)
+					ui.Spacer(c)
+					if entry.Tab.State == shell.TabHibernated {
+						wakeKey := fmt.Sprintf("mob-tab-wake-%s-%d", entry.WindowID, entry.TabIndex)
+						if ApplePillButton(c, wakeKey, "Wake "+title, BtnTinted, dt, nil, true).Clicked() {
+							m.Windows.SelectTab(entry.WindowID, entry.TabIndex)
+						}
+					} else {
+						sleepKey := fmt.Sprintf("mob-tab-sleep-%s-%d", entry.WindowID, entry.TabIndex)
+						if ApplePillButton(c, sleepKey, "Sleep "+title, BtnGlass, dt, nil, true).Clicked() {
+							m.Windows.HibernateTab(entry.WindowID, entry.TabIndex)
+						}
+					}
+				})
+			}
+		})
+	}
 
 	ui.Text(c, "DECLARATIVE OTA PACKS (APP STORE 2.5.2 SAFE)").FontSize(10.5).FontWeight(700).LetterSpacing(0.6).TextColor(toColor(dt.InkMuted))
 	if denial != "" {

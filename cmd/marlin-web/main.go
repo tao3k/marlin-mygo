@@ -58,6 +58,21 @@ func main() {
 		}
 	}))
 	_ = slots.Declare(schema.SlotDeclaration{
+		SlotID:               "workbench.secondary",
+		Cardinality:          schema.SlotSingle,
+		FallbackRenderer:     "web.secondary",
+		AllowUntrustedPlugin: true,
+	}, mygoshell.NewUIElementRenderer("web.secondary", true, slots, func() schema.UIElement {
+		return schema.UIElement{
+			Kind:  schema.ElemPanel,
+			Title: "Composable Secondary Slot (WebAssembly)",
+			Tone:  schema.ToneInfo,
+			Children: []schema.UIElement{
+				{Kind: schema.ElemText, Spans: []schema.UISpan{{Text: "Use Marketplace -> Layouts -> Git + GitHub Composable Studio or SPC b + to stack tabs.", Tone: schema.ToneMuted}}},
+			},
+		}
+	}))
+	_ = slots.Declare(schema.SlotDeclaration{
 		SlotID:           "workbench.inspector",
 		Cardinality:      schema.SlotSingle,
 		FallbackRenderer: "web.dock",
@@ -114,7 +129,12 @@ func main() {
 		Slots:          slots,
 		Projection:     proj,
 	})
-	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout and theme tokens on Web deploy.")
+	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, and theme tokens on Web deploy.")
+	_, _ = adaptive.Windows.OpenTabInFocused(shell.PaneBuffer{
+		BufferID: "builtin:projection",
+		Title:    "Projection",
+		Kind:     "native-gpu",
+	})
 	adaptive.Mobile.SetPendingGates([]mygoshell.PendingGateView{
 		{
 			GateID:      "gate-web-1",

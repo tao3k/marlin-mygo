@@ -87,6 +87,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	preset := ThemeByID(cfg.InitialThemeID)
 
 	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace", Kind: "panel"}
+	bufSecondary := shell.PaneBuffer{BufferID: "slot:workbench.secondary", Title: "Secondary Panel", Kind: "panel"}
 	bufDock := shell.PaneBuffer{BufferID: "slot:workbench.inspector", Title: "Focus Dock", Kind: "wasm-gpu"}
 	bufChat := shell.PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
 	bufProj := shell.PaneBuffer{BufferID: "builtin:projection", Title: "Projection", Kind: "native-gpu"}
@@ -107,13 +108,15 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	desktop.Transcript = transcript
 	desktop.Projection = cfg.Projection
 	desktop.Windows = tree
-	desktop.WindowBuffers = []shell.PaneBuffer{bufMain, bufChat, bufProj, bufDock}
+	desktop.WindowBuffers = []shell.PaneBuffer{bufMain, bufSecondary, bufChat, bufProj, bufDock}
 	desktop.OnSelectPerspective = func(name string) {
 		tree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
 	}
+	_ = desktop.EnableEmacsWindowKeymap()
 
 	mobile := NewMobileCompanionAppForPlatform(cfg.MobilePlatform, "", cfg.BrandTitle)
 	mobile.Transcript = transcript
+	mobile.Windows = tree
 	mobile.SetThemePreset(preset.ID)
 
 	as := &AdaptiveShell{
@@ -126,6 +129,27 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 		wbGen:            1,
 		onTheme:          cfg.OnThemeChange,
 	}
+
+	mkt := NewMarketplaceController()
+	mkt.SetThemes(DefaultOfficialMarketplaceThemes())
+	mkt.SetLayouts(DefaultOfficialMarketplaceLayouts())
+	mkt.OnApplyTheme = func(item MarketplaceThemeItem) error {
+		app := AppearanceDark
+		if item.Appearance == "light" {
+			app = AppearanceLight
+		}
+		as.ApplyCustomTheme(ThemePreset{
+			ID:         item.ThemeID,
+			Name:       item.Name,
+			Appearance: app,
+			Base:       item.Base,
+		})
+		return nil
+	}
+	mkt.OnApplyLayout = func(item MarketplaceLayoutItem) error {
+		return desktop.ApplyLayoutSpec(item.Spec)
+	}
+	desktop.Marketplace = mkt
 
 	desktop.ActiveThemeNameFn = func() string {
 		as.mu.RLock()
@@ -167,10 +191,15 @@ func (a *AdaptiveShell) FormFactor() ShellFormFactor {
 	return a.formFactor
 }
 
-// ApplyThemePreset applies one curated theme preset across Desktop, Mobile, and
-// any registered WebView callback simultaneously.
+// ApplyThemePreset applies one curated built-in theme preset across Desktop,
+// Mobile, and any registered WebView callback simultaneously.
 func (a *AdaptiveShell) ApplyThemePreset(id string) DerivedTheme {
-	preset := ThemeByID(id)
+	return a.ApplyCustomTheme(ThemeByID(id))
+}
+
+// ApplyCustomTheme projects any Official Marketplace or custom ThemePreset
+// simultaneously across Desktop, Mobile (iOS/Android), and Web/WebView targets.
+func (a *AdaptiveShell) ApplyCustomTheme(preset ThemePreset) DerivedTheme {
 	a.mu.Lock()
 	a.theme = preset
 	a.wbGen++
@@ -188,7 +217,7 @@ func (a *AdaptiveShell) ApplyThemePreset(id string) DerivedTheme {
 		}
 	}
 	if a.Mobile != nil {
-		a.Mobile.SetThemePreset(preset.ID)
+		a.Mobile.ApplyCustomTheme(preset)
 	}
 	if cb != nil {
 		cb(dt)
