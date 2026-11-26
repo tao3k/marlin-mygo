@@ -417,3 +417,77 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 		t.Fatalf("expected immutable audit receipts recorded for interactive revoke, declassify, and retract, got %d", len(trail))
 	}
 }
+
+func TestTier0GovernanceConsoleCedarInspectorAndDelegationBuilder(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	ledger := features.NewGovernanceLedger(features.DefaultGovernancePolicy())
+	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   2,
+		BreakerTripEpoch: 1,
+		SynthesizedCedarRules: []mygoshell.SynthesizedCedarRule{
+			{PolicyID: "marlin.forbid.agent-privileged-governance", Source: `forbid (principal in Marlin::Role::"Agent", action in [Marlin::Action::"rearm_breaker"], resource);`},
+			{PolicyID: "marlin.permit.verified-human-governance", Source: `permit (principal in Marlin::Role::"VerifiedHuman", action in [Marlin::Action::"rearm_breaker"], resource) when { context.step_up_fresh == true };`},
+		},
+	})
+
+	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), ledger, features.NewHost())
+	govUI.AttachBackendAuthority(authBridge)
+	app.GovernanceUI = govUI
+	app.OpenGovernance()
+
+	tt := ui.NewTester(app.View, 1280, 960)
+	tt.Frame()
+	if !tt.HasText("Inspect Cedar Rules (2)") {
+		t.Fatalf("expected Inspect Cedar Rules (2) toggle, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Open Cedar Policy Inspector -> displays FORBID & PERMIT badges and full Cedar rule sources!
+	if err := tt.Click("Inspect Cedar Rules (2)"); err != nil {
+		t.Fatalf("click Inspect Cedar Rules: %v", err)
+	}
+	tt.Frame()
+	for _, want := range []string{
+		"SYNTHESIZED CEDAR POLICY SOURCE (FORBID OVERRIDES PERMIT)",
+		"FORBID",
+		"PERMIT",
+		`forbid (principal in Marlin::Role::"Agent", action in [Marlin::Action::"rearm_breaker"], resource);`,
+		"Run Custom Probe",
+		"Add Delegation",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected Cedar inspector to render %q, got %q", want, strings.Join(tt.Texts(), " | "))
+		}
+	}
+
+	// Run custom Cedar probe as verified human (ops-alice, rearm_breaker, workspace, step_up=true) -> CEDAR ALLOW!
+	govUI.SetProbeDraft("ops-alice", "rearm_breaker", "workspace", true)
+	tt.Frame()
+	if err := tt.Click("Run Custom Probe"); err != nil {
+		t.Fatalf("click Run Custom Probe: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("CEDAR ALLOW") || !tt.HasText("marlin.permit.verified-human-governance") {
+		t.Fatalf("expected CEDAR ALLOW for verified human probe, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Add live OBO delegation edge via Delegation Builder -> updates Delegations: 1 & logs audit receipt!
+	govUI.SetDelegationDraft("ops-root", "agent-coder")
+	tt.Frame()
+	if err := tt.Click("Add Delegation"); err != nil {
+		t.Fatalf("click Add Delegation: %v", err)
+	}
+	tt.Frame()
+	snap := authBridge.Snapshot()
+	if len(snap.FactDelegations) != 1 || snap.FactDelegations[0].Parent != "ops-root" || snap.FactDelegations[0].Child != "agent-coder" {
+		t.Fatalf("expected ops-root->agent-coder delegation recorded, got %+v", snap.FactDelegations)
+	}
+	if !tt.HasText("Delegations: 1") {
+		t.Fatalf("expected Delegations: 1 badge after Add Delegation, got %q", strings.Join(tt.Texts(), " | "))
+	}
+}

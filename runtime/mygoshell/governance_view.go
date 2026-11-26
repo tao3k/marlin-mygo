@@ -34,6 +34,7 @@ type GovernanceController struct {
 	stepUpVerified   bool
 	auditFilter      string // "all" | "admitted" | "denied" | "gate"
 	lastErr          string
+	inspector        governanceInspectorState
 
 	OnFeatureChanged func(id features.FeatureID, enabled bool)
 	OnEmergencyStop  func(tripped bool, epoch uint64)
@@ -79,6 +80,7 @@ func NewGovernanceController(reg *features.Registry, ledger *features.Governance
 		Ledger:      ledger,
 		Host:        host,
 		auditFilter: "all",
+		inspector:   defaultGovernanceInspectorState(),
 	}
 }
 
@@ -95,6 +97,7 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	stepUpOK := g.stepUpVerified
 	filter := g.auditFilter
 	lastErr := g.lastErr
+	inspState := g.inspector
 	onChanged := g.OnFeatureChanged
 	onEStop := g.OnEmergencyStop
 	g.mu.RUnlock()
@@ -129,6 +132,7 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 		retractPremise  string
 		sanitizeNode    string
 		probeCedar      bool
+		inspAct         governanceInspectorActions
 		nextFilter      = filter
 	)
 
@@ -272,7 +276,8 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 						ui.Text(c, detail).FontSize(10.5).TextColor(toColor(dt.InkSecondary))
 					})
 				}
-				if _, ok := backendAuth.(BackendGovernanceMutator); ok {
+				_, hasMutator := backendAuth.(BackendGovernanceMutator)
+				if hasMutator {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						if ApplePillButton(c, "gov-scheme-eval-incident", "Eval Incident", BtnGlass, dt, nil, true).Clicked() {
 							evalIncident = true
@@ -309,6 +314,7 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 						}
 					})
 				}
+				inspAct = renderGovernanceCedarInspector(c, dt, bsnap, hasMutator, &inspState)
 			})
 		}
 
@@ -458,6 +464,13 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 
 	g.mu.Lock()
 	g.auditFilter = nextFilter
+	if inspAct.toggleInspector {
+		inspState.showCedarInspector = !inspState.showCedarInspector
+	}
+	if inspAct.toggleStepUp {
+		inspState.probeStepUp = !inspState.probeStepUp
+	}
+	g.inspector = inspState
 	if verifyStepUp {
 		g.stepUpVerified = true
 		g.lastErr = ""
@@ -593,6 +606,41 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 			g.mu.Unlock()
 			if err == nil && snap.LastCedarProbe != nil {
 				ledger.RecordAudit("human-console", "cedar.probe", snap.LastCedarProbe.Decision, features.AuditAdmitted, strings.Join(snap.LastCedarProbe.MatchedPolicyIDs, ","))
+			}
+		}
+		if inspAct.runCustomProbe {
+			actor := strings.TrimSpace(inspState.probeActor)
+			action := strings.TrimSpace(inspState.probeAction)
+			res := strings.TrimSpace(inspState.probeResource)
+			if actor != "" && action != "" && res != "" {
+				snap, err := mut.CheckCedar(actor, action, res, inspState.probeStepUp)
+				g.mu.Lock()
+				if err != nil {
+					g.lastErr = err.Error()
+				} else {
+					g.lastErr = ""
+				}
+				g.mu.Unlock()
+				if err == nil && snap.LastCedarProbe != nil {
+					ledger.RecordAudit("human-console", actor+":"+action, snap.LastCedarProbe.Decision, features.AuditAdmitted, strings.Join(snap.LastCedarProbe.MatchedPolicyIDs, ","))
+				}
+			}
+		}
+		if inspAct.runAddDelegate {
+			parent := strings.TrimSpace(inspState.delegateParent)
+			child := strings.TrimSpace(inspState.delegateChild)
+			if parent != "" && child != "" {
+				snap, err := mut.DelegateActor(parent, child)
+				g.mu.Lock()
+				if err != nil {
+					g.lastErr = err.Error()
+				} else {
+					g.lastErr = ""
+				}
+				g.mu.Unlock()
+				if err == nil {
+					ledger.RecordAudit("human-console", parent+"->"+child, "delegate-actor", features.AuditAdmitted, fmt.Sprintf("edges-%d", len(snap.FactDelegations)))
+				}
 			}
 		}
 	}
