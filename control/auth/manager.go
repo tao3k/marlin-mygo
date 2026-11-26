@@ -471,16 +471,20 @@ func (m *AuthManager) SignOut(ctx context.Context, accountID AccountID) error {
 		return nil
 	}
 
-	if tok, found, err := m.vault.Load(ctx, accountID); err == nil && found && m.exchanger != nil && cfg.RevokeURL != "" {
-		revokeTarget := tok.RefreshToken
+	var revokeTarget string
+	if tok, found, err := m.vault.Load(ctx, accountID); err == nil && found {
+		revokeTarget = tok.RefreshToken
 		if revokeTarget == "" {
 			revokeTarget = tok.AccessToken
 		}
-		if revokeTarget != "" {
-			_ = m.exchanger.RevokeToken(ctx, cfg, revokeTarget)
-		}
 	}
+	// Crash-safe durable local revocation boundary (OAuthRevocationRecovery.qnt):
+	// scrub persisted tokens & profile on disk BEFORE remote RFC 7009 network I/O
+	// so a host crash mid-signout can never resurrect a revoked session on restart.
 	vaultErr := m.vault.Delete(ctx, accountID)
+	if revokeTarget != "" && m.exchanger != nil && cfg.RevokeURL != "" {
+		_ = m.exchanger.RevokeToken(ctx, cfg, revokeTarget)
+	}
 
 	m.mu.Lock()
 	delete(m.accounts, accountID)

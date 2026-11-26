@@ -124,6 +124,7 @@ func (m *AuthManager) CompleteDeviceAuth(ctx context.Context, providerID Provide
 		m.emit()
 		return AccountProfile{}, false, ErrAttemptExpired
 	}
+	expiresAt := m.pendingOAuth.ExpiresAt
 	startFlowEpoch := m.flowEpoch
 	m.mu.Unlock()
 
@@ -134,6 +135,23 @@ func (m *AuthManager) CompleteDeviceAuth(ctx context.Context, providerID Provide
 	}
 	if !ready {
 		return AccountProfile{}, false, nil
+	}
+	// Re-check device code expiry AFTER network poll to close concurrent TOCTOU
+	// (formally modeled by DeviceAuthorization.qnt: startDevicePoll -> expireDeviceCode -> finishDevicePoll).
+	if m.now().After(expiresAt) {
+		m.mu.Lock()
+		if m.flowEpoch == startFlowEpoch {
+			m.pendingOAuth = nil
+			m.pendingDeviceCode = ""
+			m.phase = PhaseError
+			m.lastError = ErrAttemptExpired.Error()
+		}
+		m.mu.Unlock()
+		if m.exchanger != nil && cfg.RevokeURL != "" && tokens.RefreshToken != "" {
+			_ = m.exchanger.RevokeToken(ctx, cfg, tokens.RefreshToken)
+		}
+		m.emit()
+		return AccountProfile{}, false, ErrAttemptExpired
 	}
 	acc, err := m.admitSignedInAccountIfCurrent(ctx, cfg, tokens, profile, startFlowEpoch)
 	if err != nil {
@@ -269,6 +287,17 @@ func (m *AuthManager) VerifyEmailLogin(ctx context.Context, codeOrToken string) 
 		m.mu.Unlock()
 		m.emit()
 		return AccountProfile{}, err
+	}
+	if m.now().After(challengeCopy.ExpiresAt) {
+		m.mu.Lock()
+		if m.flowEpoch == startFlowEpoch {
+			m.pendingEmail = nil
+			m.phase = PhaseError
+			m.lastError = ErrAttemptExpired.Error()
+		}
+		m.mu.Unlock()
+		m.emit()
+		return AccountProfile{}, ErrAttemptExpired
 	}
 	if profile.Email == "" {
 		profile.Email = challengeCopy.Email
