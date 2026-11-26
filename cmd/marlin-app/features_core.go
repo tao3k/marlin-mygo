@@ -45,6 +45,14 @@ func wireFeaturesAndGovernance(
 		}
 	}
 	ledger := features.NewGovernanceLedger(features.DefaultGovernancePolicy())
+	type governanceAware interface {
+		SetGovernanceLedger(*features.GovernanceLedger)
+	}
+	for _, mod := range compiledFeatureModules {
+		if ga, ok := mod.(governanceAware); ok {
+			ga.SetGovernanceLedger(ledger)
+		}
+	}
 	host := features.NewHost()
 
 	sel := features.ParseFeatureSpec(cfg.featuresSpec)
