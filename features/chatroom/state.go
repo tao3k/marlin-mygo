@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tao3k/marlin-mygo/engine/features"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 )
 
 var (
@@ -110,7 +111,9 @@ type RoomMessage struct {
 	Mentions     []string
 	Reactions    map[string][]string // tag -> sorted/ordered participant IDs
 	Pinned       bool
-	GateID       string // optional link to a Tier-0 PromptGate authorization
+	GateID       string                   // optional link to a Tier-0 PromptGate authorization
+	Delivery     resilience.DeliveryState // empty/ACKED for confirmed, QUEUED/FAILED when offline
+	SubmissionID string                   // stable client idempotency key for reconnect flush
 	CreatedAt    time.Time
 }
 
@@ -125,6 +128,7 @@ type RoomSnapshot struct {
 	Items           []RoomItem
 	CurrentActorID  string
 	LastError       string
+	Continuity      resilience.ResilienceSnapshot
 }
 
 // Controller manages thread-safe room projections, role-based permission checks,
@@ -132,6 +136,7 @@ type RoomSnapshot struct {
 type Controller struct {
 	mu              sync.RWMutex
 	ledger          *features.GovernanceLedger
+	Resilience      *resilience.SessionResilience
 	channels        []Channel
 	participants    map[string]Participant
 	participantOrd  []string
@@ -149,12 +154,16 @@ type Controller struct {
 	OnItemUpdated       func(item RoomItem)
 	OnPermissionChanged func(target Participant)
 	OnOpenGate          func(gateID string)
+	OnNeedResync        func(channelID, afterEventID string)
+	OnDraftChanged      func(scopeID, text string)
+	OnRetryOutbox       func(channelID string)
 }
 
 // NewController constructs a governed Multi-Role Agent Chat Room controller.
 func NewController(ledger *features.GovernanceLedger) *Controller {
 	c := &Controller{
 		ledger:       ledger,
+		Resilience:   resilience.NewSessionResilience(),
 		participants: make(map[string]Participant),
 	}
 	c.SeedDefaultWorkspace()
@@ -319,7 +328,15 @@ func (c *Controller) PostMessage(channelID, authorID, body, threadRootID string)
 		Body:         text,
 		Mentions:     extractHandles(text),
 		Reactions:    make(map[string][]string),
+		Delivery:     resilience.DeliveryAcked,
 		CreatedAt:    time.Now().UTC(),
+	}
+	res := c.Resilience
+	if res != nil && res.Snapshot("room:"+channelID).State == resilience.ConnOffline {
+		if qItem, qErr := res.Outbox.Enqueue("room:"+channelID, authorID, threadRootID, text); qErr == nil {
+			msg.Delivery = resilience.DeliveryQueued
+			msg.SubmissionID = qItem.SubmissionID
+		}
 	}
 	c.messages = append(c.messages, msg)
 	if channelID != c.activeChannelID {
@@ -328,10 +345,102 @@ func (c *Controller) PostMessage(channelID, authorID, body, threadRootID string)
 	c.lastError = ""
 	cb := c.OnMessagePosted
 	c.mu.Unlock()
-	if cb != nil {
+	if cb != nil && msg.Delivery != resilience.DeliveryQueued {
 		cb(msg)
 	}
 	return msg, nil
+}
+
+// IngestRemoteMessage idempotently applies a backend-pushed room message using
+// eventID deduplication and sequence-gap detection (triggering OnNeedResync).
+func (c *Controller) IngestRemoteMessage(eventID string, seq uint64, msg RoomMessage) (duplicate bool, gap bool) {
+	if msg.ChannelID == "" {
+		msg.ChannelID = c.activeChannelID
+	}
+	scope := "room:" + msg.ChannelID
+	if c.Resilience != nil {
+		dup, detectedGap := c.Resilience.AdmitEvent(scope, eventID, 0, seq)
+		if dup {
+			return true, false
+		}
+		gap = detectedGap
+	}
+
+	c.mu.Lock()
+	if msg.ID == "" {
+		c.msgSeq++
+		msg.ID = fmt.Sprintf("msg-%d", c.msgSeq)
+	}
+	msg.Delivery = resilience.DeliveryAcked
+	if msg.Reactions == nil {
+		msg.Reactions = make(map[string][]string)
+	}
+	if len(msg.Mentions) == 0 {
+		msg.Mentions = extractHandles(msg.Body)
+	}
+	// Replace matching optimistic queued message by SubmissionID if present.
+	replaced := false
+	if msg.SubmissionID != "" {
+		for i := range c.messages {
+			if c.messages[i].SubmissionID == msg.SubmissionID {
+				c.messages[i] = msg
+				replaced = true
+				break
+			}
+		}
+	}
+	if !replaced {
+		c.messages = append(c.messages, msg)
+	}
+	resyncCB := c.OnNeedResync
+	c.mu.Unlock()
+
+	if gap && resyncCB != nil {
+		after := ""
+		if c.Resilience != nil {
+			after = c.Resilience.Cursor(scope).LastEventID
+		}
+		resyncCB(msg.ChannelID, after)
+	}
+	return false, gap
+}
+
+// FlushOutbox delivers all queued/failed offline messages for channelID using
+// their original idempotent SubmissionIDs and updates optimistic message badges.
+func (c *Controller) FlushOutbox(channelID string, deliverFn func(item resilience.OutboxItem) error) (int, int) {
+	if c.Resilience == nil || c.Resilience.Outbox == nil {
+		return 0, 0
+	}
+	scope := ""
+	if channelID != "" {
+		scope = "room:" + channelID
+	}
+	acked, failed := c.Resilience.Outbox.Flush(scope, func(it resilience.OutboxItem) error {
+		if err := deliverFn(it); err != nil {
+			c.setMessageDelivery(it.SubmissionID, resilience.DeliveryFailed)
+			return err
+		}
+		c.setMessageDelivery(it.SubmissionID, resilience.DeliveryAcked)
+		return nil
+	})
+	if failed == 0 && acked > 0 {
+		c.Resilience.MarkOnline()
+	}
+	return acked, failed
+}
+
+func (c *Controller) setMessageDelivery(submissionID string, st resilience.DeliveryState) {
+	if submissionID == "" {
+		return
+	}
+	c.mu.Lock()
+	for i := range c.messages {
+		if c.messages[i].SubmissionID == submissionID {
+			c.messages[i].Delivery = st
+			break
+		}
+	}
+	c.mu.Unlock()
 }
 
 // ToggleReaction lets any permitted human or agent participant toggle a reaction mark.
@@ -554,6 +663,11 @@ func (c *Controller) Snapshot() RoomSnapshot {
 		if it.ChannelID == c.activeChannelID {
 			snap.Items = append(snap.Items, it)
 		}
+	}
+	if c.Resilience != nil {
+		snap.Continuity = c.Resilience.Snapshot("room:" + c.activeChannelID)
+	} else {
+		snap.Continuity = resilience.ResilienceSnapshot{State: resilience.ConnOnline}
 	}
 	return snap
 }

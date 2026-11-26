@@ -477,7 +477,16 @@ func wireLiveSession(
 			turnRef, err := turnCtrl.StartTurn(ctx, cfg.sessionID, prompt, after, subID)
 			if err != nil {
 				log.Printf("StartSessionTurn failed: %v", err)
+				if transcript.Resilience != nil {
+					scope := "chat:" + cfg.sessionID
+					transcript.Resilience.MarkOffline(err.Error())
+					_, _ = transcript.Resilience.Outbox.Enqueue(scope, "user", "", prompt)
+					markDirty()
+				}
 				return
+			}
+			if transcript.Resilience != nil {
+				transcript.Resilience.MarkOnline()
 			}
 			turnMu.Lock()
 			activeRef = turnRef
@@ -489,7 +498,19 @@ func wireLiveSession(
 				InitialBackoff: 50 * time.Millisecond,
 				MaxBackoff:     2 * time.Second,
 				MaxRetries:     8,
+				OnReconnect: func(attempt int, afterEventID string, rErr error) {
+					if transcript.Resilience != nil {
+						transcript.Resilience.MarkReconnecting("chat:"+cfg.sessionID, attempt, afterEventID, rErr)
+						markDirty()
+					}
+				},
 			}, func(upd grpcwire.TurnStreamUpdate) {
+				if transcript.Resilience != nil {
+					transcript.Resilience.MarkOnline()
+					if upd.EventID != "" {
+						transcript.Resilience.AdmitEvent("chat:"+cfg.sessionID, upd.EventID, upd.TurnOrdinal, 0)
+					}
+				}
 				if upd.TextDelta != "" {
 					transcript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
 					recordTokens(upd.TextDelta)

@@ -104,6 +104,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	var stopLiveSession func()
 	var stopVoiceCapture func()
+	var stopContinuity func()
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 
@@ -180,6 +181,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			}()
 		}
 		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
+		stopContinuity = wireDurableContinuity(ctx, cfg.sessionID, app, transcript, notifyCenter, win)
 		wireFeaturesAndGovernance(cfg, app, notifyCenter, win)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
@@ -308,6 +310,9 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	if err := mygo.App.Run(); err != nil {
 		return err
+	}
+	if stopContinuity != nil {
+		stopContinuity()
 	}
 	if stopVoiceCapture != nil {
 		stopVoiceCapture()

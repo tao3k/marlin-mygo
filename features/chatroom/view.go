@@ -13,6 +13,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -59,19 +60,67 @@ func NewView(ctrl *Controller) *View {
 	}
 }
 
-// SetDraft programmatically updates the main room message composer draft.
+// SetDraft programmatically updates the main room message composer draft and
+// persists it into Ctrl.Resilience for power-loss continuity.
 func (v *View) SetDraft(text string) {
 	v.mu.Lock()
 	v.draft = text
 	v.draftRev++
 	v.mu.Unlock()
+	if v.Ctrl != nil && v.Ctrl.Resilience != nil {
+		scope := "room:" + v.Ctrl.Snapshot().ActiveChannelID
+		v.Ctrl.Resilience.SetDraft(scope, text)
+		if v.Ctrl.OnDraftChanged != nil {
+			v.Ctrl.OnDraftChanged(scope, text)
+		}
+	}
 }
 
-// SetThreadDraft programmatically updates the active Thread drawer reply draft.
+// Draft returns the current room composer text buffer.
+func (v *View) Draft() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.draft
+}
+
+// SetThreadDraft programmatically updates the active Thread drawer reply draft
+// and persists it into Ctrl.Resilience for power-loss continuity.
 func (v *View) SetThreadDraft(text string) {
 	v.mu.Lock()
 	v.threadDraft = text
 	v.threadRev++
+	v.mu.Unlock()
+	if v.Ctrl != nil && v.Ctrl.Resilience != nil {
+		if tid := v.Ctrl.Snapshot().ActiveThreadID; tid != "" {
+			scope := "thread:" + tid
+			v.Ctrl.Resilience.SetDraft(scope, text)
+			if v.Ctrl.OnDraftChanged != nil {
+				v.Ctrl.OnDraftChanged(scope, text)
+			}
+		}
+	}
+}
+
+// RestoreDraftsFromResilience restores persisted room and thread drafts after restart.
+func (v *View) RestoreDraftsFromResilience() {
+	if v.Ctrl == nil || v.Ctrl.Resilience == nil {
+		return
+	}
+	snap := v.Ctrl.Snapshot()
+	roomSaved := v.Ctrl.Resilience.Draft("room:" + snap.ActiveChannelID)
+	threadSaved := ""
+	if snap.ActiveThreadID != "" {
+		threadSaved = v.Ctrl.Resilience.Draft("thread:" + snap.ActiveThreadID)
+	}
+	v.mu.Lock()
+	if roomSaved != "" {
+		v.draft = roomSaved
+		v.draftRev++
+	}
+	if threadSaved != "" {
+		v.threadDraft = threadSaved
+		v.threadRev++
+	}
 	v.mu.Unlock()
 }
 
@@ -181,6 +230,7 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 		transStatus   ItemStatus
 		rbacTargetID  string
 		rbacNextPerm  *RolePermissions
+		retryRoomQNow bool
 	)
 
 	root := ui.Column(c.Key("chatroom-root")).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
@@ -226,6 +276,23 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 
 		if snap.LastError != "" {
 			ui.Text(c, snap.LastError).FontSize(11.5).FontWeight(600).TextColor(rgbColor(dt.Danger))
+		}
+		if banner := snap.Continuity.BannerText(); banner != "" {
+			bTone := dt.Warning
+			if snap.Continuity.State == resilience.ConnOffline {
+				bTone = dt.Danger
+			}
+			ui.Row(c.Key("cr-continuity-banner")).Padding(6, 10).Gap(8).Radius(10).AlignItems(ui.Center).
+				Background(rgbaColor(bTone, 0.10)).Border(1, rgbaColor(bTone, 0.35)).Children(func() {
+				mygoshell.AppleBadgePill(c, string(snap.Continuity.State), bTone, dt)
+				ui.Text(c, banner).FontSize(11.5).FontWeight(600).TextColor(rgbColor(dt.Ink))
+				ui.Spacer(c)
+				if len(snap.Continuity.PendingOutbox) > 0 {
+					if mygoshell.ApplePillButton(c, "cr-retry-q", "Retry Queue", mygoshell.BtnTinted, dt, nil, true).Clicked() {
+						retryRoomQNow = true
+					}
+				}
+			})
 		}
 
 		// Main body: 3-column on Desktop, single active surface on Mobile.
@@ -308,6 +375,9 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 	}
 	if rbacTargetID != "" && rbacNextPerm != nil {
 		_ = v.Ctrl.UpdateRolePermissions(rbacTargetID, snap.CurrentActorID, *rbacNextPerm)
+	}
+	if retryRoomQNow && v.Ctrl.OnRetryOutbox != nil {
+		v.Ctrl.OnRetryOutbox(snap.ActiveChannelID)
 	}
 }
 
@@ -396,6 +466,13 @@ func (v *View) renderTimelineView(
 					}
 					if msg.Pinned {
 						mygoshell.AppleBadgePill(c, "PINNED", dt.Warning, dt)
+					}
+					if msg.Delivery == resilience.DeliveryQueued || msg.Delivery == resilience.DeliveryFailed {
+						dTone := dt.Warning
+						if msg.Delivery == resilience.DeliveryFailed {
+							dTone = dt.Danger
+						}
+						mygoshell.AppleBadgePill(c, string(msg.Delivery), dTone, dt)
 					}
 				})
 				ui.Text(c, msg.Body).FontSize(13).LineHeight(1.4).TextColor(rgbColor(dt.Ink))

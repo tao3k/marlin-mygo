@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/richtext"
 )
 
@@ -30,6 +31,16 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	modelLbl := tc.modelLabel
 	lastCopied := tc.lastCopiedKey
 	draft := tc.composerText
+	prevDraft := draft
+	composerRev := tc.composerRev
+	resCtrl := tc.Resilience
+	resScope := tc.ResilienceScope
+	if resScope == "" {
+		resScope = "chat:default"
+	}
+	retryOutboxFn := tc.OnRetryOutbox
+	discardOutboxFn := tc.OnDiscardOutbox
+	draftChangedFn := tc.OnDraftChanged
 	searchOpen := tc.searchOpen
 	searchQuery := tc.searchQuery
 	searchLastQ := tc.searchLastQuery
@@ -101,6 +112,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	streamLbl := streamMetrics.Label()
 	ctxLbl := ctxUsage.Label()
+	resSnap := resCtrl.Snapshot(resScope)
+	resBanner := resSnap.BannerText()
 
 	var (
 		toggleRow         = -1
@@ -138,6 +151,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			row, blockIdx, itemIdx int
 			nextCheck              string
 		}
+		retryOutboxNow  bool
+		discardOutboxID string
 	)
 
 	dt := derivedThemeFromUITheme(t)
@@ -193,6 +208,41 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				func() { stepSearchDelta = 1 },
 				func() { closeSearchNow = true },
 			)
+		}
+
+		// Live continuity & checkpoint recovery banner whenever offline, reconnecting, or outbox queued.
+		if resBanner != "" {
+			bannerTone := dt.Warning
+			if resSnap.State == resilience.ConnOffline {
+				bannerTone = dt.Danger
+			} else if resSnap.State == resilience.ConnReplaying {
+				bannerTone = dt.Info
+			}
+			ui.Column(c.Key("transcript-resilience-banner")).Padding(8, 10).Gap(6).Radius(10).
+				Background(rgbaFromRGB(bannerTone, 0.10)).
+				Border(1, rgbaFromRGB(bannerTone, 0.35)).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					AppleBadgePill(c, string(resSnap.State), bannerTone, dt)
+					ui.Text(c, resBanner).FontSize(12).FontWeight(600).TextColor(toColor(dt.Ink))
+					ui.Spacer(c)
+					if len(resSnap.PendingOutbox) > 0 {
+						if ApplePillButton(c, "transcript-retry-outbox", "Retry Queue", BtnTinted, dt, nil, true).Clicked() {
+							retryOutboxNow = true
+						}
+					}
+				})
+				for _, qit := range resSnap.PendingOutbox {
+					item := qit
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						AppleBadgePill(c, string(item.State), bannerTone, dt)
+						ui.Text(c, item.Text).FontSize(11.5).TextColor(toColor(dt.InkSecondary)).MaxLines(1)
+						ui.Spacer(c)
+						if ApplePillButton(c, "transcript-drop-"+item.SubmissionID, "Discard", BtnGlass, dt, nil, true).Clicked() {
+							discardOutboxID = item.SubmissionID
+						}
+					})
+				}
+			})
 		}
 
 		if len(visible) == 0 {
@@ -475,7 +525,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			}
 
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.TextInputBase(c.Key("transcript-composer"), &draft).
+				ui.TextInputBase(c.Key(fmt.Sprintf("transcript-composer-%d", composerRev)), &draft).
 					Placeholder("Message Marlin agent... (/ commands · @ context · attach image/PDF/code)").
 					FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(4, 2)
 			})
@@ -670,6 +720,25 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	if toggleRichCheck != nil {
 		tc.ToggleRichChecklistItem(toggleRichCheck.row, toggleRichCheck.blockIdx, toggleRichCheck.itemIdx, toggleRichCheck.nextCheck)
+	}
+	if draft != prevDraft {
+		if resCtrl != nil {
+			resCtrl.SetDraft(resScope, draft)
+		}
+		if draftChangedFn != nil {
+			draftChangedFn(resScope, draft)
+		}
+	}
+	if discardOutboxID != "" {
+		if resCtrl != nil && resCtrl.Outbox != nil {
+			resCtrl.Outbox.Discard(discardOutboxID)
+		}
+		if discardOutboxFn != nil {
+			discardOutboxFn(discardOutboxID)
+		}
+	}
+	if retryOutboxNow && retryOutboxFn != nil {
+		retryOutboxFn()
 	}
 	if toggleRow >= 0 {
 		tc.ToggleFold(toggleRow)

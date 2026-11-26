@@ -87,6 +87,7 @@ fuzz-smoke time="2s":
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzSanitizeFilename -fuzztime={{time}} ./engine/composer
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzActiveMentionQuery -fuzztime={{time}} ./engine/composer
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeIRJSON -fuzztime={{time}} ./engine/richtext
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeRecoverySnapshot -fuzztime={{time}} ./engine/resilience
 
 # Run TypeScript panel SDK checks and tests via Bun.
 test-ts:

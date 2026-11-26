@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 )
 
@@ -67,6 +68,35 @@ func wireWebMultimodalCapture(transcript *mygoshell.TranscriptController, win *m
 	}
 	transcript.OnPasteAttachment = func() {
 		readBrowserClipboard(transcript, invalidate)
+	}
+	wireWebDraftContinuity(transcript)
+}
+
+const webRecoveryStorageKey = "marlin.recovery.v1"
+
+// wireWebDraftContinuity persists unsent chat drafts and resume cursors into
+// window.localStorage so sudden tab crashes or power loss restore composer text.
+func wireWebDraftContinuity(transcript *mygoshell.TranscriptController) {
+	if transcript == nil || transcript.Resilience == nil {
+		return
+	}
+	ls := js.Global().Get("localStorage")
+	if !ls.Truthy() {
+		return
+	}
+	const scope = "chat:web-session-1"
+	if rawVal := ls.Call("getItem", webRecoveryStorageKey); rawVal.Truthy() {
+		if snap, err := resilience.DecodeRecoverySnapshot([]byte(rawVal.String())); err == nil {
+			_ = transcript.Resilience.ImportSnapshot(snap)
+			transcript.RestoreDraftFromResilience(scope)
+		}
+	} else {
+		transcript.ResilienceScope = scope
+	}
+	transcript.OnDraftChanged = func(_, _ string) {
+		if raw, err := resilience.EncodeRecoverySnapshot(transcript.Resilience.ExportSnapshot()); err == nil {
+			ls.Call("setItem", webRecoveryStorageKey, string(raw))
+		}
 	}
 }
 

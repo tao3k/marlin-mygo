@@ -400,3 +400,29 @@ func (tc *TranscriptController) ToggleRichChecklistItem(row, blockIdx, itemIdx i
 	}
 	return true
 }
+
+// RestoreDraftFromResilience binds tc.ResilienceScope and restores any
+// crash-persisted unsent composer text straight back into the chat input box.
+func (tc *TranscriptController) RestoreDraftFromResilience(scopeID string) string {
+	tc.mu.Lock()
+	if scopeID != "" {
+		tc.ResilienceScope = scopeID
+	}
+	scope := tc.ResilienceScope
+	if scope == "" {
+		scope = "chat:default"
+	}
+	res := tc.Resilience
+	tc.mu.Unlock()
+	if res == nil {
+		return ""
+	}
+	saved := res.Draft(scope)
+	if saved != "" {
+		tc.mu.Lock()
+		tc.composerText = saved
+		tc.composerRev++
+		tc.mu.Unlock()
+	}
+	return saved
+}

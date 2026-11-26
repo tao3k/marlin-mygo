@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/richtext"
 	"github.com/tao3k/marlin-mygo/engine/viewport"
 )
@@ -132,16 +133,19 @@ type TranscriptController struct {
 	viewportH     uint64
 	wrapCols      int
 	autoFollow    bool
-	composerText  string
-	activeTurn    uint64
-	inFlight      bool
-	deepThink     bool
-	modelLabel    string
-	lastCopiedKey string
-	Composer      *composer.State
-	Voice         *composer.VoiceController
-	contextUsage  composer.ContextUsage
-	streamMetrics *composer.StreamMetrics
+	composerText    string
+	composerRev     uint64
+	activeTurn      uint64
+	inFlight        bool
+	deepThink       bool
+	modelLabel      string
+	lastCopiedKey   string
+	Composer        *composer.State
+	Voice           *composer.VoiceController
+	Resilience      *resilience.SessionResilience
+	ResilienceScope string
+	contextUsage    composer.ContextUsage
+	streamMetrics   *composer.StreamMetrics
 
 	// Thin Backend-Delegated Callbacks (Rust owns search index, context mentions, and CAS upload).
 	OnCopyCode        func(code string)
@@ -158,6 +162,9 @@ type TranscriptController struct {
 	OnSearchSession   func(query string) []SessionSearchHit
 	OnRetryTurn       func(turnOrdinal uint64)
 	OnForkTurn        func(turnOrdinal uint64)
+	OnDraftChanged    func(scopeID, text string)
+	OnRetryOutbox     func()
+	OnDiscardOutbox   func(submissionID string)
 	// Optional external parser hook backed by org-rz1 WASM or the Rust backend
 	// for rendering rich Org-mode / Markdown previews without Go-side parsing.
 	OnParseRichDoc    func(format richtext.Format, docID, source string) ([]richtext.Block, error)
@@ -199,11 +206,13 @@ func NewTranscriptController() *TranscriptController {
 		viewportH:     defaultTranscriptViewportH,
 		wrapCols:      defaultTranscriptWrapCols,
 		autoFollow:    true,
-		Composer:      composer.NewState(composer.DefaultAttachmentPolicy()),
-		Voice:         composer.NewVoiceController(),
-		streamMetrics: &composer.StreamMetrics{},
-		thumbs:        NewAttachmentThumbCache(32),
-		richFolded:    make(map[string]bool),
+		Composer:        composer.NewState(composer.DefaultAttachmentPolicy()),
+		Voice:           composer.NewVoiceController(),
+		Resilience:      resilience.NewSessionResilience(),
+		ResilienceScope: "chat:default",
+		streamMetrics:   &composer.StreamMetrics{},
+		thumbs:          NewAttachmentThumbCache(32),
+		richFolded:      make(map[string]bool),
 	}
 }
 
@@ -615,8 +624,22 @@ func (tc *TranscriptController) ComposerText() string {
 
 func (tc *TranscriptController) SetComposerText(text string) {
 	tc.mu.Lock()
+	changed := tc.composerText != text
 	tc.composerText = text
+	tc.composerRev++
+	res := tc.Resilience
+	scope := tc.ResilienceScope
+	if scope == "" {
+		scope = "chat:default"
+	}
+	onDraft := tc.OnDraftChanged
 	tc.mu.Unlock()
+	if res != nil {
+		res.SetDraft(scope, text)
+	}
+	if changed && onDraft != nil {
+		onDraft(scope, text)
+	}
 }
 
 // DeepThinkEnabled reports whether the composer's DeepSeek-style Deep Think toggle is active.
