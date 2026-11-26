@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo"
 
+	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -41,6 +42,7 @@ func wireDurableContinuity(
 	sessionID string,
 	app *mygoshell.WorkbenchApp,
 	transcript *mygoshell.TranscriptController,
+	switcher *grpcwire.SwitchableTargetProvider,
 	notifyCenter *notify.Center,
 	win *mygo.Window,
 ) func() {
@@ -88,6 +90,33 @@ func wireDurableContinuity(
 		saveMu.Unlock()
 	}
 
+	coordCfg := grpcwire.ContinuityConfig{
+		ScopeID:        scope,
+		Resilience:     transcript.Resilience,
+		Provider:       switcher,
+		InitialBackoff: 200 * time.Millisecond,
+		MaxBackoff:     5 * time.Second,
+		DeliverFn: func(_ context.Context, it resilience.OutboxItem) error {
+			if app == nil || app.OnSendPrompt == nil {
+				return nil
+			}
+			app.OnSendPrompt(it.Text)
+			return nil
+		},
+		OnStateChanged: func(_ resilience.ResilienceSnapshot) {
+			scheduleSave()
+			if win != nil {
+				win.Invalidate()
+			}
+		},
+	}
+	if switcher == nil {
+		// Standalone preview mode has no live gRPC target; treat probe as healthy.
+		coordCfg.ProbeFn = func(_ context.Context) error { return nil }
+	}
+	coord := grpcwire.NewContinuityCoordinator(coordCfg)
+	go coord.Run(ctx)
+
 	transcript.OnDraftChanged = func(_, _ string) {
 		scheduleSave()
 	}
@@ -98,20 +127,7 @@ func wireDurableContinuity(
 		}
 	}
 	transcript.OnRetryOutbox = func() {
-		go func() {
-			if app == nil || app.OnSendPrompt == nil {
-				return
-			}
-			transcript.Resilience.Outbox.Flush(scope, func(it resilience.OutboxItem) error {
-				app.OnSendPrompt(it.Text)
-				return nil
-			})
-			transcript.Resilience.MarkOnline()
-			saveNow()
-			if win != nil {
-				win.Invalidate()
-			}
-		}()
+		coord.TriggerReconnect("manual outbox retry")
 	}
 
 	go func() {

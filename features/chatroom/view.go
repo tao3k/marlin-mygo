@@ -13,6 +13,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -163,6 +164,25 @@ func (m *Module) SetResilience(r *resilience.SessionResilience, onDraftChanged f
 	m.View.RestoreDraftsFromResilience()
 }
 
+// SetPromptGate attaches Marlin's Tier-0 PromptGate queue and focus callback
+// so high-risk room actions trigger ESC-unbypassable human sign-off.
+func (m *Module) SetPromptGate(q *promptgate.Queue, onOpenGate func(gateID string)) {
+	if m == nil || m.View == nil || m.View.Ctrl == nil {
+		return
+	}
+	m.View.Ctrl.SetPromptGateQueue(q)
+	m.View.Ctrl.OnOpenGate = onOpenGate
+}
+
+// ApplyGateDecision writes a resolved Tier-0 PromptGate receipt back into the
+// originating Chat Room thread and linked Matter.
+func (m *Module) ApplyGateDecision(req promptgate.PromptRequest, resp promptgate.PromptResponse) {
+	if m == nil || m.View == nil || m.View.Ctrl == nil {
+		return
+	}
+	_, _, _ = m.View.Ctrl.ApplyGateDecision(req, resp, "")
+}
+
 func (m *Module) Meta() features.FeatureMeta {
 	return features.FeatureMeta{
 		ID:                   features.FeatureChatRoom,
@@ -242,6 +262,7 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 		rbacTargetID  string
 		rbacNextPerm  *RolePermissions
 		retryRoomQNow bool
+		openGateID    string
 	)
 
 	root := ui.Column(c.Key("chatroom-root")).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
@@ -266,6 +287,9 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					mygoshell.AppleBadgePill(c, "AGENT ROOM", dt.Accent, dt)
 					ui.Text(c, activeChannel.Name).FontSize(14).FontWeight(700).TextColor(rgbColor(dt.Ink))
+					if n := v.Ctrl.PendingGateCount(); n > 0 {
+						mygoshell.AppleBadgePill(c, fmt.Sprintf("GATE %d", n), dt.Warning, dt)
+					}
 				})
 				if chosen := mygoshell.AppleSegmentedControl(c, "cr-tabs", segs, string(tab), dt, true); chosen != "" {
 					nextTab = ViewTab(chosen)
@@ -275,6 +299,9 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				mygoshell.AppleBadgePill(c, "AGENT ROOM", dt.Accent, dt)
 				ui.Text(c, activeChannel.Name).FontSize(14).FontWeight(700).TextColor(rgbColor(dt.Ink))
+				if n := v.Ctrl.PendingGateCount(); n > 0 {
+					mygoshell.AppleBadgePill(c, fmt.Sprintf("%d GATE PENDING", n), dt.Warning, dt)
+				}
 				if activeChannel.Topic != "" {
 					ui.Text(c, activeChannel.Topic).FontSize(11.5).TextColor(rgbColor(dt.InkMuted))
 				}
@@ -323,7 +350,7 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 				case tab == TabRoles:
 					v.renderRolesGovernanceView(c, dt, snap, &rbacTargetID, &rbacNextPerm)
 				default:
-					v.renderTimelineView(c, dt, snap, partsByID, &draft, draftRev, &appendMention, &sendMainMsg, &openThreadID, &reactMsgID, &reactTag, compact)
+					v.renderTimelineView(c, dt, snap, partsByID, &draft, draftRev, &appendMention, &sendMainMsg, &openThreadID, &reactMsgID, &reactTag, &openGateID, compact)
 				}
 			})
 
@@ -390,6 +417,9 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 	if retryRoomQNow && v.Ctrl.OnRetryOutbox != nil {
 		v.Ctrl.OnRetryOutbox(snap.ActiveChannelID)
 	}
+	if openGateID != "" && v.Ctrl.OnOpenGate != nil {
+		v.Ctrl.OnOpenGate(openGateID)
+	}
 }
 
 func (v *View) renderLeftRail(
@@ -451,6 +481,7 @@ func (v *View) renderTimelineView(
 	openThreadID *string,
 	reactMsgID *string,
 	reactTag *string,
+	openGateID *string,
 	compact bool,
 ) {
 	ui.Column(c).Grow(1).MinWidth(0).Gap(8).AlignItems(ui.Stretch).Children(func() {
@@ -503,6 +534,23 @@ func (v *View) renderTimelineView(
 					}
 					if mygoshell.ApplePillButton(c, "cr-th-"+msg.ID, thLbl, mygoshell.BtnTinted, dt, nil, true).Clicked() {
 						*openThreadID = msg.ID
+					}
+					if msg.GateID != "" {
+						if rec, ok := v.Ctrl.GateReceipt(msg.GateID); ok {
+							gTone := dt.Warning
+							switch rec.Status {
+							case GateStatusApproved:
+								gTone = dt.Success
+							case GateStatusRejected:
+								gTone = dt.Danger
+							}
+							mygoshell.AppleBadgePill(c, "GATE "+string(rec.Status), gTone, dt)
+							if rec.Status == GateStatusPending {
+								if mygoshell.ApplePillButton(c, "cr-gate-"+msg.ID, "Review Gate", mygoshell.BtnPrimary, dt, nil, true).Clicked() {
+									*openGateID = msg.GateID
+								}
+							}
+						}
 					}
 				})
 			})

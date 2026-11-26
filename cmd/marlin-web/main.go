@@ -139,7 +139,8 @@ func main() {
 		Auth:           webAuth,
 	})
 	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, multimodal composer, and theme tokens on Web deploy.")
-	wireWebFeaturesAndGovernance(adaptive)
+	webContinuity := initWebDurableContinuity(adaptive)
+	wireWebFeaturesAndGovernance(adaptive, webContinuity.onDraftChanged)
 	adaptive.Desktop.Transcript.SetContextUsage(0, 200_000)
 	_, _ = adaptive.Desktop.Transcript.AttachFile(composer.AttachmentInput{
 		Filename: "adaptive_shell.go",
@@ -209,6 +210,7 @@ func main() {
 			Content: ui.View(adaptive.View),
 		})
 		wireWebMultimodalCapture(adaptive.Desktop.Transcript, win)
+		webContinuity.setWindow(win)
 		win.Invalidate()
 	})
 	if err := mygo.App.Run(); err != nil {

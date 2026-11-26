@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tao3k/marlin-mygo/engine/features"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/resilience"
 )
 
@@ -136,6 +137,9 @@ type RoomSnapshot struct {
 type Controller struct {
 	mu              sync.RWMutex
 	ledger          *features.GovernanceLedger
+	promptGates     *promptgate.Queue
+	gateReceipts    map[string]GateReceiptRecord
+	gateSeq         uint64
 	Resilience      *resilience.SessionResilience
 	channels        []Channel
 	participants    map[string]Participant
@@ -163,6 +167,7 @@ type Controller struct {
 func NewController(ledger *features.GovernanceLedger) *Controller {
 	c := &Controller{
 		ledger:       ledger,
+		gateReceipts: make(map[string]GateReceiptRecord),
 		Resilience:   resilience.NewSessionResilience(),
 		participants: make(map[string]Participant),
 	}

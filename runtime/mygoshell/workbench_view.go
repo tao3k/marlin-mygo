@@ -785,6 +785,12 @@ func (a *WorkbenchApp) OpenGovernance() {
 	a.gateOpen = false
 }
 
+// OpenCommandPalette opens Marlin's fuzzy Command Palette overlay.
+func (a *WorkbenchApp) OpenCommandPalette() {
+	a.paletteOpen = true
+	a.paletteQuery = ""
+}
+
 // IsGovernanceOpen reports whether the Tier-0 Governance Console modal is visible.
 func (a *WorkbenchApp) IsGovernanceOpen() bool { return a.governanceOpen }
 

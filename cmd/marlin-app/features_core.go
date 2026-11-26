@@ -58,12 +58,25 @@ func wireFeaturesAndGovernance(
 	type resilienceAware interface {
 		SetResilience(*resilience.SessionResilience, func(scopeID, text string))
 	}
+	type promptGateAware interface {
+		SetPromptGate(*promptgate.Queue, func(gateID string))
+		ApplyGateDecision(promptgate.PromptRequest, promptgate.PromptResponse)
+	}
+	var gateReceivers []promptGateAware
 	for _, mod := range compiledFeatureModules {
 		if ga, ok := mod.(governanceAware); ok {
 			ga.SetGovernanceLedger(ledger)
 		}
 		if resAware, ok := mod.(resilienceAware); ok && app != nil && app.Transcript != nil && app.Transcript.Resilience != nil {
 			resAware.SetResilience(app.Transcript.Resilience, app.Transcript.OnDraftChanged)
+		}
+		if pgAware, ok := mod.(promptGateAware); ok && app != nil && app.PromptGate != nil {
+			pgAware.SetPromptGate(app.PromptGate.Queue, func(_ string) {
+				if win != nil {
+					win.Invalidate()
+				}
+			})
+			gateReceivers = append(gateReceivers, pgAware)
 		}
 		if ra, ok := mod.(revisionAware); ok {
 			ra.SetRevisionHandler(func(docID string, version int, instruction string) {
@@ -137,6 +150,9 @@ func wireFeaturesAndGovernance(
 					outcome = features.AuditDenied
 				}
 				ledger.RecordAudit("user", req.ID, string(resp.Action), outcome, resp.IdempotencyKey)
+				for _, recv := range gateReceivers {
+					recv.ApplyGateDecision(req, resp)
+				}
 				if prevResolve != nil {
 					prevResolve(req, resp)
 				}

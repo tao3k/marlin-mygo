@@ -139,12 +139,13 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		wireWindowTabLazyLifecycle(ctx, app, lazySess, syncMarketplace, cfg.idleReapInterval, win)
 		startDevPluginWatcher(ctx, cfg.devPluginDir, host, mktUI, win)
 
+		var switcher *grpcwire.SwitchableTargetProvider
 		if conn.provider != nil {
 			initialID := "local-app-server"
 			if conn.liveTarget != nil {
 				initialID = conn.liveTarget.Meta().ID
 			}
-			switcher := grpcwire.NewSwitchableTargetProvider(initialID, conn.provider)
+			switcher = grpcwire.NewSwitchableTargetProvider(initialID, conn.provider)
 			wireFederationTargetSwitching(ctx, app, targets, federation, switcher, notifyCenter, win)
 			stopLiveSession = wireLiveSession(ctx, cfg, switcher, wb, federation, host, app, transcript, win, fireHook, publishProjection)
 		} else {
@@ -181,7 +182,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			}()
 		}
 		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
-		stopContinuity = wireDurableContinuity(ctx, cfg.sessionID, app, transcript, notifyCenter, win)
+		stopContinuity = wireDurableContinuity(ctx, cfg.sessionID, app, transcript, switcher, notifyCenter, win)
 		wireFeaturesAndGovernance(cfg, app, notifyCenter, win)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
