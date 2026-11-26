@@ -216,6 +216,17 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 					ui.Textf(c, "Synthesized Cedar: %s", strings.Join(ids, " · ")).
 						FontSize(11).TextColor(toColor(dt.InkSecondary))
 				}
+				if bsnap.RearmGateID != "" || bsnap.LastEventNote != "" {
+					metaParts := make([]string, 0, 2)
+					if bsnap.RearmGateID != "" {
+						metaParts = append(metaParts, "One-Shot Gate: "+bsnap.RearmGateID)
+					}
+					if bsnap.LastEventNote != "" {
+						metaParts = append(metaParts, bsnap.LastEventNote)
+					}
+					ui.Text(c, strings.Join(metaParts, " · ")).
+						FontSize(10.5).TextColor(toColor(dt.InkMuted))
+				}
 			})
 		}
 

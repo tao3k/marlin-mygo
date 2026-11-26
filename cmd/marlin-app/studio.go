@@ -105,6 +105,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 	var stopLiveSession func()
 	var stopVoiceCapture func()
 	var stopContinuity func()
+	var stopGovernance func()
 	var mounted atomic.Bool
 	app.PluginMountedFn = mounted.Load
 
@@ -183,7 +184,11 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		}
 		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
 		stopContinuity = wireDurableContinuity(ctx, cfg.sessionID, app, transcript, switcher, notifyCenter, win)
-		wireFeaturesAndGovernance(cfg, app, notifyCenter, win)
+		var govProvider grpcwire.TargetProvider
+		if switcher != nil {
+			govProvider = switcher
+		}
+		_, _, _, stopGovernance = wireFeaturesAndGovernance(ctx, cfg, govProvider, app, notifyCenter, win)
 		mygoshell.BindDefaultHelmSources(app, nil)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
@@ -312,6 +317,9 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 
 	if err := mygo.App.Run(); err != nil {
 		return err
+	}
+	if stopGovernance != nil {
+		stopGovernance()
 	}
 	if stopContinuity != nil {
 		stopContinuity()

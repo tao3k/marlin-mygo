@@ -28,6 +28,8 @@ type BackendHigherOrderSnapshot struct {
 	BreakerTripEpoch      uint64
 	BreakerBudgetUsed     uint32
 	BreakerActiveLeases   int
+	RearmGateID           string
+	LastEventNote         string
 	AssessmentDigest      string
 	TaintProofDigest      string
 	FixpointProofDigest   string

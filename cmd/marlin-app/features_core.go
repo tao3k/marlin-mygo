@@ -7,11 +7,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 
 	"github.com/egoist/mygo"
 
+	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
@@ -34,11 +36,13 @@ func registerCompiledFeature(mod features.FeatureModule) {
 // Tier-0 UI Governance Console, evaluates `-features` against GovernancePolicy,
 // and mounts admitted feature buffers/commands onto WorkbenchApp.
 func wireFeaturesAndGovernance(
+	ctx context.Context,
 	cfg appConfig,
+	provider grpcwire.TargetProvider,
 	app *mygoshell.WorkbenchApp,
 	notifyCenter *notify.Center,
 	win *mygo.Window,
-) (*features.Registry, *features.GovernanceLedger, *features.Host) {
+) (*features.Registry, *features.GovernanceLedger, *features.Host, func()) {
 	reg := features.NewRegistry()
 	for _, mod := range compiledFeatureModules {
 		if err := reg.RegisterCompiled(mod); err != nil {
@@ -122,6 +126,30 @@ func wireFeaturesAndGovernance(
 	syncHostToApp()
 
 	govUI := mygoshell.NewGovernanceController(reg, ledger, host)
+	var stopGovernance func()
+	if provider != nil {
+		rustGovAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
+			Provider:  provider,
+			ProjectID: "default",
+			SessionID: cfg.sessionID,
+			OnSnapshot: func(mygoshell.BackendHigherOrderSnapshot) {
+				if win != nil {
+					win.Invalidate()
+				}
+			},
+		})
+		govUI.AttachBackendAuthority(rustGovAuth)
+		_ = rustGovAuth.Start(ctx)
+		stopGovernance = rustGovAuth.Stop
+	} else {
+		govUI.AttachBackendAuthority(mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendHigherOrderSnapshot{
+			Admitted:         true,
+			RevocationEpoch:  1,
+			PolicyRevision:   1,
+			BreakerTripEpoch: 1,
+			LastEventNote:    "standalone preview (connect -host or marlin-scheme-host for live Rust+Scheme authority)",
+		}))
+	}
 	govUI.OnFeatureChanged = func(id features.FeatureID, enabled bool) {
 		syncHostToApp()
 		if notifyCenter != nil {
@@ -159,5 +187,5 @@ func wireFeaturesAndGovernance(
 			}
 		}
 	}
-	return reg, ledger, host
+	return reg, ledger, host, stopGovernance
 }
