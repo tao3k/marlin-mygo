@@ -101,6 +101,13 @@ func (d *dedupRing) admit(id string) bool {
 	return true
 }
 
+// DraftMention is a lightweight persisted `@` context reference restored with unsent drafts.
+type DraftMention struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	Label  string `json:"label"`
+}
+
 // SessionResilience coordinates live connection state, per-scope checkpoint
 // cursors, duplicate suppression, sequence-gap detection, drafts, and Outbox.
 type SessionResilience struct {
@@ -111,17 +118,19 @@ type SessionResilience struct {
 	cursors          map[string]ScopeCursor
 	dedups           map[string]*dedupRing
 	drafts           map[string]string
+	mentions         map[string][]DraftMention
 	Outbox           *Outbox
 }
 
 // NewSessionResilience constructs an online continuity coordinator.
 func NewSessionResilience() *SessionResilience {
 	return &SessionResilience{
-		state:   ConnOnline,
-		cursors: make(map[string]ScopeCursor),
-		dedups:  make(map[string]*dedupRing),
-		drafts:  make(map[string]string),
-		Outbox:  NewOutbox(),
+		state:    ConnOnline,
+		cursors:  make(map[string]ScopeCursor),
+		dedups:   make(map[string]*dedupRing),
+		drafts:   make(map[string]string),
+		mentions: make(map[string][]DraftMention),
+		Outbox:   NewOutbox(),
 	}
 }
 
@@ -249,6 +258,27 @@ func (r *SessionResilience) Draft(scopeID string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.drafts[scopeID]
+}
+
+// SetDraftMentions stores lightweight `@` context mentions staged alongside an unsent draft.
+func (r *SessionResilience) SetDraftMentions(scopeID string, list []DraftMention) {
+	if scopeID == "" {
+		return
+	}
+	r.mu.Lock()
+	if len(list) == 0 {
+		delete(r.mentions, scopeID)
+	} else {
+		r.mentions[scopeID] = append([]DraftMention(nil), list...)
+	}
+	r.mu.Unlock()
+}
+
+// DraftMentions returns any persisted `@` context mentions for scopeID.
+func (r *SessionResilience) DraftMentions(scopeID string) []DraftMention {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]DraftMention(nil), r.mentions[scopeID]...)
 }
 
 // Snapshot returns an immutable continuity snapshot for scopeID.

@@ -27,11 +27,12 @@ var (
 // frontend crash continuity (unsent drafts, unacknowledged outbox items, and
 // checkpoint cursors). Never stores durable conversation history or credentials.
 type RecoverySnapshot struct {
-	Version int                    `json:"version"`
-	SavedAt time.Time              `json:"saved_at"`
-	Cursors map[string]ScopeCursor `json:"cursors,omitempty"`
-	Drafts  map[string]string      `json:"drafts,omitempty"`
-	Outbox  []OutboxItem           `json:"outbox,omitempty"`
+	Version  int                       `json:"version"`
+	SavedAt  time.Time                 `json:"saved_at"`
+	Cursors  map[string]ScopeCursor    `json:"cursors,omitempty"`
+	Drafts   map[string]string         `json:"drafts,omitempty"`
+	Mentions map[string][]DraftMention `json:"mentions,omitempty"`
+	Outbox   []OutboxItem              `json:"outbox,omitempty"`
 }
 
 // ExportSnapshot captures an immutable RecoverySnapshot from r.
@@ -45,14 +46,19 @@ func (r *SessionResilience) ExportSnapshot() RecoverySnapshot {
 	for k, v := range r.drafts {
 		drafts[k] = v
 	}
+	mentions := make(map[string][]DraftMention, len(r.mentions))
+	for k, v := range r.mentions {
+		mentions[k] = append([]DraftMention(nil), v...)
+	}
 	r.mu.RUnlock()
 
 	return RecoverySnapshot{
-		Version: RecoverySchemaVersion,
-		SavedAt: time.Now().UTC(),
-		Cursors: cursors,
-		Drafts:  drafts,
-		Outbox:  r.Outbox.PendingForScope(""),
+		Version:  RecoverySchemaVersion,
+		SavedAt:  time.Now().UTC(),
+		Cursors:  cursors,
+		Drafts:   drafts,
+		Mentions: mentions,
+		Outbox:   r.Outbox.PendingForScope(""),
 	}
 }
 
@@ -72,6 +78,11 @@ func (r *SessionResilience) ImportSnapshot(snap RecoverySnapshot) error {
 	for k, v := range snap.Drafts {
 		if k != "" && v != "" {
 			r.drafts[k] = v
+		}
+	}
+	for k, v := range snap.Mentions {
+		if k != "" && len(v) > 0 {
+			r.mentions[k] = append([]DraftMention(nil), v...)
 		}
 	}
 	r.mu.Unlock()

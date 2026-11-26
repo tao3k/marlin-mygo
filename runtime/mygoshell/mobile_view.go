@@ -152,9 +152,11 @@ type MobileCompanionApp struct {
 	activeTab         MobileTab
 	messages          []MobileMessage
 	chatDraft         string
+	chatDraftRev      uint64
 	pendingGates      []PendingGateView
 	packs             []MobileDeclarativePack
 	captureDraft      string
+	captureDraftRev   uint64
 	captureChannel    string
 	policyDenialMsg   string
 }
@@ -421,9 +423,12 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	tab := m.activeTab
 	msgs := append([]MobileMessage(nil), m.messages...)
 	chatDraft := m.chatDraft
+	prevChatDraft := chatDraft
+	chatDraftRev := m.chatDraftRev
 	gates := append([]PendingGateView(nil), m.pendingGates...)
 	packs := append([]MobileDeclarativePack(nil), m.packs...)
 	draft := m.captureDraft
+	prevCapDraft := draft
 	channel := m.captureChannel
 	denial := m.policyDenialMsg
 	status := m.LastStatusLine
@@ -461,6 +466,7 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		closeModelSheet   bool
 		pickedModelID     string
 		pickedEffort      composer.ReasoningEffort
+		retryMobOutbox    bool
 	)
 
 	ui.Column(c.Key("mobile-screen")).Fill().MinWidth(0).MinHeight(0).
@@ -473,9 +479,12 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 
 		// 3. Scroll-safe Active Tab Body with generous 16pt mobile side margins.
 		ui.Column(c).Grow(1).MinWidth(0).MinHeight(0).Padding(12, 16, 10, 16).Gap(12).AlignItems(ui.Stretch).Clip().Children(func() {
+			if m.Transcript != nil && m.Transcript.Resilience != nil {
+				renderMobileContinuityBanner(c, dt, m.Transcript.Resilience.Snapshot(mobileChatDraftScope), &retryMobOutbox)
+			}
 			switch tab {
 			case MobileTabChat:
-				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, &submitPrompt, &submittedMobTurn, &pickPhotoNow, &takePhotoNow, &pickDocNow, &removeAttID, &openPreviewAtt, &startVoiceNow, &stopVoiceNow, &cancelVoiceNow, &openModelSheetNow)
+				m.renderChatTab(c, t, dt, dev, msgs, &chatDraft, chatDraftRev, &submitPrompt, &submittedMobTurn, &pickPhotoNow, &takePhotoNow, &pickDocNow, &removeAttID, &openPreviewAtt, &startVoiceNow, &stopVoiceNow, &cancelVoiceNow, &openModelSheetNow)
 
 			case MobileTabGates:
 				m.renderGatesTab(c, t, dt, dev, gates, &decideGateID, &decideApprove)
@@ -672,6 +681,23 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	}
 	if activatePackID != "" {
 		_ = m.TryActivatePack(activatePackID)
+	}
+	if m.Transcript != nil && m.Transcript.Resilience != nil {
+		if chatDraft != prevChatDraft {
+			m.Transcript.Resilience.SetDraft(mobileChatDraftScope, chatDraft)
+			if m.Transcript.OnDraftChanged != nil {
+				m.Transcript.OnDraftChanged(mobileChatDraftScope, chatDraft)
+			}
+		}
+		if draft != prevCapDraft {
+			m.Transcript.Resilience.SetDraft(mobileCaptureDraftScope, draft)
+			if m.Transcript.OnDraftChanged != nil {
+				m.Transcript.OnDraftChanged(mobileCaptureDraftScope, draft)
+			}
+		}
+		if retryMobOutbox && m.Transcript.OnRetryOutbox != nil {
+			m.Transcript.OnRetryOutbox()
+		}
 	}
 }
 

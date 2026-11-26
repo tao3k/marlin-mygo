@@ -646,10 +646,12 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	if removeMentionK != "" && compState != nil {
 		compState.RemoveMention(removeMentionK)
+		tc.SyncDraftMentionsToResilience()
 	}
 	if pickedMention != nil && compState != nil {
 		compState.AddMention(*pickedMention)
 		tc.SetComposerText(composer.StripTrailingMentionToken(draft))
+		tc.SyncDraftMentionsToResilience()
 	}
 	if pickedSlash != nil {
 		tc.SetComposerText("")
@@ -744,8 +746,10 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		tc.ToggleFold(toggleRow)
 	}
 	if submittedTurn != nil && submitTurnFn != nil {
+		tc.SyncDraftMentionsToResilience()
 		submitTurnFn(*submittedTurn)
 	} else if submitPrompt != "" && onSend != nil {
+		tc.SyncDraftMentionsToResilience()
 		onSend(submitPrompt)
 	}
 	if cancelClicked && onCancel != nil {

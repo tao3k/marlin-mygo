@@ -13,6 +13,8 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/richtext"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 )
@@ -93,5 +95,29 @@ func BenchmarkTranscriptRenderWithRichOrgAndVoice(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tt.Frame()
+	}
+}
+
+func BenchmarkResilienceAdmitEventHotPath(b *testing.B) {
+	r := resilience.NewSessionResilience()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = r.AdmitEvent("chat:bench", "ev-dup", 1, uint64(i+1))
+	}
+}
+
+func BenchmarkPromptGateQueueActive(b *testing.B) {
+	q := promptgate.NewQueue()
+	_ = q.Enqueue(promptgate.PromptRequest{
+		ID:       "gate-bench-1",
+		Kind:     promptgate.PromptAuth,
+		ToolName: "shell.exec",
+		Prompt:   "Approve benchmark command?",
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _, _ = q.Active()
 	}
 }

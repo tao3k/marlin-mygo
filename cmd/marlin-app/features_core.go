@@ -15,6 +15,7 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 )
 
@@ -54,9 +55,15 @@ func wireFeaturesAndGovernance(
 	type winnerAware interface {
 		SetPromoteHandler(func(modelLabel, text string))
 	}
+	type resilienceAware interface {
+		SetResilience(*resilience.SessionResilience, func(scopeID, text string))
+	}
 	for _, mod := range compiledFeatureModules {
 		if ga, ok := mod.(governanceAware); ok {
 			ga.SetGovernanceLedger(ledger)
+		}
+		if resAware, ok := mod.(resilienceAware); ok && app != nil && app.Transcript != nil && app.Transcript.Resilience != nil {
+			resAware.SetResilience(app.Transcript.Resilience, app.Transcript.OnDraftChanged)
 		}
 		if ra, ok := mod.(revisionAware); ok {
 			ra.SetRevisionHandler(func(docID string, version int, instruction string) {

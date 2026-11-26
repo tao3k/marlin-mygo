@@ -12,6 +12,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/richtext"
 )
 
@@ -424,5 +425,46 @@ func (tc *TranscriptController) RestoreDraftFromResilience(scopeID string) strin
 		tc.composerRev++
 		tc.mu.Unlock()
 	}
+	if tc.Composer != nil {
+		for _, dm := range res.DraftMentions(scope) {
+			tc.Composer.AddMention(composer.ContextMention{
+				Kind:   dm.Kind,
+				Target: dm.Target,
+				Label:  dm.Label,
+			})
+		}
+	}
 	return saved
+}
+
+// SyncDraftMentionsToResilience persists current composer @ context mentions
+// alongside the active draft scope and triggers OnDraftChanged so crash
+// recovery restores both unsent text and attached context mentions.
+func (tc *TranscriptController) SyncDraftMentionsToResilience() {
+	tc.mu.RLock()
+	res := tc.Resilience
+	scope := tc.ResilienceScope
+	if scope == "" {
+		scope = "chat:default"
+	}
+	draft := tc.composerText
+	cb := tc.OnDraftChanged
+	comp := tc.Composer
+	tc.mu.RUnlock()
+	if res == nil || comp == nil {
+		return
+	}
+	cur := comp.Snapshot().Mentions
+	out := make([]resilience.DraftMention, 0, len(cur))
+	for _, m := range cur {
+		out = append(out, resilience.DraftMention{
+			Kind:   m.Kind,
+			Target: m.Target,
+			Label:  m.Label,
+		})
+	}
+	res.SetDraftMentions(scope, out)
+	if cb != nil {
+		cb(scope, draft)
+	}
 }

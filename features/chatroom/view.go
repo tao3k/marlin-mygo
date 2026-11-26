@@ -152,6 +152,17 @@ func (m *Module) SetGovernanceLedger(ledger *features.GovernanceLedger) {
 	}
 }
 
+// SetResilience attaches the shared crash-durable SessionResilience store and
+// immediately restores any unsent room/thread drafts after a restart.
+func (m *Module) SetResilience(r *resilience.SessionResilience, onDraftChanged func(scopeID, text string)) {
+	if m == nil || m.View == nil || m.View.Ctrl == nil || r == nil {
+		return
+	}
+	m.View.Ctrl.Resilience = r
+	m.View.Ctrl.OnDraftChanged = onDraftChanged
+	m.View.RestoreDraftsFromResilience()
+}
+
 func (m *Module) Meta() features.FeatureMeta {
 	return features.FeatureMeta{
 		ID:                   features.FeatureChatRoom,

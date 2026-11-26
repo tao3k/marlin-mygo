@@ -22,6 +22,7 @@ func (m *MobileCompanionApp) renderChatTab(
 	_ MobileDeviceSpec,
 	msgs []MobileMessage,
 	chatDraft *string,
+	chatDraftRev uint64,
 	submitPrompt *string,
 	submittedTurn **composer.TurnSubmission,
 	pickPhotoNow *bool,
@@ -170,7 +171,7 @@ func (m *MobileCompanionApp) renderChatTab(
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8, 6, 16).Radius(26).
 			Material(AppleLiquidGlassSurface(dt, false, false)).
 			Shadow(0, 8, 22, -6, ambientShadowColor(dt)).Children(func() {
-			ui.TextInputBase(c.Key("mob-chat-input"), chatDraft).
+			ui.TextInputBase(c.Key(fmt.Sprintf("mob-chat-input-%d", chatDraftRev)), chatDraft).
 				Placeholder("Message Marlin...").
 				FontSize(14).TextColor(toColor(dt.Ink)).Grow(1).Padding(6, 2)
 			if AppleCircleIconButton(c, "mob-chat-send", "Send", svgIconArrowUp, 34, dt).Clicked() {
