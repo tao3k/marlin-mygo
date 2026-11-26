@@ -43,6 +43,7 @@ type appConfig struct {
 	devPluginDir     string
 	showcase         bool
 	showcasePlugin   string
+	featuresSpec     string
 }
 
 func parseFlags() appConfig {
@@ -72,6 +73,7 @@ func parseFlags() appConfig {
 	flag.StringVar(&cfg.devPluginDir, "dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
 	flag.BoolVar(&cfg.showcase, "showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 UI + Go WASI GPU Focus Clock")
 	flag.StringVar(&cfg.showcasePlugin, "showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow | git | github")
+	flag.StringVar(&cfg.featuresSpec, "features", "default", "opt-in UI feature profile: default | all | none | chatroom,compare,canvas | +chatroom,-canvas")
 	flag.Parse()
 	return cfg
 }

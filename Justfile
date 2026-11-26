@@ -105,6 +105,16 @@ perf-gate scale="1.0":
 check-file-size max_lines="1000":
     @OVER=$(find . -name '*.go' -not -path './gen/*' -not -path './.devenv/*' -not -path './.tmp/*' -exec wc -l {} + | awk -v max={{max_lines}} '$1 > max && $2 != "total" {print}'); if [ -n "$OVER" ]; then echo "Go files exceeding {{max_lines}} lines:"; echo "$OVER"; exit 1; else echo "OK: all non-generated Go files are <= {{max_lines}} lines"; fi
 
+# Rust-Cargo-style opt-in feature builds (zero dead code compiled for unselected paradigms).
+build-core out="./dist/marlin-app-core":
+    CGO_ENABLED=0 go build -tags marlin_minimal -o {{out}} ./cmd/marlin-app
+
+build-features tags="marlin_feat_chatroom" out="./dist/marlin-app-custom":
+    CGO_ENABLED=0 go build -tags "{{tags}}" -o {{out}} ./cmd/marlin-app
+
+build-full out="./dist/marlin-app-full":
+    CGO_ENABLED=0 go build -tags marlin_full -o {{out}} ./cmd/marlin-app
+
 # Serve a signed Marketplace catalog directory over local HTTP.
 serve-catalog dir="./dist/marketplace" addr="127.0.0.1:8787":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool serve-catalog -dir "{{dir}}" -addr "{{addr}}"

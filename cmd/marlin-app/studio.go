@@ -180,6 +180,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			}()
 		}
 		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
+		wireFeaturesAndGovernance(cfg, app, notifyCenter, win)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
 			case "studio.open-auth":
@@ -192,6 +193,8 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				app.OpenMarketplace()
 			case "studio.open-federation":
 				app.OpenFederation()
+			case "studio.open-governance":
+				app.OpenGovernance()
 			case "studio.cycle-theme":
 				if app.OnCycleTheme != nil {
 					app.OnCycleTheme()

@@ -16,6 +16,7 @@ const (
 	CmdStudioOpenMarketplace   = "studio.open-marketplace"
 	CmdStudioOpenProjection    = "studio.open-projection"
 	CmdStudioOpenFederation    = "studio.open-federation"
+	CmdStudioOpenGovernance    = "studio.open-governance"
 	CmdStudioOpenPalette       = "studio.open-palette"
 	CmdStudioOpenGate          = "studio.open-gate"
 	CmdStudioOpenAuth          = "studio.open-auth"
@@ -93,6 +94,7 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "m"}, ActionKind: "studio", CommandName: CmdStudioOpenMarketplace},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "i"}, ActionKind: "studio", CommandName: CmdStudioOpenProjection},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "f"}, ActionKind: "studio", CommandName: CmdStudioOpenFederation},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "G"}, ActionKind: "studio", CommandName: CmdStudioOpenGovernance},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "g"}, ActionKind: "studio", CommandName: CmdStudioOpenGate},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "a"}, ActionKind: "studio", CommandName: CmdStudioOpenAuth},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "N"}, ActionKind: "studio", CommandName: CmdStudioOpenNotifications},
@@ -178,6 +180,7 @@ func DualModalCommands() []input.CommandEntry {
 		{Name: CmdStudioOpenMarketplace, Description: "Open Official Marketplace drawer (SPC m)"},
 		{Name: CmdStudioOpenProjection, Description: "Open Projection Inspector (SPC i)"},
 		{Name: CmdStudioOpenFederation, Description: "Open Tier-0 Multi-Target Federation Cockpit (SPC f)"},
+		{Name: CmdStudioOpenGovernance, Description: "Open Tier-0 UI Governance & Feature Security Console (SPC G)"},
 		{Name: CmdStudioOpenAuth, Description: "Open Tier-0 Account & OAuth Sign-In Center (SPC a)"},
 		{Name: CmdStudioOpenNotifications, Description: "Open Tier-0 Notification & Activity Center (SPC N)"},
 		{Name: CmdStudioOpenKeymap, Description: "Open searchable Keymap Inspector (SPC K)"},

@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
@@ -81,6 +82,10 @@ type WorkbenchApp struct {
 	// Optional Tier-0 native GPU Federation Cockpit topology inspector (lazy-created on open).
 	FederationUI *FederationController
 
+	// Optional Tier-0 UI Governance & Feature Security Console and active FeatureHost.
+	GovernanceUI *GovernanceController
+	FeatureHost  *features.Host
+
 	// Tier-0 Ask, Option, and Authorization modal queue floating above all WebViews.
 	PromptGate *PromptGateController
 
@@ -128,6 +133,7 @@ type WorkbenchApp struct {
 	settingsOpen       bool
 	projectionOpen     bool
 	federationOpen     bool
+	governanceOpen     bool
 	addRemoteOpen      bool
 	addRemoteState     *SchemaFormState
 	addRemoteStatus    string
@@ -306,6 +312,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.OpenKeymapInspector()
 	case shell.CmdStudioOpenFederation:
 		a.OpenFederation()
+	case shell.CmdStudioOpenGovernance:
+		a.OpenGovernance()
 	case shell.CmdStudioOpenSearch:
 		if a.Transcript != nil {
 			a.Transcript.OpenSearch()
@@ -755,6 +763,28 @@ func (a *WorkbenchApp) OpenFederation() {
 // IsFederationOpen reports whether the Tier-0 Federation Cockpit modal is visible.
 func (a *WorkbenchApp) IsFederationOpen() bool { return a.federationOpen }
 
+// OpenGovernance opens the Tier-0 UI Governance & Feature Security Console modal.
+func (a *WorkbenchApp) OpenGovernance() {
+	if a.GovernanceUI == nil {
+		a.GovernanceUI = NewGovernanceController(nil, nil, a.FeatureHost)
+	}
+	a.governanceOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+	a.keymapOpen = false
+	a.activityOpen = false
+	a.authOpen = false
+	a.marketplaceOpen = false
+	a.settingsOpen = false
+	a.projectionOpen = false
+	a.federationOpen = false
+	a.addRemoteOpen = false
+	a.gateOpen = false
+}
+
+// IsGovernanceOpen reports whether the Tier-0 Governance Console modal is visible.
+func (a *WorkbenchApp) IsGovernanceOpen() bool { return a.governanceOpen }
+
 // DismissTopOverlay handles global ESC keyboard accessibility: closes the
 // active non-gate Tier-0 modal or cancels an in-progress Hydra chord / Which-Key HUD.
 // Security invariant: Approval Gates (gateOpen) are intentionally NOT bypassed by ESC.
@@ -789,6 +819,9 @@ func (a *WorkbenchApp) DismissTopOverlay() bool {
 		return true
 	case a.federationOpen:
 		a.federationOpen = false
+		return true
+	case a.governanceOpen:
+		a.governanceOpen = false
 		return true
 	case a.addRemoteOpen:
 		a.addRemoteOpen = false

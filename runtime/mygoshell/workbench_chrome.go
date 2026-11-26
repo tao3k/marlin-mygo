@@ -69,6 +69,11 @@ func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedThe
 				a.OpenActivityCenter()
 			}
 		}
+		if a.GovernanceUI != nil {
+			if ApplePillButton(c, "status-governance", "Gov", BtnGlass, dt, svgIconShield, true).Clicked() {
+				a.OpenGovernance()
+			}
+		}
 		if a.KeyTrie != nil {
 			mode := a.ActiveKeyMode()
 			modeLbl := "NORMAL · SPC"
@@ -458,6 +463,12 @@ func (a *WorkbenchApp) renderComposableWorkspace(
 					r.Render(rctx)
 				}
 			default:
+				if a.FeatureHost != nil {
+					if fn, ok := a.FeatureHost.Renderer(buf.BufferID); ok {
+						fn(c, t)
+						return
+					}
+				}
 				if strings.HasPrefix(buf.BufferID, "slot:") {
 					slotID := schema.SlotID(strings.TrimPrefix(buf.BufferID, "slot:"))
 					for _, r := range a.Slots.Resolve(slotID) {

@@ -211,6 +211,14 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		})
 	}
 
+	if a.GovernanceUI != nil {
+		ui.Modal(c, &a.governanceOpen, func() {
+			a.GovernanceUI.Render(c, t, func() {
+				a.governanceOpen = false
+			})
+		})
+	}
+
 	if a.OnAddRemoteTarget != nil && a.addRemoteState != nil {
 		ui.Modal(c, &a.addRemoteOpen, func() {
 			RenderBoundedForm(c, remoteTargetFormSchema(), a.addRemoteState, func(vals map[string]any) {
