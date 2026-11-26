@@ -291,6 +291,9 @@ func parseColor(raw string) (ui.Color, error) {
 		}
 		return ui.RGBA(clampU8(r), clampU8(g), clampU8(b), alpha), nil
 	}
+	if strings.HasPrefix(s, "oklch(") && strings.HasSuffix(s, ")") {
+		return parseOKLCH(raw)
+	}
 	if strings.HasPrefix(s, "rgb(") && strings.HasSuffix(s, ")") {
 		parts := strings.Split(s[4:len(s)-1], ",")
 		if len(parts) != 3 {

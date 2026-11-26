@@ -123,3 +123,36 @@ func TestSignalsDualParsersAndFlagshipBentoRender(t *testing.T) {
 		t.Fatalf("expected Zen action cmd:zen-mode, got %q", action)
 	}
 }
+
+func TestJSONWidgetSidebarAndWebIslandParsing(t *testing.T) {
+	sidebarRaw := `{
+		"schemaVersion": "marlin.ui.sidebar.v1",
+		"width": 260,
+		"pinned": false,
+		"body": {
+			"id": "ts-sb",
+			"kind": "col",
+			"gap": 10,
+			"children": [
+				{"id": "sb-kpi", "kind": "kpi", "icon": "sparkles", "title": "TS SDK", "value": "Ready", "tone": "info", "onClick": "buffer:*conversation*"},
+				{"id": "sb-flow", "kind": "web-island", "title": "BPMN Flow", "subtitle": "Hybrid GPU", "islandId": "workflow-graph", "height": 180}
+			]
+		}
+	}`
+	spec, err := widgets.ParseSidebarJSON(sidebarRaw)
+	if err != nil {
+		t.Fatalf("ParseSidebarJSON failed: %v", err)
+	}
+	if spec.Width != 260 || spec.Body == nil || len(spec.Body.Children) != 2 {
+		t.Fatalf("unexpected sidebar spec: %+v", spec)
+	}
+
+	// Unknown field must fail closed.
+	if _, err := widgets.ParseWidgetJSON(`{"kind":"kpi","evilExec":"rm -rf"}`); err == nil {
+		t.Fatalf("expected unknown JSON field to fail closed")
+	}
+	// Unsafe action URI must fail closed.
+	if _, err := widgets.ParseWidgetJSON(`{"kind":"kpi","onClick":"shell:id"}`); err == nil {
+		t.Fatalf("expected unsafe action URI to fail closed")
+	}
+}

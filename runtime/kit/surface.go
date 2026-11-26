@@ -5,22 +5,45 @@
 package kit
 
 import (
-	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/runtime/style"
 )
 
-// SurfaceOptions configures hot-pluggable GPU surface rendering (Liquid Glass
-// vs crisp Matte, and 120Hz Spring Motion).
+// DefaultGlassOpacity is the tuned VisionOS / Ghostty card translucency over
+// hardware OS frosted vibrancy (clear desktop bleed-through with crisp contrast).
+const DefaultGlassOpacity float32 = 0.34
+
+// SurfaceOptions configures hot-pluggable GPU surface rendering (Frosted Glass
+// Islands vs crisp Matte, glass card opacity in [0.10, 0.90], and 120Hz Spring Motion).
 type SurfaceOptions struct {
-	Glass  bool
-	Motion bool
+	Glass        bool
+	Motion       bool
+	GlassOpacity float32 // 0 defaults to DefaultGlassOpacity (0.34); can also be set via CSS/tokens --glass-opacity
+}
+
+// ResolveGlassOpacity resolves the effective card glass opacity from opts,
+// governed stylesheet/token variable `--glass-opacity`, or DefaultGlassOpacity.
+func ResolveGlassOpacity(opts SurfaceOptions, sheet *style.Sheet) float32 {
+	op := opts.GlassOpacity
+	if op <= 0 && sheet != nil {
+		op = sheet.VarPx("--glass-opacity", 0)
+	}
+	if op <= 0 {
+		op = DefaultGlassOpacity
+	}
+	if op < 0.08 {
+		op = 0.08
+	}
+	if op > 0.92 {
+		op = 0.92
+	}
+	return op
 }
 
 // ApplyWindowTransparency configures c.Root() for genuine OS-level frosted
 // glass translucency whenever glassEnabled is true and the host window has
-// Vibrancy active (macOS NSVisualEffectView / Liquid Glass, Windows Acrylic).
+// Vibrancy active (macOS NSVisualEffectView / Windows Acrylic).
 // Returns true when OS desktop vibrancy is actively shining through.
 func ApplyWindowTransparency(c *ui.Context, glassEnabled bool) bool {
 	if c == nil {
@@ -33,57 +56,72 @@ func ApplyWindowTransparency(c *ui.Context, glassEnabled bool) bool {
 	return false
 }
 
-// RenderGlassAtmosphere paints whisper-light Oklab aurora accents behind
-// Liquid Glass widgets. When OS window vibrancy is active, alpha stays ultra-low
-// so the user's actual desktop wallpaper refracts clearly through the glass;
-// in non-vibrant windows (Linux/Web/headless), a richer twilight backdrop gives
-// the Liquid Glass shader lush depth to refract.
+// ChromeBarBg returns a seamless frosted-glass bar tint when glassEnabled and
+// OS window vibrancy are active, or solid otherwise.
+func ChromeBarBg(c *ui.Context, solid ui.Color, glassEnabled bool, alpha float32) ui.Color {
+	if glassEnabled && c != nil && c.Vibrancy() {
+		return WithAlpha(solid, alpha)
+	}
+	return solid
+}
+
+// ViewportBg returns a readable frosted-glass viewport tint when glassEnabled
+// and OS window vibrancy are active, or solid otherwise.
+func ViewportBg(c *ui.Context, solid ui.Color, glassEnabled bool, alpha float32) ui.Color {
+	if glassEnabled && c != nil && c.Vibrancy() {
+		return WithAlpha(solid, alpha)
+	}
+	return solid
+}
+
+// RenderGlassAtmosphere paints subtle Oklab aurora accents behind floating
+// widget islands. When OS window vibrancy is active, no opaque veil is drawn
+// so the hardware-blurred desktop shines cleanly between floating islands; in
+// non-vibrant windows (Linux/Web/headless), a deep twilight gradient provides
+// rich depth behind the surfaces.
 func RenderGlassAtmosphere(c *ui.Context, pal Palette, opts SurfaceOptions) {
 	if !opts.Glass {
 		return
 	}
 	vibrant := c != nil && c.Vibrancy()
 	if !vibrant {
-		topCol := MixColor(pal.Canvas, pal.Info, 0.22)
-		botCol := MixColor(pal.Bar, pal.Accent, 0.18)
+		topCol := MixColor(pal.Canvas, pal.Info, 0.20)
+		botCol := MixColor(pal.Bar, pal.Accent, 0.16)
 		ui.Box(c.Key("kit-atm-base")).Absolute().Fill().ZIndex(-3).PassThrough().IgnoreInput(true).
-			LinearGradient(ui.LinearGradient{From: topCol, To: botCol, Angle: 138, Oklab: true})
-	} else {
-		// Ultra-sheer tint over real macOS desktop vibrancy for legibility without hiding wallpaper.
-		ui.Box(c.Key("kit-atm-veil")).Absolute().Fill().ZIndex(-3).PassThrough().IgnoreInput(true).
-			Background(WithAlpha(pal.Canvas, 0.16))
+			LinearGradient(ui.LinearGradient{From: topCol, To: botCol, Angle: 140, Oklab: true})
 	}
 
-	orbA := float32(0.14)
-	orbB := float32(0.12)
+	orbA := float32(0.09)
+	orbB := float32(0.07)
 	if !vibrant {
-		orbA = 0.24
-		orbB = 0.22
+		orbA = 0.22
+		orbB = 0.18
 	}
 	ui.Box(c.Key("kit-atm-orb1")).Absolute().Fill().ZIndex(-2).PassThrough().IgnoreInput(true).
 		RadialGradient(ui.RadialGradient{
-			Center: ui.Point{X: 0.14, Y: 0.16},
+			Center: ui.Point{X: 0.12, Y: 0.14},
 			Oklab:  true,
 			Stops: []ui.GradientStop{
 				{Color: WithAlpha(pal.Info, orbA), At: 0},
-				{Color: ui.Transparent, At: 0.58},
+				{Color: ui.Transparent, At: 0.54},
 			},
 		})
 	ui.Box(c.Key("kit-atm-orb2")).Absolute().Fill().ZIndex(-1).PassThrough().IgnoreInput(true).
 		RadialGradient(ui.RadialGradient{
-			Center: ui.Point{X: 0.86, Y: 0.82},
+			Center: ui.Point{X: 0.88, Y: 0.86},
 			Oklab:  true,
 			Stops: []ui.GradientStop{
 				{Color: WithAlpha(pal.Accent, orbB), At: 0},
-				{Color: ui.Transparent, At: 0.62},
+				{Color: ui.Transparent, At: 0.58},
 			},
 		})
 }
 
-// ApplyCardSurface styles any widget card with flagship iOS 26 Liquid Glass
-// (clear glass shader + directional top-left specular BorderLinearGradient rim
-// + inner top highlight + deep ambient shadow) or crisp M3 Expressive Matte
-// elevation, plus optional 120Hz Spring hover lift.
+// ApplyCardSurface styles any Bento widget island with flagship VisionOS /
+// macOS Sonoma frosted translucency (top-lit Oklab glass sheen + crisp 1px top
+// specular catchlight + directional crystal hairline rim + deep floating
+// ambient drop shadow) or velvety EWW Nord Matte elevation, plus optional
+// 120Hz Spring hover lift.
 func ApplyCardSurface(
 	el ui.Element,
 	classes []string,
@@ -104,24 +142,35 @@ func ApplyCardSurface(
 	el.Radius(radius)
 
 	if opts.Glass {
-		tintAlpha := float32(0.18)
+		baseOp := ResolveGlassOpacity(opts, sheet)
+		topA := min(baseOp+0.08, 0.92)
+		botA := max(baseOp-0.06, 0.06)
 		if hovered {
-			tintAlpha = 0.28
+			topA = min(topA+0.10, 0.95)
+			botA = min(botA+0.10, 0.90)
 		}
 		if pal.IsLight {
-			tintAlpha = 0.34
+			topA = min(topA+0.14, 0.94)
+			botA = min(botA+0.10, 0.88)
 		}
-		el.Material(glass.Glass{
-			Style:       glass.Clear,
-			Tint:        WithAlpha(pal.Surface, tintAlpha),
-			Interactive: true,
-			Clarity:     0.64,
+		topCol := WithAlpha(Lighten(pal.Surface, 0.10), topA)
+		botCol := WithAlpha(pal.Surface, botA)
+		if pal.IsLight {
+			topCol = WithAlpha(ui.RGB(255, 255, 255), topA)
+			botCol = WithAlpha(pal.Surface, botA)
+		}
+		el.LinearGradient(ui.LinearGradient{
+			From:  topCol,
+			To:    botCol,
+			Angle: 155,
+			Oklab: true,
 		})
-		// Directional iOS 26 crystal specular rim: bright top-left light fading diagonally.
-		rimTop := WithAlpha(ui.RGB(255, 255, 255), 0.36)
-		rimBot := WithAlpha(ui.RGB(255, 255, 255), 0.06)
+
+		// Directional VisionOS / macOS crystal specular rim: crisp top-left catchlight fading diagonally.
+		rimTop := WithAlpha(ui.RGB(255, 255, 255), 0.28)
+		rimBot := WithAlpha(ui.RGB(255, 255, 255), 0.05)
 		if hovered {
-			rimTop = WithAlpha(pal.Info, 0.68)
+			rimTop = WithAlpha(pal.Info, 0.65)
 			rimBot = WithAlpha(pal.Accent, 0.24)
 		}
 		el.BorderWidth(1).BorderLinearGradient(ui.LinearGradient{
@@ -130,11 +179,37 @@ func ApplyCardSurface(
 			Angle: 145,
 			Oklab: true,
 		})
-		el.InsetShadow(0, 1, 1.5, 0, WithAlpha(ui.RGB(255, 255, 255), 0.22))
+		// Machined dual-edge inner lighting: crisp 1px top specular catchlight + subtle bottom depth edge.
+		el.InsetShadow(0, 1, 0, 0, WithAlpha(ui.RGB(255, 255, 255), 0.28)).
+			InsetShadow(0, -1, 0, 0, WithAlpha(ui.RGB(0, 0, 0), 0.24))
+
+		// Multi-layered physical shadows: tight contact occlusion + soft wide ambient diffusion.
+		el.Shadow(0, 1, 3, 0, WithAlpha(ui.RGB(0, 0, 0), 0.34))
 		if hovered && opts.Motion {
-			el.Shadow(0, 16, 36, -8, WithAlpha(ui.RGB(0, 0, 0), 0.38))
+			el.Shadow(0, 20, 44, -8, WithAlpha(ui.RGB(0, 0, 0), 0.56))
 		} else {
-			el.Shadow(0, 10, 26, -8, WithAlpha(ui.RGB(0, 0, 0), 0.26))
+			el.Shadow(0, 14, 34, -8, WithAlpha(ui.RGB(0, 0, 0), 0.42))
+		}
+
+		// Cursor-reactive VisionOS / Linear specular spotlight sheen on GPU hover.
+		if px, py, over := el.PointerPosition(); over {
+			spotColor := WithAlpha(ui.RGB(255, 255, 255), 0.11)
+			if pal.IsLight {
+				spotColor = WithAlpha(pal.Info, 0.12)
+			}
+			el.Draw(func(p *ui.Painter, box ui.Rect) {
+				if box.W <= 0 || box.H <= 0 {
+					return
+				}
+				p.FillRadialGradient(box, ui.RadialGradient{
+					Center: ui.Point{X: px / box.W, Y: py / box.H},
+					Oklab:  true,
+					Stops: []ui.GradientStop{
+						{Color: spotColor, At: 0},
+						{Color: ui.Transparent, At: 0.58},
+					},
+				}, radius)
+			})
 		}
 	} else {
 		bg := pal.Surface
@@ -144,11 +219,14 @@ func ApplyCardSurface(
 		el.Background(bg)
 		cs.ApplyToElement(el)
 		el.BorderWidth(1).BorderLinearGradient(ui.LinearGradient{
-			From:  WithAlpha(ui.RGB(255, 255, 255), 0.10),
+			From:  WithAlpha(ui.RGB(255, 255, 255), 0.12),
 			To:    WithAlpha(ui.RGB(255, 255, 255), 0.02),
 			Angle: 180,
 		})
-		el.Shadow(0, 8, 20, -8, WithAlpha(ui.RGB(0, 0, 0), 0.24))
+		el.InsetShadow(0, 1, 0, 0, WithAlpha(ui.RGB(255, 255, 255), 0.11)).
+			InsetShadow(0, -1, 0, 0, WithAlpha(ui.RGB(0, 0, 0), 0.20))
+		el.Shadow(0, 1, 3, 0, WithAlpha(ui.RGB(0, 0, 0), 0.30)).
+			Shadow(0, 12, 28, -8, WithAlpha(ui.RGB(0, 0, 0), 0.36))
 	}
 
 	if opts.Motion {

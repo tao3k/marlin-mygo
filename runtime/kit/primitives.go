@@ -19,11 +19,12 @@ import (
 	"github.com/tao3k/marlin-mygo/runtime/style"
 )
 
-// Flagship dual typography tokens: clean system Display Sans for widgets/cards,
-// tabular Monospace for live clocks, code, and Emacs buffers.
+// Flagship dual typography tokens: native OS system-ui (macOS SF Pro / iOS /
+// Android Roboto) for crisp Control Center widgets, and tabular SF Mono / Menlo
+// for clocks, code, and Emacs buffers.
 const (
-	FontDisplay = "SF Pro Display, -apple-system, Inter, system-ui, sans-serif"
-	FontMono    = "SF Mono, Menlo, JetBrains Mono, monospace"
+	FontDisplay = "system-ui"
+	FontMono    = "SF Mono, Menlo, monospace"
 
 	RadiusCard    float32 = 20
 	RadiusInner   float32 = 12
@@ -123,30 +124,62 @@ func FlexLine(c *ui.Context, text string, sp TextSpec) ui.Element {
 	return Line(c, text, sp).Grow(1)
 }
 
-// Eyebrow renders a crisp iOS / Material 3 widget eyebrow label.
-func Eyebrow(c *ui.Context, text string, col ui.Color) ui.Element {
-	return Line(c, text, TextSpec{Font: FontDisplay, Size: 11, Weight: 700, Color: col})
+// ConcentricRadius computes a harmonious inner corner radius matching industrial
+// design concentric geometry (inner = max(outer - padding, 6)).
+func ConcentricRadius(outer, pad float32) float32 {
+	r := outer - pad
+	if r < 6 {
+		return 6
+	}
+	return r
 }
 
-// Headline renders a primary widget title in clean Display Sans.
+// Eyebrow renders a crisp uppercase Control Center section eyebrow with
+// refined positive optical letter-spacing.
+func Eyebrow(c *ui.Context, text string, col ui.Color) ui.Element {
+	return Line(c, text, TextSpec{Font: FontDisplay, Size: 10.5, Weight: 700, Color: col}).
+		LetterSpacing(0.85)
+}
+
+// Headline renders a primary widget title in native SF Pro / system-ui with
+// tight optical Display tracking.
 func Headline(c *ui.Context, text string, size float32, col ui.Color) ui.Element {
 	if size <= 0 {
 		size = 15
 	}
-	return Line(c, text, TextSpec{Font: FontDisplay, Size: size, Weight: 700, Color: col})
+	el := Line(c, text, TextSpec{Font: FontDisplay, Size: size, Weight: 600, Color: col})
+	if size >= 16 {
+		el.LetterSpacing(-0.35)
+	} else {
+		el.LetterSpacing(-0.15)
+	}
+	return el
 }
 
-// Caption renders a muted supporting line in clean Display Sans.
+// DisplayFigure renders oversized hero numerals (clocks, primary KPIs) in
+// native system-ui with tight display tracking and OpenType tabular numerals
+// (tnum) so live ticking digits never jitter horizontally.
+func DisplayFigure(c *ui.Context, text string, size float32, col ui.Color) ui.Element {
+	if size <= 0 {
+		size = 36
+	}
+	return Line(c, text, TextSpec{Font: FontDisplay, Size: size, Weight: 700, Color: col}).
+		LetterSpacing(-1.1).FontFeatures("tnum")
+}
+
+// Caption renders a muted supporting line in clean native system-ui.
 func Caption(c *ui.Context, text string, col ui.Color) ui.Element {
 	return Line(c, text, TextSpec{Font: FontDisplay, Size: 11.5, Weight: 500, Color: col})
 }
 
-// MonoStat renders crisp tabular monospace figures (clocks, ratios, metrics).
+// MonoStat renders crisp OpenType tabular monospace figures (ratios, metrics,
+// timestamps, shortcut badges) guaranteed never to jitter on update.
 func MonoStat(c *ui.Context, text string, size float32, col ui.Color) ui.Element {
 	if size <= 0 {
-		size = 16
+		size = 15
 	}
-	return Line(c, text, TextSpec{Font: FontMono, Size: size, Weight: 700, Color: col})
+	return Line(c, text, TextSpec{Font: FontMono, Size: size, Weight: 600, Color: col}).
+		FontFeatures("tnum")
 }
 
 // WithAlpha returns c with float32 alpha in [0, 1].
@@ -173,6 +206,39 @@ func MixColor(a, b ui.Color, t float32) ui.Color {
 		uint8(float32(a.G)*inv+float32(b.G)*t),
 		uint8(float32(a.B)*inv+float32(b.B)*t),
 	)
+}
+
+// ActionControl marks a non-text interactive control (toggle switch, tab pill,
+// launcher tile, toolbar action) with:
+//   - focus isolation (KeepFocus + no stray focus ring so Space never hijacks modal KeyMaps),
+//   - native pointing-hand cursor (CursorPointer),
+//   - tactile Linear/iOS physical press detent (scale 0.975 while pressed).
+func ActionControl(el ui.Element) ui.Element {
+	el.KeepFocus().FocusRing(false).Cursor(ui.CursorPointer)
+	if el.Pressed() {
+		el.Scale(0.975, 0.975)
+	}
+	return el
+}
+
+// ModalShortcut checks whether (mods, key) was pressed inside a modal keymap
+// rooted at scope. Unmodified single-key bindings (except Escape) yield
+// automatically whenever keyboard focus is in a text editor (c.FocusTakesText),
+// while claiming the key on scope prevents any focused descendant ButtonBase
+// from hijacking Space/keys before the host keymap runs.
+func ModalShortcut(c *ui.Context, scope ui.Element, mods ui.Modifiers, key ui.Key) bool {
+	if c == nil {
+		return false
+	}
+	if mods == 0 && key != ui.KeyEscape && c.FocusTakesText() {
+		return false
+	}
+	scoped := false
+	if scope != (ui.Element{}) {
+		scoped = scope.Shortcut(mods, key)
+	}
+	global := c.Shortcut(mods, key)
+	return scoped || global
 }
 
 // ResolveRadius resolves a CSS variable radius from sheet with fallback.

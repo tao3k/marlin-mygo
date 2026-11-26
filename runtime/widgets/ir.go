@@ -30,6 +30,10 @@ const (
 	KindActionTile Kind = "action-tile"
 	KindBadgeCard  Kind = "badge-card"
 	KindLinkList   Kind = "link-list"
+	KindWebIsland  Kind = "web-island"
+	KindScroll     Kind = "scroll"
+	KindSection    Kind = "section"
+	KindDivider    Kind = "divider"
 	KindText       Kind = "text"
 	KindSpacer     Kind = "spacer"
 )
@@ -78,9 +82,22 @@ type Node struct {
 	NextAction string
 	PlayLabel  string
 
+	// IslandID identifies a sandboxed Hybrid GPU + WebView island when Kind == KindWebIsland.
+	IslandID    string
+	Borderless  bool
+	VisibleWhen string // pure declarative signal predicate: "key", "!key", "key==val", "key!=val"
+
 	Tiles    []TileItem
 	Links    []LinkItem
 	Children []*Node
+}
+
+// SidebarSpec configures a declarative user-authored floating left-edge sidebar
+// hosted inside kit.EdgeRail's CustomContent slot.
+type SidebarSpec struct {
+	Width  float32
+	Pinned bool
+	Body   *Node
 }
 
 // ActionHandler executes a declarative widget action string.
