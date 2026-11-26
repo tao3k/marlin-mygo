@@ -66,8 +66,8 @@ iOS/Android bridges).
 
 * Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro Baseline, Zero CGO)
 
-All 18 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
-(strict =0 allocs/op= on all 11 core engine, resilience, promptgate, and 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
+All 22 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
+(strict =0 allocs/op= on all 15 core engine, Helm search, WindowTree, resilience, promptgate, and 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
 Reference measurements below were recorded on Apple M2 Pro (=darwin/arm64=, Go 1.27.3);
 newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf-gate= to print your local host hardware and measurements:
 
@@ -83,6 +83,10 @@ newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf
 | =control/marketplace= 100-plugin O(1) idle-reap check     | *20.4 ns*| <= 60 ns      | *0*    |
 | =engine/resilience= stream event replay dedup (=AdmitEvent=) | *36.1 ns*| <= 150 ns  | *0*    |
 | =engine/promptgate= Tier-0 active gate lookup (=Active=)  | *29.8 ns*| <= 120 ns     | *0*    |
+| =engine/search= 100k-hit Helm =VisibleWindow= (16 rows)   | *231 ns* | <= 600 ns     | *0*    |
+| =engine/search= 100k-hit Helm =Scroll= / =MoveSelection=  | *34.5 ns*| <= 200 ns     | *0*    |
+| =engine/search= stale =QueryGen= batch preemption drop    | *29.6 ns*| <= 80 ns      | *0*    |
+| =engine/shell= 8-pane =WindowTree.Snapshot= steady frame  | *22.4 ns*| <= 100 ns     | *0*    |
 | =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |
 | =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *112 µs* | <= 300 µs     | <= 18  |
 | =runtime/mygoshell= full headless workbench GPU frame     | *37.9 µs*| <= 90 µs      | <= 24  |

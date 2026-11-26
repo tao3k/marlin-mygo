@@ -152,10 +152,12 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 		tree.ApplyBuiltinPerspective(name, bufMain, bufDock, bufChat, bufProj)
 	}
 	_ = desktop.EnableEmacsWindowKeymap()
+	BindDefaultHelmSources(desktop, nil)
 
 	mobile := NewMobileCompanionAppForPlatform(cfg.MobilePlatform, "", cfg.BrandTitle)
 	mobile.Transcript = transcript
 	mobile.PromptGate = desktop.PromptGate
+	mobile.HelmSearch = desktop.HelmSearch
 	mobile.Windows = tree
 	mobile.Auth = cfg.Auth
 	mobile.SetThemePreset(preset.ID)

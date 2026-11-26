@@ -132,6 +132,7 @@ type MobileCompanionApp struct {
 	Transcript        *TranscriptController
 	PromptGate        *PromptGateController
 	FeatureHost       *features.Host
+	HelmSearch        *HelmMinibufferController
 	Windows           *shell.WindowTree
 	Auth              *AuthController
 	OnSendPrompt      func(prompt string)
@@ -146,6 +147,7 @@ type MobileCompanionApp struct {
 	LastStatusLine    string
 	mu                sync.Mutex
 	authOpen          bool
+	helmOpen          bool
 	activeFeatureID   string
 	bridgeDescriptors []device.CapabilityDescriptor
 	themePresetID     string
@@ -553,6 +555,9 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 			)
 		}
 	}
+	// Compact Mobile Helm Search drawer (0-overflow on 375-412px phone viewports).
+	m.renderMobileHelmSheet(c, dt)
+
 	// Tier-0 Ask / Option / Authorization bottom sheet floats at highest z-order over any active phone tab.
 	if m.PromptGate != nil {
 		m.PromptGate.RenderMobileSheet(c, dt)
@@ -783,6 +788,11 @@ func (m *MobileCompanionApp) renderNavigationBar(
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, heading).FontSize(titleSize).FontWeight(700).LetterSpacing(-0.4).TextColor(toColor(dt.Ink))
 				ui.Spacer(c)
+				if m.HelmSearch != nil {
+					if ApplePillButton(c, "mob-open-helm", "Search", BtnGlass, dt, svgIconSearch, true).Clicked() {
+						m.OpenHelmSearch()
+					}
+				}
 				if m.FeatureHost != nil {
 					if fbufs := m.FeatureHost.Buffers(); len(fbufs) > 0 {
 						if ApplePillButton(c, "mob-open-spaces", "Spaces", BtnTinted, dt, svgIconSparkles, true).Clicked() {

@@ -25,6 +25,9 @@ func BindDefaultHelmSources(app *WorkbenchApp, backendStreamFn func(gen uint64, 
 		app.HelmSearch = NewHelmMinibufferController(search.DefaultMaxCandidates)
 	}
 	hm := app.HelmSearch
+	if hm.OnExecuteAction == nil {
+		hm.OnExecuteAction = app.handleHelmAction
+	}
 	hm.OnQueryChanged = func(gen uint64, query string) {
 		q := strings.TrimSpace(query)
 

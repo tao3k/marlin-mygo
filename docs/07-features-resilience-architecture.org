@@ -105,11 +105,25 @@ shared governance audit logging, crash-durable drafts, and Tier-0 gate routing.
   O(1) ring (=AdmitEvent=), and flushes queued outbound turns in FIFO order
   preserving their client =SubmissionID= for Rust-side idempotency.
 
-* 120Hz Zero-Allocation Performance Discipline
+* 120Hz Zero-Allocation Performance Discipline & Helm Search
 
-=cmd/marlin-mygo-tool perf-gate= enforces 18 latency, byte, and strict
-allocation SLOs, including:
-- =BenchmarkResilienceAdmitEventHotPath=: =0 B/op=, =0 allocs/op=
-- =BenchmarkPromptGateQueueActive=: =0 B/op=, =0 allocs/op=
-- =BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame=: O(1) thinking-row
-  tracking, =<= 24 allocs/op=, =<= 1536 B/op= (darwin)
+- =engine/search= (=HelmEngine=) ingests up to 100,000–250,000 streamed hits
+  from Rust search indices with O(1) stale =QueryGen= preemption, multi-source
+  grouping (=SPC s s= / =Cmd+P= on Web / compact =Search= drawer on Mobile),
+  64-bit =MatchMask= character highlights, Follow-Mode preview coalescing, and
+  non-destructive =WindowTree= dispatch (=Open= / =Split Right= / =New Tab= /
+  =Attach @=).
+- =cmd/marlin-mygo-tool perf-gate= enforces 22 latency, byte, and strict
+  allocation SLOs (15 strict =0 allocs/op= hot paths), including:
+  - =BenchmarkHelm100kHits_VisibleWindowZeroAlloc=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkHelm100kHits_ScrollAndMoveSelection=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkHelmStaleBatchDropZeroAlloc=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkWindowTree_Snapshot120HzZeroAlloc=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkResilienceAdmitEventHotPath=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkPromptGateQueueActive=: =0 B/op=, =0 allocs/op=
+  - =BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame=: O(1) thinking-row
+    tracking, =<= 24 allocs/op=, =<= 1536 B/op= (darwin)
+- Stress & formal verification scale: 12 Quint formal invariants + 13
+  adversarial negative controls, 50,000-op =WindowTree= chaos, 250,000-hit
+  Helm zero-leak soak, 100,000-op 4-engine composite chaos, 17 Go fuzzers, and
+  6 cross-process real Rust =marlin-mygo-host= <-> Go E2E tests.

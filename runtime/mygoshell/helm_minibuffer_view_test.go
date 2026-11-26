@@ -141,3 +141,52 @@ func TestHelmLiveDefaultSourcesMatchMaskAndFollowPreview(t *testing.T) {
 		}
 	}
 }
+
+func TestMobileCompanionCompactHelmSearchZeroOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		plat mygoshell.MobilePlatform
+		w, h int
+	}{
+		{mygoshell.MobilePlatformIOS, 393, 852},
+		{mygoshell.MobilePlatformAndroid, 412, 915},
+	} {
+		proj := mygoshell.NewProjectionController(mygoshell.ProjectionSnapshot{
+			DiffFiles: []mygoshell.WorkspaceDiffFileView{
+				{Path: "engine/search/helm_stream.go", Status: "added", Additions: 772},
+			},
+		})
+		as := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{
+			BrandTitle:     "Marlin",
+			MobilePlatform: tc.plat,
+			Projection:     proj,
+		})
+		as.Mobile.HelmSearch.SetQuery("helm")
+
+		tt := ui.NewTester(as.Mobile.View, tc.w, tc.h)
+		tt.Frame()
+		if !tt.HasText("Search") {
+			t.Fatalf("%s: expected compact Search pill in Mobile nav bar, got %q", tc.plat, strings.Join(tt.Texts(), " | "))
+		}
+		if err := tt.Click("Search"); err != nil {
+			t.Fatalf("%s: click Search: %v", tc.plat, err)
+		}
+		tt.Frame()
+		if !as.Mobile.IsHelmSearchOpen() || !tt.HasText("HELM") || !tt.HasText("Attach @") {
+			t.Fatalf("%s: expected Mobile Helm drawer open, got %q", tc.plat, strings.Join(tt.Texts(), " | "))
+		}
+		if err := tt.Click("Mark"); err != nil {
+			t.Fatalf("%s: click Mark: %v", tc.plat, err)
+		}
+		tt.Frame()
+		if err := tt.Click("Attach @"); err != nil {
+			t.Fatalf("%s: click Attach @: %v", tc.plat, err)
+		}
+		tt.Frame()
+		if as.Mobile.IsHelmSearchOpen() {
+			t.Fatalf("%s: expected Mobile Helm drawer closed after Attach @", tc.plat)
+		}
+		if ms := as.Mobile.Transcript.Composer.Snapshot().Mentions; len(ms) != 1 {
+			t.Fatalf("%s: expected 1 marked candidate attached to Composer, got %+v", tc.plat, ms)
+		}
+	}
+}
