@@ -13,13 +13,23 @@ const (
 	CmdModeNormal = "mode.normal"
 
 	// Studio navigation commands (SPC leader layout).
-	CmdStudioOpenMarketplace = "studio.open-marketplace"
-	CmdStudioOpenProjection  = "studio.open-projection"
-	CmdStudioOpenPalette     = "studio.open-palette"
-	CmdStudioOpenGate        = "studio.open-gate"
-	CmdStudioCycleTheme      = "studio.cycle-theme"
-	CmdStudioToggleWhichKey  = "studio.toggle-which-key"
-	CmdStudioToggleSidebar   = "studio.toggle-sidebar"
+	CmdStudioOpenMarketplace   = "studio.open-marketplace"
+	CmdStudioOpenProjection    = "studio.open-projection"
+	CmdStudioOpenFederation    = "studio.open-federation"
+	CmdStudioOpenPalette       = "studio.open-palette"
+	CmdStudioOpenGate          = "studio.open-gate"
+	CmdStudioOpenAuth          = "studio.open-auth"
+	CmdStudioOpenNotifications = "studio.open-notifications"
+	CmdStudioOpenKeymap        = "studio.open-keymap-inspector"
+	CmdStudioOpenSearch        = "studio.open-search"
+	CmdStudioOpenModelPicker   = "studio.open-model-picker"
+	CmdStudioToggleVoice       = "studio.toggle-voice"
+	CmdStudioNewSession        = "studio.new-session"
+	CmdStudioExportLayout      = "studio.export-workspace-profile"
+	CmdStudioImportLayout      = "studio.import-workspace-profile"
+	CmdStudioCycleTheme        = "studio.cycle-theme"
+	CmdStudioToggleWhichKey    = "studio.toggle-which-key"
+	CmdStudioToggleSidebar     = "studio.toggle-sidebar"
 
 	// Classic Emacs editing & navigation commands active in Insert/Edit mode (ScopeInsert).
 	CmdEditNextLine           = "edit.next-line"
@@ -79,10 +89,18 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "3"}, ActionKind: "perspective", CommandName: CmdPerspectiveCockpit},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "4"}, ActionKind: "perspective", CommandName: CmdPerspectiveZen},
 
-		// Studio drawers & theme (SPC ...)
+		// Studio drawers, composer actions & theme (SPC ...)
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "m"}, ActionKind: "studio", CommandName: CmdStudioOpenMarketplace},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "i"}, ActionKind: "studio", CommandName: CmdStudioOpenProjection},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "f"}, ActionKind: "studio", CommandName: CmdStudioOpenFederation},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "g"}, ActionKind: "studio", CommandName: CmdStudioOpenGate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "a"}, ActionKind: "studio", CommandName: CmdStudioOpenAuth},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "N"}, ActionKind: "studio", CommandName: CmdStudioOpenNotifications},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "K"}, ActionKind: "studio", CommandName: CmdStudioOpenKeymap},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "/"}, ActionKind: "studio", CommandName: CmdStudioOpenSearch},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "M"}, ActionKind: "studio", CommandName: CmdStudioOpenModelPicker},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "v"}, ActionKind: "studio", CommandName: CmdStudioToggleVoice},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "n"}, ActionKind: "studio", CommandName: CmdStudioNewSession},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "t", "t"}, ActionKind: "studio", CommandName: CmdStudioCycleTheme},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", ":"}, ActionKind: "studio", CommandName: CmdStudioOpenPalette},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "?"}, ActionKind: "studio", CommandName: CmdStudioToggleWhichKey},
@@ -159,6 +177,16 @@ func DualModalCommands() []input.CommandEntry {
 		{Name: CmdModeNormal, Description: "Return to Normal SPC leader mode (ESC / C-g)"},
 		{Name: CmdStudioOpenMarketplace, Description: "Open Official Marketplace drawer (SPC m)"},
 		{Name: CmdStudioOpenProjection, Description: "Open Projection Inspector (SPC i)"},
+		{Name: CmdStudioOpenFederation, Description: "Open Tier-0 Multi-Target Federation Cockpit (SPC f)"},
+		{Name: CmdStudioOpenAuth, Description: "Open Tier-0 Account & OAuth Sign-In Center (SPC a)"},
+		{Name: CmdStudioOpenNotifications, Description: "Open Tier-0 Notification & Activity Center (SPC N)"},
+		{Name: CmdStudioOpenKeymap, Description: "Open searchable Keymap Inspector (SPC K)"},
+		{Name: CmdStudioOpenSearch, Description: "Open Cmd+F Session Search bar (SPC /)"},
+		{Name: CmdStudioOpenModelPicker, Description: "Toggle Model & Reasoning Effort picker (SPC M)"},
+		{Name: CmdStudioToggleVoice, Description: "Start or attach live Voice Recording (SPC v)"},
+		{Name: CmdStudioNewSession, Description: "Start a new conversation session (SPC n)"},
+		{Name: CmdStudioExportLayout, Description: "Export WindowTree layout & theme profile JSON"},
+		{Name: CmdStudioImportLayout, Description: "Import saved WindowTree layout & theme profile JSON"},
 		{Name: CmdStudioCycleTheme, Description: "Cycle active Studio theme preset (SPC t t)"},
 		{Name: CmdStudioToggleWhichKey, Description: "Toggle dual-modal SPC / Emacs Which-Key HUD (SPC ?)"},
 		{Name: CmdStudioToggleSidebar, Description: "Collapse or expand persistent left sidebar (Cmd+B / SPC w B)"},

@@ -14,6 +14,17 @@ import (
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
 
+// RichDocCallbacks wires optional interactive callbacks for pre-parsed
+// Org-mode and Markdown Document IR without introducing any Go-side parser.
+type RichDocCallbacks struct {
+	DocKey         string
+	FoldedHeadings map[string]bool
+	LastCopiedKey  string
+	OnCopyCode     func(copyKey, code string)
+	OnToggleFold   func(headingKey string)
+	OnToggleCheck  func(blockIdx, itemIdx int, nextCheck string)
+}
+
 // RenderRichBlocks renders pre-parsed Markdown and Emacs Org-mode blocks on
 // MyGo's native GPU pipeline with zero per-frame text re-parsing.
 func RenderRichBlocks(
@@ -23,12 +34,38 @@ func RenderRichBlocks(
 	lastCopiedKey string,
 	onCopyCode func(copyKey, code string),
 ) {
+	RenderRichBlocksInteractive(c, dt, blocks, RichDocCallbacks{
+		LastCopiedKey: lastCopiedKey,
+		OnCopyCode:    onCopyCode,
+	})
+}
+
+// RenderRichBlocksInteractive renders pre-parsed Org-mode and Markdown Document
+// IR with interactive heading outline folding, clickable TODO/checklist cycling,
+// and adaptive wide-table layout.
+func RenderRichBlocksInteractive(
+	c *ui.Context,
+	dt DerivedTheme,
+	blocks []richtext.Block,
+	cb RichDocCallbacks,
+) {
 	ui.Column(c).MinWidth(0).Gap(6).AlignItems(ui.Stretch).Children(func() {
-		for idx := range blocks {
+		for idx := 0; idx < len(blocks); idx++ {
 			b := blocks[idx]
 			switch b.Kind {
 			case richtext.BlockHeading:
-				renderRichHeading(c, dt, b)
+				subEnd := richHeadingSubtreeEnd(blocks, idx)
+				hasSub := subEnd > idx+1
+				hKey := fmt.Sprintf("%s:h:%d", cb.DocKey, idx)
+				folded := hasSub && cb.FoldedHeadings != nil && cb.FoldedHeadings[hKey]
+				renderRichHeading(c, dt, b, hKey, hasSub, folded, cb.OnToggleFold)
+				if folded {
+					hidden := subEnd - (idx + 1)
+					ui.Row(c).Padding(0, 0, 0, 18).Gap(6).AlignItems(ui.Center).Children(func() {
+						AppleBadgePill(c, fmt.Sprintf("... %d hidden block(s)", hidden), dt.InkMuted, dt)
+					})
+					idx = subEnd - 1
+				}
 			case richtext.BlockOrgPlanning:
 				renderOrgPlanning(c, dt, b)
 			case richtext.BlockDrawer:
@@ -38,9 +75,9 @@ func RenderRichBlocks(
 			case richtext.BlockQuote:
 				renderRichQuote(c, dt, b)
 			case richtext.BlockList:
-				renderRichList(c, dt, b)
+				renderRichList(c, dt, cb.DocKey, idx, b, cb.OnToggleCheck)
 			case richtext.BlockCode:
-				renderRichCodeBlock(c, dt, b, lastCopiedKey, onCopyCode)
+				renderRichCodeBlock(c, dt, b, cb.LastCopiedKey, cb.OnCopyCode)
 			case richtext.BlockRule:
 				ui.Box(c).Height(1).Background(toColor(dt.Border))
 			default:
@@ -50,7 +87,36 @@ func RenderRichBlocks(
 	})
 }
 
-func renderRichHeading(c *ui.Context, dt DerivedTheme, b richtext.Block) {
+func richHeadingSubtreeEnd(blocks []richtext.Block, headIdx int) int {
+	lvl := blocks[headIdx].Level
+	if lvl <= 0 {
+		lvl = 1
+	}
+	end := headIdx + 1
+	for end < len(blocks) {
+		if blocks[end].Kind == richtext.BlockHeading {
+			nextLvl := blocks[end].Level
+			if nextLvl <= 0 {
+				nextLvl = 1
+			}
+			if nextLvl <= lvl {
+				break
+			}
+		}
+		end++
+	}
+	return end
+}
+
+func renderRichHeading(
+	c *ui.Context,
+	dt DerivedTheme,
+	b richtext.Block,
+	headingKey string,
+	hasSubtree bool,
+	folded bool,
+	onToggleFold func(string),
+) {
 	size := float32(15.5)
 	if b.Level == 2 {
 		size = 14.5
@@ -58,6 +124,23 @@ func renderRichHeading(c *ui.Context, dt DerivedTheme, b richtext.Block) {
 		size = 13.5
 	}
 	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		if hasSubtree && onToggleFold != nil {
+			glyph := "v"
+			actionLbl := "Fold " + strings.TrimSpace(b.RawText)
+			if folded {
+				glyph = ">"
+				actionLbl = "Expand " + strings.TrimSpace(b.RawText)
+			}
+			btn := ui.ButtonBase(c.Key("rich-fold-"+headingKey)).Label(actionLbl).
+				Padding(2, 6).Radius(6).
+				Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt))
+			btn.Children(func() {
+				ui.Text(c, glyph).FontSize(10.5).FontWeight(700).TextColor(toColor(dt.Accent))
+			})
+			if btn.Clicked() {
+				onToggleFold(headingKey)
+			}
+		}
 		if b.TodoWord != "" {
 			AppleBadgePill(c, b.TodoWord, orgTodoTone(b.TodoWord, dt), dt)
 		}
@@ -110,17 +193,23 @@ func renderRichTable(c *ui.Context, dt DerivedTheme, b richtext.Block) {
 	ui.Column(c).MinWidth(0).Radius(10).Clip().
 		Background(toColor(dt.SurfaceRecessed)).
 		Border(1, glassBorderColor(dt)).Children(func() {
+		if len(b.Headers) >= 4 {
+			ui.Row(c).Padding(4, 10).Gap(6).AlignItems(ui.Center).
+				Background(rgbaFromRGB(dt.Info, 0.08)).Children(func() {
+				AppleBadgePill(c, fmt.Sprintf("TABLE · %d cols × %d rows", len(b.Headers), len(b.Rows)), dt.Info, dt)
+			})
+		}
 		// Header row
-		ui.Row(c).Padding(6, 10).Gap(8).AlignItems(ui.Center).
+		ui.Row(c).MinWidth(0).Padding(6, 10).Gap(8).AlignItems(ui.Center).
 			Background(rgbaFromRGB(dt.Accent, 0.12)).
 			BorderWidth(0, 0, 1, 0).BorderColor(toColor(dt.Border)).Children(func() {
 			for _, h := range b.Headers {
-				ui.Text(c, h).FontSize(11.5).FontWeight(700).TextColor(toColor(dt.Ink)).Grow(1)
+				ui.Text(c, h).FontSize(11.5).FontWeight(700).TextColor(toColor(dt.Ink)).Grow(1).MinWidth(0)
 			}
 		})
 		// Data rows
 		for rIdx, row := range b.Rows {
-			rowElem := ui.Row(c).Padding(5, 10).Gap(8).AlignItems(ui.Center)
+			rowElem := ui.Row(c).MinWidth(0).Padding(5, 10).Gap(8).AlignItems(ui.Center)
 			if rIdx%2 == 1 {
 				rowElem.Background(rgbaFromRGB(dt.Ink, 0.03))
 			}
@@ -134,7 +223,7 @@ func renderRichTable(c *ui.Context, dt DerivedTheme, b richtext.Block) {
 					if ci < len(row) {
 						val = row[ci]
 					}
-					ui.Text(c, val).FontSize(11.5).TextColor(toColor(dt.InkSecondary)).Grow(1)
+					ui.Text(c, val).FontSize(11.5).TextColor(toColor(dt.InkSecondary)).Grow(1).MinWidth(0)
 				}
 			})
 		}
@@ -169,18 +258,51 @@ func renderRichQuote(c *ui.Context, dt DerivedTheme, b richtext.Block) {
 	})
 }
 
-func renderRichList(c *ui.Context, dt DerivedTheme, b richtext.Block) {
+func nextChecklistState(cur string) string {
+	switch cur {
+	case "X":
+		return " "
+	default:
+		return "X"
+	}
+}
+
+func renderRichList(
+	c *ui.Context,
+	dt DerivedTheme,
+	docKey string,
+	blockIdx int,
+	b richtext.Block,
+	onToggleCheck func(blockIdx, itemIdx int, nextCheck string),
+) {
 	ui.Column(c).MinWidth(0).Gap(4).AlignItems(ui.Stretch).Children(func() {
-		for _, item := range b.Items {
+		for itemIdx, item := range b.Items {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				switch item.Check {
-				case "X":
-					AppleBadgePill(c, "[X]", dt.Success, dt)
-				case "-":
-					AppleBadgePill(c, "[-]", dt.Warning, dt)
-				case " ":
-					AppleBadgePill(c, "[ ]", dt.InkMuted, dt)
-				default:
+				isCheck := item.Check == "X" || item.Check == "-" || item.Check == " "
+				if isCheck {
+					badgeTxt := "[" + item.Check + "]"
+					tone := dt.InkMuted
+					if item.Check == "X" {
+						tone = dt.Success
+					} else if item.Check == "-" {
+						tone = dt.Warning
+					}
+					if onToggleCheck != nil {
+						btnKey := fmt.Sprintf("rich-chk-%s-%d-%d", docKey, blockIdx, itemIdx)
+						lbl := fmt.Sprintf("Toggle %s %s", badgeTxt, strings.TrimSpace(item.RawText))
+						btn := ui.ButtonBase(c.Key(btnKey)).Label(lbl).
+							Padding(2, 6).Radius(6).
+							Background(rgbaFromRGB(tone, 0.14)).Border(1, rgbaFromRGB(tone, 0.34))
+						btn.Children(func() {
+							ui.Text(c, badgeTxt).FontSize(11).FontWeight(700).TextColor(toColor(tone))
+						})
+						if btn.Clicked() {
+							onToggleCheck(blockIdx, itemIdx, nextChecklistState(item.Check))
+						}
+					} else {
+						AppleBadgePill(c, badgeTxt, tone, dt)
+					}
+				} else {
 					marker := item.Marker
 					if marker == "-" || marker == "+" {
 						marker = "•"

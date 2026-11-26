@@ -10,6 +10,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -291,13 +292,35 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 	case shell.CmdModeNormal:
 		a.SetKeyMode(input.ScopeNormal)
 	case shell.CmdStudioOpenMarketplace:
-		a.marketplaceOpen = true
-	case "studio.open-auth":
+		a.OpenMarketplace()
+	case shell.CmdStudioOpenAuth:
 		a.OpenAuth()
-	case "studio.open-notifications":
+	case shell.CmdStudioOpenNotifications:
 		a.OpenActivityCenter()
-	case "studio.open-keymap-inspector":
+	case shell.CmdStudioOpenKeymap:
 		a.OpenKeymapInspector()
+	case shell.CmdStudioOpenFederation:
+		a.OpenFederation()
+	case shell.CmdStudioOpenSearch:
+		if a.Transcript != nil {
+			a.Transcript.OpenSearch()
+		}
+	case shell.CmdStudioOpenModelPicker:
+		if a.Transcript != nil {
+			a.Transcript.ToggleModelPicker()
+		}
+	case shell.CmdStudioToggleVoice:
+		if a.Transcript != nil {
+			if a.Transcript.Voice != nil && a.Transcript.Voice.Snapshot().Phase != composer.VoiceIdle {
+				a.Transcript.StopVoiceRecording()
+			} else {
+				a.Transcript.StartVoiceRecording()
+			}
+		}
+	case shell.CmdStudioNewSession:
+		if a.OnNewSession != nil {
+			a.OnNewSession()
+		}
 	case shell.CmdStudioOpenProjection:
 		a.projectionOpen = true
 	case shell.CmdStudioOpenPalette:

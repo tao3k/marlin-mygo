@@ -67,6 +67,13 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		activePreview = &cp
 		activePreviewBlocks = tc.previewBlocks
 	}
+	var richFoldSnap map[string]bool
+	if len(tc.richFolded) > 0 {
+		richFoldSnap = make(map[string]bool, len(tc.richFolded))
+		for k, v := range tc.richFolded {
+			richFoldSnap[k] = v
+		}
+	}
 	tc.renderEntries = tc.renderEntries[:0]
 	tc.renderIndices = tc.renderIndices[:0]
 	if first >= 0 && last >= first && last < totalRows {
@@ -126,6 +133,11 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		forkTurnOrd     uint64
 		copiedKey       string
 		copiedCode      string
+		toggleRichFold  string
+		toggleRichCheck *struct {
+			row, blockIdx, itemIdx int
+			nextCheck              string
+		}
 	)
 
 	dt := derivedThemeFromUITheme(t)
@@ -287,9 +299,24 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 							if entry.Collapsible && entry.Folded {
 								ui.Text(c, entry.foldedSummary).FontSize(11.5).TextColor(toColor(dt.InkMuted))
 							} else if len(entry.blocks) > 0 {
-								RenderRichBlocks(c, dt, entry.blocks, lastCopied, func(key, code string) {
-									copiedKey = key
-									copiedCode = code
+								curRow := rowIdx
+								RenderRichBlocksInteractive(c, dt, entry.blocks, RichDocCallbacks{
+									DocKey:         entry.ID,
+									FoldedHeadings: richFoldSnap,
+									LastCopiedKey:  lastCopied,
+									OnCopyCode: func(key, code string) {
+										copiedKey = key
+										copiedCode = code
+									},
+									OnToggleFold: func(hKey string) {
+										toggleRichFold = hKey
+									},
+									OnToggleCheck: func(bIdx, iIdx int, next string) {
+										toggleRichCheck = &struct {
+											row, blockIdx, itemIdx int
+											nextCheck              string
+										}{row: curRow, blockIdx: bIdx, itemIdx: iIdx, nextCheck: next}
+									},
 								})
 							} else if len(entry.segments) > 0 {
 								for sIdx := range entry.segments {
@@ -637,6 +664,12 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	}
 	if copiedKey != "" && copyCB != nil {
 		copyCB(copiedCode)
+	}
+	if toggleRichFold != "" {
+		tc.ToggleRichHeadingFold(toggleRichFold)
+	}
+	if toggleRichCheck != nil {
+		tc.ToggleRichChecklistItem(toggleRichCheck.row, toggleRichCheck.blockIdx, toggleRichCheck.itemIdx, toggleRichCheck.nextCheck)
 	}
 	if toggleRow >= 0 {
 		tc.ToggleFold(toggleRow)

@@ -160,11 +160,13 @@ type TranscriptController struct {
 	OnForkTurn        func(turnOrdinal uint64)
 	// Optional external parser hook backed by org-rz1 WASM or the Rust backend
 	// for rendering rich Org-mode / Markdown previews without Go-side parsing.
-	OnParseRichDoc func(format richtext.Format, docID, source string) ([]richtext.Block, error)
+	OnParseRichDoc    func(format richtext.Format, docID, source string) ([]richtext.Block, error)
+	OnToggleRichCheck func(entryID string, blockIdx, itemIdx int, nextCheck string)
 
-	// Thin Cmd+F Find-in-Session, Model Picker, and Attachment Preview Lightbox state.
+	// Thin Cmd+F Find-in-Session, Model Picker, Rich Outline Fold, and Lightbox state.
 	previewAtt       *composer.AttachmentRef
 	previewBlocks    []richtext.Block
+	richFolded       map[string]bool
 	thumbs           *AttachmentThumbCache
 	modelPickerOpen  bool
 	modelPickerQuery string
@@ -201,6 +203,7 @@ func NewTranscriptController() *TranscriptController {
 		Voice:         composer.NewVoiceController(),
 		streamMetrics: &composer.StreamMetrics{},
 		thumbs:        NewAttachmentThumbCache(32),
+		richFolded:    make(map[string]bool),
 	}
 }
 

@@ -134,13 +134,20 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 			mountShowcaseStudio(ctx, cfg, showcaseDisp, host, app, win, slots, lazySess, syncMarketplace)
 		}
 
-		fireHook, publishProjection := wireLazyTriggers(ctx, app, lazySess, syncMarketplace, win)
+		fireHook, publishProjection := wireLazyTriggers(ctx, app, lazySess, syncMarketplace, notifyCenter, win)
 		wireWindowTabLazyLifecycle(ctx, app, lazySess, syncMarketplace, cfg.idleReapInterval, win)
 		startDevPluginWatcher(ctx, cfg.devPluginDir, host, mktUI, win)
 
 		if conn.provider != nil {
-			stopLiveSession = wireLiveSession(ctx, cfg, conn.provider, wb, federation, host, app, transcript, win, fireHook, publishProjection)
+			initialID := "local-app-server"
+			if conn.liveTarget != nil {
+				initialID = conn.liveTarget.Meta().ID
+			}
+			switcher := grpcwire.NewSwitchableTargetProvider(initialID, conn.provider)
+			wireFederationTargetSwitching(ctx, app, targets, federation, switcher, notifyCenter, win)
+			stopLiveSession = wireLiveSession(ctx, cfg, switcher, wb, federation, host, app, transcript, win, fireHook, publishProjection)
 		} else {
+			wireFederationTargetSwitching(ctx, app, targets, federation, nil, notifyCenter, win)
 			wireStandaloneDemo(cfg.sessionID, app, transcript, win, fireHook, publishProjection)
 		}
 		transcript.OnPickAttachment = func() {
@@ -640,6 +647,7 @@ func wireLazyTriggers(
 	app *mygoshell.WorkbenchApp,
 	lazySess *marketplace.LazySession,
 	syncMarketplace func(),
+	notifyCenter *notify.Center,
 	win *mygo.Window,
 ) (fireHook func(string), publishProjection func(string, any)) {
 	fireHook = func(hookName string) {
@@ -665,6 +673,21 @@ func wireLazyTriggers(
 		}()
 	}
 	app.OnCommandInvoke = func(commandName string) {
+		switch commandName {
+		case shell.CmdStudioExportLayout:
+			exportStudioWorkspaceProfile(app, notifyCenter)
+			win.Invalidate()
+			return
+		case shell.CmdStudioImportLayout:
+			importStudioWorkspaceProfile(app, notifyCenter)
+			win.Invalidate()
+			return
+		case "workbench.probe-federation":
+			if app.FederationUI != nil && app.FederationUI.OnProbeAll != nil {
+				app.FederationUI.OnProbeAll()
+			}
+			return
+		}
 		if lazySess == nil {
 			return
 		}

@@ -357,3 +357,46 @@ func (tc *TranscriptController) StreamMetricsLabel() string {
 	tc.mu.RUnlock()
 	return sm.Label()
 }
+
+// ToggleRichHeadingFold toggles outline folding for one pre-parsed Org/Markdown
+// heading key inside the transcript or Lightbox preview.
+func (tc *TranscriptController) ToggleRichHeadingFold(headingKey string) bool {
+	if headingKey == "" {
+		return false
+	}
+	tc.mu.Lock()
+	if tc.richFolded == nil {
+		tc.richFolded = make(map[string]bool)
+	}
+	next := !tc.richFolded[headingKey]
+	if next {
+		tc.richFolded[headingKey] = true
+	} else {
+		delete(tc.richFolded, headingKey)
+	}
+	tc.mu.Unlock()
+	return next
+}
+
+// ToggleRichChecklistItem updates one admitted checklist item state in-place for
+// immediate 120Hz feedback and invokes OnToggleRichCheck so the backend owns persistence.
+func (tc *TranscriptController) ToggleRichChecklistItem(row, blockIdx, itemIdx int, nextCheck string) bool {
+	tc.mu.Lock()
+	if row < 0 || row >= len(tc.entries) {
+		tc.mu.Unlock()
+		return false
+	}
+	blocks := tc.entries[row].blocks
+	if blockIdx < 0 || blockIdx >= len(blocks) || itemIdx < 0 || itemIdx >= len(blocks[blockIdx].Items) {
+		tc.mu.Unlock()
+		return false
+	}
+	blocks[blockIdx].Items[itemIdx].Check = nextCheck
+	entryID := tc.entries[row].ID
+	cb := tc.OnToggleRichCheck
+	tc.mu.Unlock()
+	if cb != nil {
+		cb(entryID, blockIdx, itemIdx, nextCheck)
+	}
+	return true
+}

@@ -107,3 +107,66 @@ func TestRichDocumentOrgRZ1AndMarkdownGPURenderingAndLightbox(t *testing.T) {
 		}
 	}
 }
+
+func TestRichDocumentInteractiveOutlineFoldingAndChecklistToggle(t *testing.T) {
+	tc := mygoshell.NewTranscriptController()
+	var toggledEntry, toggledNext string
+	var toggledBlock, toggledItem int
+	tc.OnToggleRichCheck = func(entryID string, blockIdx, itemIdx int, nextCheck string) {
+		toggledEntry = entryID
+		toggledBlock = blockIdx
+		toggledItem = itemIdx
+		toggledNext = nextCheck
+	}
+
+	blocks := []richtext.Block{
+		{Kind: richtext.BlockHeading, Level: 1, IsOrg: true, TodoWord: "TODO", RawText: "Release Checklist"},
+		{Kind: richtext.BlockList, Items: []richtext.ListItem{
+			{Check: " ", RawText: "Verify zero-CGO build"},
+			{Check: "X", RawText: "Run race tests"},
+		}},
+		{Kind: richtext.BlockTable, Headers: []string{"Col1", "Col2", "Col3", "Col4"}, Rows: [][]string{{"a", "b", "c", "d"}}},
+		{Kind: richtext.BlockHeading, Level: 1, IsOrg: true, RawText: "Next Milestone"},
+	}
+	if _, err := tc.AppendAssistantRichBlocks(1, "Org Outline", blocks, "DONE"); err != nil {
+		t.Fatalf("AppendAssistantRichBlocks: %v", err)
+	}
+
+	theme := ui.DarkTheme()
+	tt := ui.NewTester(func(c *ui.Context) {
+		tc.Render(c, theme, nil, nil)
+	}, 1200, 820)
+	tt.Frame()
+
+	// Verify wide 4-col table badge renders.
+	if !tt.HasText("TABLE · 4 cols × 1 rows") || !tt.HasText("Verify zero-CGO build") {
+		t.Fatalf("expected wide table header and checklist rendered, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click checklist [ ] -> cycles to [X] and fires OnToggleRichCheck!
+	if err := tt.Click("Toggle [ ] Verify zero-CGO build"); err != nil {
+		t.Fatalf("click checklist item failed: %v", err)
+	}
+	tt.Frame()
+	if toggledEntry != "turn-1" || toggledBlock != 1 || toggledItem != 0 || toggledNext != "X" {
+		t.Fatalf("unexpected OnToggleRichCheck callback: entry=%q b=%d i=%d next=%q", toggledEntry, toggledBlock, toggledItem, toggledNext)
+	}
+
+	// Click Fold heading -> hides subordinate list & table (2 blocks) while keeping sibling heading visible!
+	if err := tt.Click("Fold Release Checklist"); err != nil {
+		t.Fatalf("click Fold Release Checklist failed: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("... 2 hidden block(s)") || tt.HasText("Verify zero-CGO build") || !tt.HasText("Next Milestone") {
+		t.Fatalf("expected folded outline to hide 2 subordinate blocks and keep sibling heading, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click Expand heading -> restores subordinate list & table cleanly!
+	if err := tt.Click("Expand Release Checklist"); err != nil {
+		t.Fatalf("click Expand Release Checklist failed: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("... 2 hidden block(s)") || !tt.HasText("Verify zero-CGO build") {
+		t.Fatalf("expected expanded outline to restore checklist item, got %q", strings.Join(tt.Texts(), " | "))
+	}
+}
