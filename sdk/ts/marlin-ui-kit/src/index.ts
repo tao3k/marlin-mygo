@@ -221,3 +221,28 @@ export const Section = make("section");
 export const Divider = make("divider");
 export const Text = make("text");
 export const Spacer = make("spacer");
+
+/**
+ * Declarative Layer-2 -> Layer-3 Vercel AI SDK Generative UI surface helper.
+ * Embeds a governed sandboxed WebView island subscribed to `data-*` parts.
+ */
+export interface GenerativeUISurfaceProps extends NodeProps {
+  islandId: string;
+  dataType?: `data-${string}`;
+}
+
+export function GenerativeUISurface({
+  islandId,
+  dataType,
+  title,
+  badge,
+  ...rest
+}: GenerativeUISurfaceProps): WidgetNode {
+  return {
+    kind: "web-island",
+    islandId,
+    title: title ?? dataType ?? "Generative UI",
+    badge: badge ?? dataType ?? "ai-sdk",
+    ...rest,
+  };
+}

@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./react": "./src/react.ts",
+    "./ai-sdk": "./src/ai_sdk.ts",
     "./theme": "./src/theme.ts",
     "./ui": "./src/ui.tsx"
   },

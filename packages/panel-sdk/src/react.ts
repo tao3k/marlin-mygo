@@ -36,6 +36,8 @@ import {
   injectMarlinBaseStyles,
 } from "./theme";
 export * from "./ui";
+export * from "./ai_sdk";
+export * from "./generative_artifact";
 
 export interface MarlinLayoutSnapshot {
   perspective: string;

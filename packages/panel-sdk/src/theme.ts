@@ -49,6 +49,28 @@ export const MARLIN_THEME_CSS = `
   --marlin-radius-lg: 12px;
   --marlin-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
   --marlin-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  /* Automatic shadcn/ui & Vercel AI Elements variable bridge derived from --marlin-* tokens */
+  --background: var(--marlin-canvas);
+  --foreground: var(--marlin-ink);
+  --card: var(--marlin-surface);
+  --card-foreground: var(--marlin-ink);
+  --popover: var(--marlin-surface-elevated);
+  --popover-foreground: var(--marlin-ink);
+  --primary: var(--marlin-accent);
+  --primary-foreground: var(--marlin-ink-on-accent);
+  --secondary: var(--marlin-surface-elevated);
+  --secondary-foreground: var(--marlin-ink-secondary);
+  --muted: var(--marlin-surface-recessed);
+  --muted-foreground: var(--marlin-muted);
+  --accent: var(--marlin-accent-soft);
+  --accent-foreground: var(--marlin-ink);
+  --destructive: var(--marlin-danger);
+  --destructive-foreground: var(--marlin-ink-on-accent);
+  --border: var(--marlin-border);
+  --input: var(--marlin-border);
+  --ring: var(--marlin-focus-ring);
+  --radius: var(--marlin-radius-md);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -431,8 +453,34 @@ html, body {
 `;
 
 /**
- * Applies host-broadcast `--marlin-*` CSS variables and `data-appearance` /
- * `data-theme-id` attributes atomically to `document.documentElement`.
+ * Maps Marlin host `--marlin-*` tokens into standard shadcn/ui & Vercel AI Elements
+ * CSS custom properties so third-party React AI components blend seamlessly into
+ * Marlin's Liquid Glass / OKLCH themes with zero visual seam.
+ */
+export function mapMarlinToShadcnTokens(tokens: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  const pairs: ReadonlyArray<[string, string]> = [
+    ["--marlin-canvas", "--background"],
+    ["--marlin-ink", "--foreground"],
+    ["--marlin-surface", "--card"],
+    ["--marlin-ink", "--card-foreground"],
+    ["--marlin-accent", "--primary"],
+    ["--marlin-muted", "--muted-foreground"],
+    ["--marlin-border", "--border"],
+    ["--marlin-danger", "--destructive"],
+  ];
+  for (const [src, dst] of pairs) {
+    if (typeof tokens[src] === "string" && tokens[src].trim() !== "") {
+      out[dst] = tokens[src];
+    }
+  }
+  return out;
+}
+
+/**
+ * Applies host-broadcast `--marlin-*` CSS variables, synchronized shadcn /
+ * Vercel AI Elements bridge variables, and `data-appearance` / `data-theme-id`
+ * attributes atomically to `document.documentElement`.
  */
 export function applyMarlinThemeTokens(tokens: Record<string, string>): void {
   if (typeof document === "undefined" || !document.documentElement) {
@@ -441,6 +489,9 @@ export function applyMarlinThemeTokens(tokens: Record<string, string>): void {
   const root = document.documentElement;
   for (const [key, value] of Object.entries(tokens)) {
     if (!key.startsWith("--marlin-") || typeof value !== "string") continue;
+    root.style.setProperty(key, value);
+  }
+  for (const [key, value] of Object.entries(mapMarlinToShadcnTokens(tokens))) {
     root.style.setProperty(key, value);
   }
   if (tokens["--marlin-appearance"]) {
