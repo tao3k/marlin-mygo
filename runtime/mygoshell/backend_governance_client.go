@@ -17,29 +17,48 @@ type SynthesizedCedarRule struct {
 	Source   string
 }
 
+// GovernanceDelegationEdge mirrors one live parent->child AI delegation edge persisted in MGF1.
+type GovernanceDelegationEdge struct {
+	Parent string `json:"parent"`
+	Child  string `json:"child"`
+}
+
+// GovernanceContextFlow mirrors one live 5-scope shared-context flow persisted in MGF1.
+type GovernanceContextFlow struct {
+	Entry    string `json:"entry"`
+	SrcScope string `json:"src_scope"`
+	Target   string `json:"target"`
+	DstScope string `json:"dst_scope"`
+}
+
 // BackendGovernanceSnapshot mirrors the authoritative 14-slot Rust+Scheme
-// GovernanceProofEnvelope & ExecutionCircuitBreaker state projected
-// from `marlin-agent-core`.
+// GovernanceProofEnvelope, ExecutionCircuitBreaker, and MGF1 fact-graph state
+// projected from `marlin-agent-core`.
 type BackendGovernanceSnapshot struct {
-	Admitted              bool
-	RevocationEpoch       uint64
-	PolicyRevision        uint64
-	BreakerTripped        bool
-	BreakerTripEpoch      uint64
-	BreakerBudgetUsed     uint32
-	BreakerActiveLeases   int
-	RearmGateID           string
-	LastEventNote         string
-	AssessmentDigest      string
-	TaintProofDigest      string
-	FixpointProofDigest   string
-	TemporalProofDigest   string
-	InvalidationDigest    string
-	RejectionReasons      []string
-	FencedActors          []string
-	BlockedTools          []string
-	RetractedConclusions  []string
-	SynthesizedCedarRules []SynthesizedCedarRule
+	Admitted                bool
+	RevocationEpoch         uint64
+	PolicyRevision          uint64
+	BreakerTripped          bool
+	BreakerTripEpoch        uint64
+	BreakerBudgetUsed       uint32
+	BreakerActiveLeases     int
+	RearmGateID             string
+	LastEventNote           string
+	AssessmentDigest        string
+	TaintProofDigest        string
+	FixpointProofDigest     string
+	TemporalProofDigest     string
+	InvalidationDigest      string
+	RejectionReasons        []string
+	FencedActors            []string
+	BlockedTools            []string
+	RetractedConclusions    []string
+	SynthesizedCedarRules   []SynthesizedCedarRule
+	FactDelegations         []GovernanceDelegationEdge
+	FactRevokedActors       []string
+	FactContextFlows        []GovernanceContextFlow
+	FactDeclassifiedEntries []string
+	FactRetractedSubjects   []string
 }
 
 // BackendGovernanceAuthority is the thin-client boundary between `marlin-mygo`'s
@@ -181,6 +200,7 @@ func (b *LocalBackendAuthorityBridge) DelegateActor(parent, child string) (Backe
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.snap.PolicyRevision++
+	b.snap.FactDelegations = append(b.snap.FactDelegations, GovernanceDelegationEdge{Parent: parent, Child: child})
 	b.snap.LastEventNote = fmt.Sprintf("delegated %s -> %s", parent, child)
 	return cloneBackendSnapshot(b.snap), nil
 }
@@ -190,7 +210,19 @@ func (b *LocalBackendAuthorityBridge) RevokeActor(actor string) (BackendGovernan
 	defer b.mu.Unlock()
 	b.snap.RevocationEpoch++
 	b.snap.PolicyRevision++
-	b.snap.FencedActors = append(b.snap.FencedActors, actor)
+	b.snap.FactRevokedActors = appendUniqueString(b.snap.FactRevokedActors, actor)
+	// Propagate transitive closure across local preview delegations.
+	queue := []string{actor}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		b.snap.FencedActors = appendUniqueString(b.snap.FencedActors, cur)
+		for _, edge := range b.snap.FactDelegations {
+			if edge.Parent == cur && !sliceContainsString(b.snap.FencedActors, edge.Child) {
+				queue = append(queue, edge.Child)
+			}
+		}
+	}
 	b.snap.LastEventNote = "revoked " + actor
 	return cloneBackendSnapshot(b.snap), nil
 }
@@ -199,6 +231,9 @@ func (b *LocalBackendAuthorityBridge) RecordContextFlow(entry, srcScope, target,
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.snap.PolicyRevision++
+	b.snap.FactContextFlows = append(b.snap.FactContextFlows, GovernanceContextFlow{
+		Entry: entry, SrcScope: srcScope, Target: target, DstScope: dstScope,
+	})
 	if srcScope == "private" && dstScope == "external" {
 		b.snap.Admitted = false
 		b.snap.BreakerTripped = true
@@ -212,6 +247,7 @@ func (b *LocalBackendAuthorityBridge) DeclassifyContext(entry string) (BackendGo
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.snap.PolicyRevision++
+	b.snap.FactDeclassifiedEntries = appendUniqueString(b.snap.FactDeclassifiedEntries, entry)
 	b.snap.LastEventNote = "declassified " + entry
 	return cloneBackendSnapshot(b.snap), nil
 }
@@ -223,9 +259,26 @@ func (b *LocalBackendAuthorityBridge) RetractPremise(subject string) (BackendGov
 	b.snap.PolicyRevision++
 	b.snap.Admitted = false
 	b.snap.BreakerTripped = true
-	b.snap.RetractedConclusions = append(b.snap.RetractedConclusions, "D-TOOL-EXEC")
+	b.snap.FactRetractedSubjects = appendUniqueString(b.snap.FactRetractedSubjects, subject)
+	b.snap.RetractedConclusions = appendUniqueString(b.snap.RetractedConclusions, "D-TOOL-EXEC")
 	b.snap.LastEventNote = "retracted " + subject
 	return cloneBackendSnapshot(b.snap), nil
+}
+
+func appendUniqueString(items []string, value string) []string {
+	if sliceContainsString(items, value) {
+		return items
+	}
+	return append(items, value)
+}
+
+func sliceContainsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneBackendSnapshot(in BackendGovernanceSnapshot) BackendGovernanceSnapshot {
@@ -235,5 +288,10 @@ func cloneBackendSnapshot(in BackendGovernanceSnapshot) BackendGovernanceSnapsho
 	out.BlockedTools = append([]string(nil), in.BlockedTools...)
 	out.RetractedConclusions = append([]string(nil), in.RetractedConclusions...)
 	out.SynthesizedCedarRules = append([]SynthesizedCedarRule(nil), in.SynthesizedCedarRules...)
+	out.FactDelegations = append([]GovernanceDelegationEdge(nil), in.FactDelegations...)
+	out.FactRevokedActors = append([]string(nil), in.FactRevokedActors...)
+	out.FactContextFlows = append([]GovernanceContextFlow(nil), in.FactContextFlows...)
+	out.FactDeclassifiedEntries = append([]string(nil), in.FactDeclassifiedEntries...)
+	out.FactRetractedSubjects = append([]string(nil), in.FactRetractedSubjects...)
 	return out
 }

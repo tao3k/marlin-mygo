@@ -654,13 +654,17 @@ func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
 		t.Fatalf("expected >= 3 synthesized Cedar forbid rules for fenced chain, got %+v", revSnap.SynthesizedCedarRules)
 	}
 
-	// 3. Live 5-scope shared-context exfiltration: private -> external auto-trips breaker!
+	// 3. Live 5-scope shared-context exfiltration: private -> external auto-trips breaker
+	//    AND synthesizes a resource-scoped Cedar forbid rule for `public-webhook`!
 	exfilSnap, err := govAuth.RecordContextFlow("payroll-csv", "private", "public-webhook", "external")
 	if err != nil {
 		t.Fatalf("RecordContextFlow: %v", err)
 	}
 	if exfilSnap.Admitted || !exfilSnap.BreakerTripped {
 		t.Fatalf("expected private->external flow without declassification to trip breaker fail-closed, got %+v", exfilSnap)
+	}
+	if !hasCedarPolicyID(exfilSnap.SynthesizedCedarRules, "marlin.ascent.forbid.exfil.payroll-csv.public-webhook") {
+		t.Fatalf("expected ASCENT resource-scoped exfil Cedar forbid rule, got %+v", exfilSnap.SynthesizedCedarRules)
 	}
 	if !strings.HasPrefix(exfilSnap.RearmGateID, grpcwire.GovernanceRearmGatePrefix) {
 		t.Fatalf("expected one-shot re-arm gate after scope-escalation trip, got %q", exfilSnap.RearmGateID)
@@ -673,6 +677,9 @@ func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
 	}
 	if !declSnap.BreakerTripped {
 		t.Fatalf("expected breaker to stay latched until human step-up re-arm, got %+v", declSnap)
+	}
+	if hasCedarPolicyID(declSnap.SynthesizedCedarRules, "marlin.ascent.forbid.exfil.payroll-csv.public-webhook") {
+		t.Fatalf("expected declassification to clear exfil Cedar forbid rule, got %+v", declSnap.SynthesizedCedarRules)
 	}
 	rearmed, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true)
 	if err != nil {
@@ -698,9 +705,131 @@ func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
 	}
 }
 
+// TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E proves tamper-evident
+// `MGF1` runtime fact-graph continuity across a real OS `SIGTERM` + restart of
+// standalone Linked-AOT `marlin-scheme-host-aot` sharing one Turso SQLite WAL:
+//   - Phase 1: builds `ops-root -> agent-lead -> agent-worker` delegation graph +
+//     `vault-secret(private) -> ext-webhook(external)` exfil -> declassifies & re-arms.
+//   - Phase 2 (after SIGTERM + Process #2 boot on SAME Turso WAL): verifies restored
+//     `FactDelegations` & `FactDeclassifiedEntries`, then sends incremental `RevokeActor("agent-lead")`
+//     WITHOUT re-sending any delegation edges -> Scheme ASCENT immediately computes
+//     transitive closure over the pre-restart graph and fences BOTH `agent-lead` & `agent-worker`!
+func TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_FACT_RESTART_PHASE"))
+	addr := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_ADDR"))
+	if phase == "" || addr == "" {
+		t.Skip("set MARLIN_SCHEME_HOST_ADDR and MARLIN_SCHEME_HOST_FACT_RESTART_PHASE=1|2 to run durable MGF1 fact-graph restart E2E")
+	}
+	token := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_TOKEN"))
+	authHeader := ""
+	if token != "" {
+		authHeader = "Bearer " + token
+	}
+	target, err := grpcwire.Dial(grpcwire.DialConfig{
+		ID:          "live-scheme-host-fact-restart-" + phase,
+		DisplayName: "Live Linked-AOT MGF1 Restart Host Phase " + phase,
+		Mode:        transport.ModeLocalSidecar,
+		Address:     addr,
+		AuthToken:   authHeader,
+	})
+	if err != nil {
+		t.Fatalf("Dial fact-restart phase %s host %s: %v", phase, addr, err)
+	}
+	defer target.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	govAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
+		Target:    target,
+		ProjectID: "default",
+		SessionID: "e2e-fact-restart-" + phase,
+		Timeout:   10 * time.Second,
+	})
+
+	switch phase {
+	case "1":
+		s0, err := govAuth.Hydrate(ctx)
+		if err != nil || !s0.Admitted || s0.BreakerTripped {
+			t.Fatalf("Phase 1 expected clean armed boot, err=%v snap=%+v", err, s0)
+		}
+		if _, err := govAuth.DelegateActor("ops-root", "agent-lead"); err != nil {
+			t.Fatalf("Phase 1 DelegateActor ops-root->agent-lead: %v", err)
+		}
+		if _, err := govAuth.DelegateActor("agent-lead", "agent-worker"); err != nil {
+			t.Fatalf("Phase 1 DelegateActor agent-lead->agent-worker: %v", err)
+		}
+		exfil, err := govAuth.RecordContextFlow("vault-secret", "private", "ext-webhook", "external")
+		if err != nil || !exfil.BreakerTripped {
+			t.Fatalf("Phase 1 expected exfil trip, err=%v snap=%+v", err, exfil)
+		}
+		if !hasCedarPolicyID(exfil.SynthesizedCedarRules, "marlin.ascent.forbid.exfil.vault-secret.ext-webhook") {
+			t.Fatalf("Phase 1 expected exfil Cedar forbid rule, got %+v", exfil.SynthesizedCedarRules)
+		}
+		if _, err := govAuth.DeclassifyContext("vault-secret"); err != nil {
+			t.Fatalf("Phase 1 DeclassifyContext: %v", err)
+		}
+		armed, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true)
+		if err != nil || armed.BreakerTripped || armed.BreakerTripEpoch != 2 {
+			t.Fatalf("Phase 1 expected armed epoch 2 after step-up re-arm, err=%v snap=%+v", err, armed)
+		}
+		if !hasDelegationEdge(armed.FactDelegations, "ops-root", "agent-lead") ||
+			!hasDelegationEdge(armed.FactDelegations, "agent-lead", "agent-worker") {
+			t.Fatalf("Phase 1 expected persisted delegation edges in snapshot, got %+v", armed.FactDelegations)
+		}
+	case "2":
+		restored, err := govAuth.Hydrate(ctx)
+		if err != nil {
+			t.Fatalf("Phase 2 Hydrate after OS restart: %v", err)
+		}
+		if restored.BreakerTripped || restored.BreakerTripEpoch != 2 {
+			t.Fatalf("Phase 2 expected armed epoch 2 restored from MGV1, got %+v", restored)
+		}
+		if !hasDelegationEdge(restored.FactDelegations, "ops-root", "agent-lead") ||
+			!hasDelegationEdge(restored.FactDelegations, "agent-lead", "agent-worker") {
+			t.Fatalf("MGF1 FACT GRAPH LOST ON RESTART: got %+v", restored.FactDelegations)
+		}
+		if !containsString(restored.FactDeclassifiedEntries, "vault-secret") {
+			t.Fatalf("MGF1 DECLASSIFICATION LOST ON RESTART: got %+v", restored.FactDeclassifiedEntries)
+		}
+		// Incremental post-restart revocation WITHOUT re-sending delegation edges!
+		rev, err := govAuth.RevokeActor("agent-lead")
+		if err != nil {
+			t.Fatalf("Phase 2 incremental post-restart RevokeActor(agent-lead): %v", err)
+		}
+		if !containsString(rev.FencedActors, "agent-lead") || !containsString(rev.FencedActors, "agent-worker") {
+			t.Fatalf("expected post-restart ASCENT transitive closure over pre-restart MGF1 graph to fence agent-lead & agent-worker, got %v", rev.FencedActors)
+		}
+		if !hasCedarPolicyID(rev.SynthesizedCedarRules, "marlin.ascent.forbid.fenced.agent-lead") ||
+			!hasCedarPolicyID(rev.SynthesizedCedarRules, "marlin.ascent.forbid.fenced.agent-worker") {
+			t.Fatalf("expected synthesized Cedar forbids for both fenced actors after restart, got %+v", rev.SynthesizedCedarRules)
+		}
+	default:
+		t.Fatalf("unknown MARLIN_SCHEME_HOST_FACT_RESTART_PHASE=%q", phase)
+	}
+}
+
 func containsString(items []string, needle string) bool {
 	for _, item := range items {
 		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCedarPolicyID(rules []mygoshell.SynthesizedCedarRule, policyID string) bool {
+	for _, r := range rules {
+		if r.PolicyID == policyID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDelegationEdge(edges []mygoshell.GovernanceDelegationEdge, parent, child string) bool {
+	for _, e := range edges {
+		if e.Parent == parent && e.Child == child {
 			return true
 		}
 	}

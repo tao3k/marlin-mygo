@@ -115,16 +115,18 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	}
 
 	var (
-		toggleID      features.FeatureID
-		toggleEnable  bool
-		tripEStop     bool
-		rearmEStop    bool
-		verifyStepUp  bool
-		backendTrip   bool
-		backendRearm  bool
-		evalIncident  bool
-		evalClean     bool
-		nextFilter    = filter
+		toggleID        features.FeatureID
+		toggleEnable    bool
+		tripEStop       bool
+		rearmEStop      bool
+		verifyStepUp    bool
+		backendTrip     bool
+		backendRearm    bool
+		evalIncident    bool
+		evalClean       bool
+		revokeActor     string
+		declassifyEntry string
+		nextFilter      = filter
 	)
 
 	ui.Column(c.Key("governance-console")).Width(720).Gap(12).AlignItems(ui.Stretch).Children(func() {
@@ -233,6 +235,13 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 					ui.Text(c, "Proof Digests: "+digests).
 						FontSize(10.5).TextColor(toColor(dt.InkMuted))
 				}
+				if len(bsnap.FactDelegations) > 0 || len(bsnap.FactContextFlows) > 0 || len(bsnap.FactDeclassifiedEntries) > 0 {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						AppleBadgePill(c, fmt.Sprintf("Delegations: %d", len(bsnap.FactDelegations)), dt.Info, dt)
+						AppleBadgePill(c, fmt.Sprintf("Flows: %d", len(bsnap.FactContextFlows)), dt.Accent, dt)
+						AppleBadgePill(c, fmt.Sprintf("Declassified: %d", len(bsnap.FactDeclassifiedEntries)), dt.Success, dt)
+					})
+				}
 				if _, ok := backendAuth.(BackendGovernanceMutator); ok {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						if ApplePillButton(c, "gov-scheme-eval-incident", "Eval Incident", BtnGlass, dt, nil, true).Clicked() {
@@ -240,6 +249,18 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 						}
 						if ApplePillButton(c, "gov-scheme-eval-clean", "Eval Clean", BtnGlass, dt, nil, true).Clicked() {
 							evalClean = true
+						}
+						for _, actor := range activeRevocableActors(bsnap, 3) {
+							a := actor
+							if ApplePillButton(c, "gov-revoke-"+a, "Revoke "+a, BtnDestructive, dt, nil, true).Clicked() {
+								revokeActor = a
+							}
+						}
+						for _, entry := range activeDeclassifiableEntries(bsnap, 2) {
+							e := entry
+							if ApplePillButton(c, "gov-declassify-"+e, "Declassify "+e, BtnTinted, dt, nil, true).Clicked() {
+								declassifyEntry = e
+							}
 						}
 					})
 				}
@@ -464,6 +485,32 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 				ledger.RecordAudit("human-console", "scheme.governance", "eval-clean", features.AuditAdmitted, fmt.Sprintf("rev-%d", snap.PolicyRevision))
 			}
 		}
+		if revokeActor != "" {
+			snap, err := mut.RevokeActor(revokeActor)
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", revokeActor, "revoke-actor", features.AuditAdmitted, fmt.Sprintf("fenced-%d", len(snap.FencedActors)))
+			}
+		}
+		if declassifyEntry != "" {
+			snap, err := mut.DeclassifyContext(declassifyEntry)
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", declassifyEntry, "declassify-context", features.AuditAdmitted, fmt.Sprintf("rev-%d", snap.PolicyRevision))
+			}
+		}
 	}
 
 	if tripEStop && breaker != nil {
@@ -553,4 +600,52 @@ func formatProofDigestSummary(snap BackendGovernanceSnapshot) string {
 		}
 	}
 	return strings.Join(parts, " · ")
+}
+
+func activeRevocableActors(snap BackendGovernanceSnapshot, maxItems int) []string {
+	out := make([]string, 0, maxItems)
+	seen := make(map[string]struct{}, len(snap.FencedActors)+maxItems)
+	for _, fenced := range snap.FencedActors {
+		seen[fenced] = struct{}{}
+	}
+	for _, edge := range snap.FactDelegations {
+		for _, candidate := range []string{edge.Parent, edge.Child} {
+			c := strings.TrimSpace(candidate)
+			if c == "" {
+				continue
+			}
+			if _, exists := seen[c]; exists {
+				continue
+			}
+			seen[c] = struct{}{}
+			out = append(out, c)
+			if len(out) >= maxItems {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func activeDeclassifiableEntries(snap BackendGovernanceSnapshot, maxItems int) []string {
+	out := make([]string, 0, maxItems)
+	seen := make(map[string]struct{}, len(snap.FactDeclassifiedEntries)+maxItems)
+	for _, dec := range snap.FactDeclassifiedEntries {
+		seen[dec] = struct{}{}
+	}
+	for _, flow := range snap.FactContextFlows {
+		e := strings.TrimSpace(flow.Entry)
+		if e == "" {
+			continue
+		}
+		if _, exists := seen[e]; exists {
+			continue
+		}
+		seen[e] = struct{}{}
+		out = append(out, e)
+		if len(out) >= maxItems {
+			return out
+		}
+	}
+	return out
 }

@@ -12,14 +12,44 @@ import (
 	"strings"
 )
 
-// DefaultAppServerBinaryNames lists the Rust App Server sidecar executable names
-// in long-term preference order: client-neutral `marlin-app-server` first, then
-// the standalone Linked-AOT `marlin-scheme-host-aot` authority daemon, with
-// automatic fallback to the legacy `marlin-mygo-host` binary name.
+// DefaultAppServerBinaryNames lists the full session-bearing Rust App Server
+// sidecar executable names in preference order: client-neutral `marlin-app-server`
+// first, with automatic fallback to the legacy `marlin-mygo-host` binary name.
 var DefaultAppServerBinaryNames = []string{
 	"marlin-app-server",
-	"marlin-scheme-host-aot",
 	"marlin-mygo-host",
+}
+
+// DefaultSchemeHostBinaryNames lists the dedicated Rust+Gerbil Scheme Governance
+// Authority daemon executables in preference order: standalone zero-`.ss`
+// Linked-AOT `marlin-scheme-host-aot` first, falling back to `marlin-scheme-host`.
+var DefaultSchemeHostBinaryNames = []string{
+	"marlin-scheme-host-aot",
+	"marlin-scheme-host",
+}
+
+// DiscoverSchemeHostBinary locates the local Rust+Scheme Governance Authority
+// sidecar (`marlin-scheme-host-aot` or `marlin-scheme-host`) in deterministic
+// priority order (explicit path, MARLIN_SCHEME_HOST_BIN, sibling, PATH, Cargo target).
+func DiscoverSchemeHostBinary(opts SidecarDiscoverOptions) (string, string, bool) {
+	if p := strings.TrimSpace(opts.ExplicitPath); p != "" {
+		if resolved, ok := validateExecutableFile(p); ok {
+			return resolved, "flag", true
+		}
+		return p, "flag", false
+	}
+	envLookup := opts.EnvLookup
+	if envLookup == nil {
+		envLookup = os.Getenv
+	}
+	if p := strings.TrimSpace(envLookup("MARLIN_SCHEME_HOST_BIN")); p != "" {
+		if resolved, ok := validateExecutableFile(p); ok {
+			return resolved, "env:MARLIN_SCHEME_HOST_BIN", true
+		}
+	}
+	opts.BinaryNames = DefaultSchemeHostBinaryNames
+	opts.EnvLookup = func(string) string { return "" }
+	return DiscoverAppServerBinary(opts)
 }
 
 // SidecarDiscoverOptions controls deterministic discovery of the local Rust

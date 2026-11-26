@@ -307,3 +307,69 @@ func TestTier0GovernanceConsoleBackendAuthorityAndStepUpRearm(t *testing.T) {
 		t.Fatalf("expected BACKEND ADMITTED pill after step-up re-arm, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }
+
+func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	ledger := features.NewGovernanceLedger(features.DefaultGovernancePolicy())
+	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   2,
+		BreakerTripped:   false,
+		BreakerTripEpoch: 1,
+		FactDelegations: []mygoshell.GovernanceDelegationEdge{
+			{Parent: "ops-root", Child: "agent-lead"},
+			{Parent: "agent-lead", Child: "agent-worker"},
+		},
+		FactContextFlows: []mygoshell.GovernanceContextFlow{
+			{Entry: "vault-secret", SrcScope: "private", Target: "ext-webhook", DstScope: "external"},
+		},
+	})
+
+	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), ledger, features.NewHost())
+	govUI.AttachBackendAuthority(authBridge)
+	app.GovernanceUI = govUI
+	app.OpenGovernance()
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	for _, want := range []string{
+		"Delegations: 2",
+		"Flows: 1",
+		"Declassified: 0",
+		"Revoke agent-lead",
+		"Declassify vault-secret",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected interactive fact-graph control %q, got %q", want, strings.Join(tt.Texts(), " | "))
+		}
+	}
+
+	// Click Revoke agent-lead -> transitively fences agent-lead AND agent-worker & records audit receipt!
+	if err := tt.Click("Revoke agent-lead"); err != nil {
+		t.Fatalf("click Revoke agent-lead: %v", err)
+	}
+	tt.Frame()
+	snap := authBridge.Snapshot()
+	if len(snap.FencedActors) != 2 || !tt.HasText("ASCENT Fenced: agent-lead, agent-worker") {
+		t.Fatalf("expected transitive fencing of agent-lead & agent-worker, snap=%+v texts=%q", snap, strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click Declassify vault-secret -> updates Declassified badge & records audit receipt!
+	if err := tt.Click("Declassify vault-secret"); err != nil {
+		t.Fatalf("click Declassify vault-secret: %v", err)
+	}
+	tt.Frame()
+	snap = authBridge.Snapshot()
+	if len(snap.FactDeclassifiedEntries) != 1 || snap.FactDeclassifiedEntries[0] != "vault-secret" || !tt.HasText("Declassified: 1") {
+		t.Fatalf("expected vault-secret declassified, snap=%+v texts=%q", snap, strings.Join(tt.Texts(), " | "))
+	}
+	trail := ledger.AuditTrail()
+	if len(trail) < 2 {
+		t.Fatalf("expected immutable audit receipts recorded for interactive revoke & declassify, got %d", len(trail))
+	}
+}

@@ -544,26 +544,40 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 		}
 	}
 
+	var factDelegations []mygoshell.GovernanceDelegationEdge
+	if raw := strings.TrimSpace(facets["fact_delegations_json"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &factDelegations)
+	}
+	var factFlows []mygoshell.GovernanceContextFlow
+	if raw := strings.TrimSpace(facets["fact_context_flows_json"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &factFlows)
+	}
+
 	return mygoshell.BackendGovernanceSnapshot{
-		Admitted:              parseBool("admitted"),
-		RevocationEpoch:       parseU64("revocation_epoch"),
-		PolicyRevision:        parseU64("policy_revision"),
-		BreakerTripped:        parseBool("breaker_tripped"),
-		BreakerTripEpoch:      parseU64("breaker_trip_epoch"),
-		BreakerBudgetUsed:     uint32(parseU64("breaker_budget_used")),
-		BreakerActiveLeases:   int(parseU64("breaker_active_leases")),
-		RearmGateID:           strings.TrimSpace(facets["rearm_gate_id"]),
-		LastEventNote:         strings.TrimSpace(facets["last_event_note"]),
-		AssessmentDigest:      strings.TrimSpace(facets["assessment_digest"]),
-		TaintProofDigest:      strings.TrimSpace(facets["taint_proof_digest"]),
-		FixpointProofDigest:   strings.TrimSpace(facets["fixpoint_proof_digest"]),
-		TemporalProofDigest:   strings.TrimSpace(facets["temporal_proof_digest"]),
-		InvalidationDigest:    strings.TrimSpace(facets["invalidation_digest"]),
-		RejectionReasons:      parseStringSlice("rejection_reasons_json"),
-		FencedActors:          parseStringSlice("fenced_actors_json"),
-		BlockedTools:          parseStringSlice("blocked_tools_json"),
-		RetractedConclusions:  parseStringSlice("retracted_conclusions_json"),
-		SynthesizedCedarRules: cedarRules,
+		Admitted:                parseBool("admitted"),
+		RevocationEpoch:         parseU64("revocation_epoch"),
+		PolicyRevision:          parseU64("policy_revision"),
+		BreakerTripped:          parseBool("breaker_tripped"),
+		BreakerTripEpoch:        parseU64("breaker_trip_epoch"),
+		BreakerBudgetUsed:       uint32(parseU64("breaker_budget_used")),
+		BreakerActiveLeases:     int(parseU64("breaker_active_leases")),
+		RearmGateID:             strings.TrimSpace(facets["rearm_gate_id"]),
+		LastEventNote:           strings.TrimSpace(facets["last_event_note"]),
+		AssessmentDigest:        strings.TrimSpace(facets["assessment_digest"]),
+		TaintProofDigest:        strings.TrimSpace(facets["taint_proof_digest"]),
+		FixpointProofDigest:     strings.TrimSpace(facets["fixpoint_proof_digest"]),
+		TemporalProofDigest:     strings.TrimSpace(facets["temporal_proof_digest"]),
+		InvalidationDigest:      strings.TrimSpace(facets["invalidation_digest"]),
+		RejectionReasons:        parseStringSlice("rejection_reasons_json"),
+		FencedActors:            parseStringSlice("fenced_actors_json"),
+		BlockedTools:            parseStringSlice("blocked_tools_json"),
+		RetractedConclusions:    parseStringSlice("retracted_conclusions_json"),
+		SynthesizedCedarRules:   cedarRules,
+		FactDelegations:         factDelegations,
+		FactRevokedActors:       parseStringSlice("fact_revoked_actors_json"),
+		FactContextFlows:        factFlows,
+		FactDeclassifiedEntries: parseStringSlice("fact_declassified_entries_json"),
+		FactRetractedSubjects:   parseStringSlice("fact_retracted_subjects_json"),
 	}
 }
 
@@ -574,5 +588,10 @@ func cloneGovernanceSnapshot(in mygoshell.BackendGovernanceSnapshot) mygoshell.B
 	out.BlockedTools = append([]string(nil), in.BlockedTools...)
 	out.RetractedConclusions = append([]string(nil), in.RetractedConclusions...)
 	out.SynthesizedCedarRules = append([]mygoshell.SynthesizedCedarRule(nil), in.SynthesizedCedarRules...)
+	out.FactDelegations = append([]mygoshell.GovernanceDelegationEdge(nil), in.FactDelegations...)
+	out.FactRevokedActors = append([]string(nil), in.FactRevokedActors...)
+	out.FactContextFlows = append([]mygoshell.GovernanceContextFlow(nil), in.FactContextFlows...)
+	out.FactDeclassifiedEntries = append([]string(nil), in.FactDeclassifiedEntries...)
+	out.FactRetractedSubjects = append([]string(nil), in.FactRetractedSubjects...)
 	return out
 }

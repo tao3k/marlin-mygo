@@ -143,3 +143,38 @@ func TestDiscoverAppServerBinaryPrecedence(t *testing.T) {
 		t.Fatal("expected non-executable explicit binary to be rejected")
 	}
 }
+
+func TestDiscoverSchemeHostBinaryPrefersLinkedAOT(t *testing.T) {
+	root := t.TempDir()
+	workSubDir := filepath.Join(root, "repo", ".data", "marlin-mygo")
+	if err := os.MkdirAll(workSubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	noEnv := func(string) string { return "" }
+	noPath := func(string) (string, error) { return "", errors.New("not in path") }
+
+	// Linked-AOT `marlin-scheme-host-aot` MUST NOT hijack full-session `DiscoverAppServerBinary`.
+	aotBin := filepath.Join(root, "repo", "target", "debug", "marlin-scheme-host-aot")
+	dynBin := filepath.Join(root, "repo", "target", "debug", "marlin-scheme-host")
+	writeFakeExec(t, dynBin, true)
+	writeFakeExec(t, aotBin, true)
+
+	if got, _, ok := DiscoverAppServerBinary(SidecarDiscoverOptions{
+		ExeDir:     filepath.Join(root, "empty"),
+		WorkDir:    workSubDir,
+		EnvLookup:  noEnv,
+		PathLookup: noPath,
+	}); ok {
+		t.Fatalf("expected DiscoverAppServerBinary to ignore scheme-host-only binaries, got %q", got)
+	}
+
+	got, src, ok := DiscoverSchemeHostBinary(SidecarDiscoverOptions{
+		ExeDir:     filepath.Join(root, "empty"),
+		WorkDir:    workSubDir,
+		EnvLookup:  noEnv,
+		PathLookup: noPath,
+	})
+	if !ok || got != aotBin || src != "workspace-target-debug" {
+		t.Fatalf("expected DiscoverSchemeHostBinary to prefer marlin-scheme-host-aot %q, got path=%q src=%q ok=%v", aotBin, got, src, ok)
+	}
+}
