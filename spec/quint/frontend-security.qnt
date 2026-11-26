@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
 
 // Formal adversarial security model for the marlin-mygo Frontend Engine & Plugin Ecosystem.
-// Models 10 formal safety invariants:
+// Models 12 formal safety invariants:
 //   1. Restricted slot trust (approval.gate never mounts untrusted plugins).
 //   2. Marketplace Ed25519 release verification (tampered/rogue bundles cannot activate).
 //   3. Untrusted WebView CallerPage == Host origin pinning & action allowlists.
@@ -14,15 +14,20 @@
 //   8. Emacs-style lazy Dormant/Sleep/ReapIdle isolation (dormant plugins own no slot).
 //   9. Bounded O(1) LRU working-set cap (evictable active count <= maxActiveLazy).
 //  10. Anti-silent upgrade privilege escalation (added permissions require user confirmation).
+//  11. Human-only Agent Room approval invariant (AI agent roles never hold CanApproveGates or sign gate receipts).
+//  12. Tier-0 Room PromptGate one-shot receipt uniqueness (no gateId resolved twice).
 //
-// Includes 11 explicit adversarial negative-control step actions (badStep*) — one
+// Includes 13 explicit adversarial negative-control step actions (badStep*) — one
 // per threat vector — that MUST violate `safe` when checked by `marlin-mygo-tool model-gate`.
 module frontendPluginSecurity {
   val plugins = Set("pA", "pB", "pEvil")
   val slots = Set("workbench.main", "workbench.inspector", "approval.gate")
   val actions = Set("org.move", "diff.view", "shell.exec")
   val topics = Set("org.tasks", "workspace.diff", "host.secrets")
+  val roomRoles = Set("human", "architect", "reviewer", "security")
   val maxActiveLazy = 1
+
+  pure def isAgentRole(r: str): bool = r != "human"
 
   pure def declaredActions(p: str): Set[str] =
     if (p == "pA") Set("org.move")
@@ -48,6 +53,7 @@ module frontendPluginSecurity {
   type ActionRecord = { plugin: str, caller: str, gen: int, act: str }
   type EventRecord = { plugin: str, gen: int, topic: str }
   type DeviceWriteRecord = { gateId: int, hasReceipt: bool, osPermitted: bool }
+  type RoomGateReceipt = { gateId: int, approver: str, approved: bool }
 
   type State = {
     verified: str -> bool,
@@ -63,6 +69,10 @@ module frontendPluginSecurity {
     escalatedActive: str -> bool,
     gateId: int,
     gateState: str, // "none" | "pending" | "approved" | "rejected" | "claimed"
+    canApproveGates: str -> bool,
+    roomGateSeq: int,
+    roomGatePending: int,
+    roomGateReceipts: List[RoomGateReceipt],
     admittedActions: List[ActionRecord],
     deliveredEvents: List[EventRecord],
     deviceWrites: List[DeviceWriteRecord],
@@ -92,6 +102,10 @@ module frontendPluginSecurity {
     escalatedActive: Map("pA" -> false, "pB" -> false, "pEvil" -> false),
     gateId: 0,
     gateState: "none",
+    canApproveGates: Map("human" -> true, "architect" -> false, "reviewer" -> false, "security" -> false),
+    roomGateSeq: 0,
+    roomGatePending: 0,
+    roomGateReceipts: [],
     admittedActions: [],
     deliveredEvents: [],
     deviceWrites: [],
@@ -358,6 +372,48 @@ module frontendPluginSecurity {
     invokeDeviceWrite(osOk)
   }
 
+  // Multi-Role Agent Chat Room gate request & human-only one-shot PromptGate sign-off.
+  action requestRoomGate = all {
+    s.roomGatePending == 0,
+    s.roomGateSeq < 4,
+    val nextId = s.roomGateSeq + 1
+    s' = s.with("roomGateSeq", nextId).with("roomGatePending", nextId),
+  }
+
+  action resolveRoomGate(approver: str, approve: bool): bool = all {
+    roomRoles.contains(approver),
+    s.roomGatePending > 0,
+    val allowed = not(isAgentRole(approver)) and s.canApproveGates.get(approver)
+    s' = if (allowed)
+      s.with("roomGatePending", 0)
+       .with("roomGateReceipts", s.roomGateReceipts.append({
+         gateId: s.roomGatePending, approver: approver, approved: approve,
+       }))
+    else s,
+  }
+
+  action resolveAnyRoomGate = {
+    nondet who = roomRoles.oneOf()
+    nondet ok = Set(true, false).oneOf()
+    resolveRoomGate(who, ok)
+  }
+
+  action attemptGrantAgentApprove(actor: str, target: str): bool = all {
+    roomRoles.contains(actor),
+    roomRoles.contains(target),
+    // Fail-closed: human-only CanApproveGates invariant rejects granting to any agent.
+    val allowed = not(isAgentRole(actor)) and s.canApproveGates.get(actor) and not(isAgentRole(target))
+    s' = if (allowed)
+      s.with("canApproveGates", s.canApproveGates.set(target, true))
+    else s,
+  }
+
+  action attemptAnyGrantApprove = {
+    nondet actor = roomRoles.oneOf()
+    nondet target = roomRoles.oneOf()
+    attemptGrantAgentApprove(actor, target)
+  }
+
   action step = any {
     stageAnyRelease,
     driftAnyPin,
@@ -373,9 +429,12 @@ module frontendPluginSecurity {
     openDeviceGate,
     resolveAnyGate,
     invokeAnyDeviceWrite,
+    requestRoomGate,
+    resolveAnyRoomGate,
+    attemptAnyGrantApprove,
   }
 
-  // --- 11 Adversarial Negative Controls (each deliberately breaks ONE security gate) ---
+  // --- 13 Adversarial Negative Controls (each deliberately breaks ONE security gate) ---
 
   // Control 1: forgets CallerPage == Host check in marlin-plugin:// handler.
   action badStepOriginSpoof = any {
@@ -508,7 +567,32 @@ module frontendPluginSecurity {
     },
   }
 
-  // --- 10 Formal Safety Invariants ---
+  // Control 12: AI agent role self-approves a pending Agent Room PromptGate.
+  action badStepAgentSelfApproveGate = any {
+    step,
+    all {
+      s.roomGatePending > 0,
+      s' = s
+        .with("roomGatePending", 0)
+        .with("roomGateReceipts", s.roomGateReceipts.append({
+          gateId: s.roomGatePending, approver: "architect", approved: true,
+        })),
+    },
+  }
+
+  // Control 13: Replays resolution on an already-claimed room PromptGate ID.
+  action badStepRoomGateDoubleResolve = any {
+    step,
+    all {
+      s.roomGateReceipts.length() > 0,
+      s.roomGateSeq > 0,
+      s' = s.with("roomGateReceipts", s.roomGateReceipts.append({
+        gateId: 1, approver: "human", approved: true,
+      })),
+    },
+  }
+
+  // --- 12 Formal Safety Invariants ---
 
   val invRestrictedSlotAlwaysTrusted =
     s.slotOwner.get("approval.gate") == "host.gate" and s.slotTrusted.get("approval.gate")
@@ -555,6 +639,16 @@ module frontendPluginSecurity {
   val invNoUnconfirmedEscalationUpgrade =
     plugins.forall(p => s.escalatedActive.get(p) implies s.escalationConfirmed.get(p))
 
+  val invNoAgentCanApproveGates = all {
+    roomRoles.forall(r => isAgentRole(r) implies not(s.canApproveGates.get(r))),
+    s.roomGateReceipts.foldl(true, (acc, rec) => acc and not(isAgentRole(rec.approver))),
+  }
+
+  val invRoomGateOneShotUniqueClaim = {
+    val ids = s.roomGateReceipts.foldl(Set(), (acc, rec) => acc.union(Set(rec.gateId)))
+    ids.size() == s.roomGateReceipts.length()
+  }
+
   val safe = all {
     invRestrictedSlotAlwaysTrusted,
     invNoTamperedPluginActive,
@@ -566,6 +660,8 @@ module frontendPluginSecurity {
     invDormantOwnsNoSlot,
     invWorkingSetBoundedByLRUCap,
     invNoUnconfirmedEscalationUpgrade,
+    invNoAgentCanApproveGates,
+    invRoomGateOneShotUniqueClaim,
   }
 
   // --- Executable Quint Tests ---
@@ -651,6 +747,21 @@ module frontendPluginSecurity {
         assert(s.escalatedActive.get("pA")),
         assert(s.escalationConfirmed.get("pA")),
         assert(s.gen.get("pA") == 2),
+        s' = s,
+      })
+  }
+
+  run roomHumanOnlyGateAndOneShotReceiptTest = {
+    init
+      .then(attemptGrantAgentApprove("human", "architect")) // refused fail-closed
+      .then(requestRoomGate)
+      .then(resolveRoomGate("architect", true))             // AI self-approve refused
+      .then(resolveRoomGate("human", true))                 // human approves once
+      .then(all {
+        assert(safe),
+        assert(not(s.canApproveGates.get("architect"))),
+        assert(s.roomGatePending == 0),
+        assert(s.roomGateReceipts.length() == 1),
         s' = s,
       })
   }

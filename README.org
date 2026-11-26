@@ -52,15 +52,17 @@ iOS/Android bridges).
   =grpcwire.ContinuityCoordinator=), with automatic exponential-backoff
   reconnect, replay deduplication, and FIFO idempotent outbox draining across
   Chat, Mobile Companion, Agent Room, Compare, and Canvas.
-- *Formally Verified Security Boundaries*: Ten core isolation invariants
+- *Formally Verified Security Boundaries*: Twelve core isolation invariants
   (restricted =approval.gate= protection, Ed25519 release integrity,
   =CallerPage == Host= WebView origin pinning + MyGo WebKit =ContentRules=
   egress blocking, =read_scopes= isolation, one-shot Rust =GateReceipt= device
   writes, circuit-breaker fallback, lockfile =pinned_sha256= lazy wake,
-  dormant slot isolation, bounded LRU working-set cap, and anti-silent upgrade
-  privilege escalation confirmation) are formally challenged in Quint with
-  *11 adversarial negative controls*, *5,000+ combined randomized adversarial
-  state-machine steps* across =pluginhost= and =marketplace=, and *10 Go fuzzers*.
+  dormant slot isolation, bounded LRU working-set cap, anti-silent upgrade
+  privilege escalation confirmation, human-only Agent Room =CanApproveGates=,
+  and one-shot room PromptGate receipt uniqueness) are formally challenged in
+  Quint with *13 adversarial negative controls*, *9,000+ combined randomized
+  adversarial state-machine steps* across =pluginhost=, =marketplace=,
+  =resilience=, and =chatroom=, and *16 Go fuzzers*.
 
 * Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro Baseline, Zero CGO)
 

@@ -169,7 +169,7 @@ func (a *WorkbenchApp) renderWhichKeyHUD(c *ui.Context, t *ui.Theme, dt DerivedT
 				closeSheet = true
 			}
 		})
-		ui.Text(c, "NORMAL (SPC):  SPC w [v/s/d/z/o/=/b/x] windows  ·  SPC p [1-4] perspectives  ·  SPC m marketplace  ·  SPC i inspect  ·  SPC t t theme  ·  i/a -> Insert").
+		ui.Text(c, "NORMAL (SPC):  SPC w [v/s/d/z/o/=/b/x] windows  ·  SPC o [r/c/d] spaces (Room/Compare/Canvas)  ·  SPC G gov  ·  SPC p [1-4] perspectives  ·  SPC m market  ·  i/a -> Insert").
 			FontSize(11).TextColor(toColor(dt.Ink))
 		ui.Text(c, "INSERT (EMACS):  C-n/C-p line  ·  C-f/C-b char  ·  C-a/C-e bol/eol  ·  M-f/M-b word  ·  C-d/C-h del  ·  C-k kill  ·  C-y yank  ·  C-x [0/1/2/3/o]  ·  ESC/C-g -> Normal").
 			FontSize(11).TextColor(toColor(dt.InkSecondary))
@@ -193,6 +193,8 @@ func whichKeyGroupName(k string) string {
 		return "buffer/tab"
 	case "p":
 		return "perspective"
+	case "o":
+		return "spaces"
 	case "t":
 		return "theme"
 	default:

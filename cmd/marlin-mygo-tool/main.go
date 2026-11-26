@@ -58,6 +58,8 @@ var quintNegativeControls = []string{
 	"badStepDormantForgetsFallback",
 	"badStepLRUCapExceeded",
 	"badStepSilentPrivilegeEscalation",
+	"badStepAgentSelfApproveGate",
+	"badStepRoomGateDoubleResolve",
 }
 
 var restrictedSlots = []string{

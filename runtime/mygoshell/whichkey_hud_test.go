@@ -51,8 +51,8 @@ func TestDualModalWhichKeyHUDAndEmacsEditStrip(t *testing.T) {
 		t.Fatalf("expected MatchPrefix SPC, got %v %q", kind, prefix)
 	}
 	tt.Frame()
-	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (18)") {
-		t.Fatalf("expected SPC Which-Key HUD with +window hints, got texts=%q", tt.Texts())
+	if !tt.HasText("WHICH-KEY · SPC …") || !tt.HasText("[w] +window (18)") || !tt.HasText("[o] +spaces (3)") {
+		t.Fatalf("expected SPC Which-Key HUD with +window and +spaces hints, got texts=%q", tt.Texts())
 	}
 
 	// 2. Clicking [w] +window (18) drills down into window split chords, then [v] splits right!
