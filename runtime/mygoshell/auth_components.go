@@ -6,7 +6,6 @@ package mygoshell
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/egoist/mygo/ui"
 
@@ -32,22 +31,16 @@ var (
 	))
 )
 
-// AuthSecurityBanner renders the compact Tier-0 cryptographic assurance strip
-// summarizing active OAuth 2.1 PKCE S256 and OS Keychain vault guarantees.
+// AuthSecurityBanner renders a quiet, restrained credential storage status line.
 func AuthSecurityBanner(c *ui.Context, dt DerivedTheme, vaultInfo auth.VaultSecurityInfo) {
 	vaultLabel := "Encrypted Host Vault"
 	if vaultInfo.BackendName != "" {
-		if vaultInfo.CipherSuite != "" && vaultInfo.OSProtected {
-			vaultLabel = fmt.Sprintf("%s · %s", vaultInfo.BackendName, vaultInfo.CipherSuite)
-		} else {
-			vaultLabel = vaultInfo.BackendName
-		}
+		vaultLabel = vaultInfo.BackendName
 	}
-	ui.Row(c).Padding(8, 12).Gap(8).Radius(10).AlignItems(ui.Center).
-		Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
-		ui.Icon(c, svgIconShield).Size(14, 14).TextColor(toColor(dt.Success))
-		ui.Textf(c, "OAuth 2.1 PKCE S256 · %s · Zero Plugin Token Access", vaultLabel).
-			FontSize(11).TextColor(toColor(dt.InkSecondary))
+	ui.Row(c).Padding(4, 2).Gap(7).AlignItems(ui.Center).Children(func() {
+		ui.Icon(c, svgIconShield).Size(13, 13).TextColor(toColor(dt.Success))
+		ui.Textf(c, "Credentials stored in %s", vaultLabel).
+			FontSize(11.5).TextColor(toColor(dt.InkMuted))
 	})
 }
 
@@ -112,34 +105,45 @@ func AuthVaultStatusCard(
 	})
 }
 
-// AuthOAuthProviderButton renders a reusable SSO provider action row with
-// provider-appropriate styling, icon, and protocol badge (PKCE S256 / Device).
+// AuthOAuthProviderButton renders a clean, full-width, neutral sign-in button
+// with crisp 8px corners and zero protocol-jargon badge clutter.
 func AuthOAuthProviderButton(
 	c *ui.Context,
 	dt DerivedTheme,
 	provider auth.ProviderSummary,
 	onClick func(),
 ) {
-	variant := BtnTinted
 	icon := svgIconGlobe
 	switch provider.ID {
 	case auth.ProviderGoogle:
-		variant = BtnPrimary
 		icon = svgIconShield
 	case auth.ProviderGitHub:
-		variant = BtnTinted
 		icon = svgIconKey
 	case auth.ProviderOIDC:
-		variant = BtnGlass
 		icon = svgIconLock
 	}
 	label := fmt.Sprintf("Continue with %s", provider.DisplayName)
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		if ApplePillButton(c, "auth-oauth-"+string(provider.ID), label, variant, dt, icon, false).Clicked() && onClick != nil {
-			onClick()
-		}
-		AppleBadgePill(c, strings.ToUpper(string(provider.Method)), dt.Info, dt)
+	btn := ui.ButtonBase(c.Key("auth-oauth-"+string(provider.ID))).Label(label).
+		Padding(9, 12).Radius(RadiusControl).
+		AlignItems(ui.Center).Justify(ui.Start).Gap(10)
+	fill := toColor(dt.SurfaceElevated)
+	borderCol := toColor(dt.Border)
+	if btn.Hovered() {
+		fill = toColor(dt.SurfaceHover)
+		borderCol = toColor(dt.BorderStrong)
+	} else if dt.Appearance == AppearanceLight {
+		fill = ui.RGB(255, 255, 255)
+	}
+	btn.Background(fill).Border(1, borderCol)
+	btn.Children(func() {
+		ui.Icon(c, icon).Size(15, 15).TextColor(toColor(dt.InkSecondary))
+		ui.Text(c, label).FontSize(13).FontWeight(500).TextColor(toColor(dt.Ink))
+		ui.Spacer(c)
+		ui.Text(c, "Browser").FontSize(11).TextColor(toColor(dt.InkMuted))
 	})
+	if btn.Clicked() && onClick != nil {
+		onClick()
+	}
 }
 
 // AuthAccountAvatarPill renders a compact identity capsule with monogram badge,
@@ -172,7 +176,7 @@ func AuthScopeChips(c *ui.Context, dt DerivedTheme, scopes []string) {
 	})
 }
 
-// AuthEmailInputRow renders a Liquid Glass recessed input row for email/OTP fields.
+// AuthEmailInputRow renders a crisp recessed 8px input row for email/OTP fields.
 func AuthEmailInputRow(
 	c *ui.Context,
 	dt DerivedTheme,
@@ -182,14 +186,14 @@ func AuthEmailInputRow(
 	placeholder string,
 	autoFocus bool,
 ) {
-	ui.Row(c).Padding(8, 12).Gap(8).Radius(12).AlignItems(ui.Center).
-		Background(toColor(dt.SurfaceRecessed)).Border(1, glassBorderColor(dt)).Children(func() {
+	ui.Row(c).Padding(7, 10).Gap(8).Radius(RadiusControl).AlignItems(ui.Center).
+		Background(toColor(dt.SurfaceRecessed)).Border(1, toColor(dt.Border)).Children(func() {
 		if icon != nil {
 			ui.Icon(c, icon).Size(14, 14).TextColor(toColor(dt.InkMuted))
 		}
 		inp := ui.TextInputBase(c.Key(key), value).
 			Placeholder(placeholder).
-			FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1)
+			FontSize(13).TextColor(toColor(dt.Ink)).Grow(1)
 		if autoFocus {
 			inp.AutoFocus()
 		}

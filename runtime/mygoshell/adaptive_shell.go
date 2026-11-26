@@ -35,6 +35,7 @@ type AdaptiveShellConfig struct {
 	BrandTitle       string
 	BrandSubtitle    string
 	InitialThemeID   string
+	Themes           []ThemePreset // optional app-owned theme catalog (takes precedence over library defaults)
 	FormFactor       ShellFormFactor
 	MobilePlatform   MobilePlatform
 	CompactThreshold float32
@@ -58,6 +59,7 @@ type AdaptiveShell struct {
 
 	mu         sync.RWMutex
 	formFactor ShellFormFactor
+	themes     []ThemePreset
 	theme      ThemePreset
 	wbGen      uint64
 	onTheme    func(DerivedTheme)
@@ -152,7 +154,11 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 	if cfg.MobilePlatform == "" {
 		cfg.MobilePlatform = MobilePlatformIOS
 	}
-	preset := ThemeByID(cfg.InitialThemeID)
+	catalog := BuiltinThemes()
+	if len(cfg.Themes) > 0 {
+		catalog = append([]ThemePreset(nil), cfg.Themes...)
+	}
+	preset := findThemeInCatalog(catalog, cfg.InitialThemeID)
 
 	bufMain := shell.PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace", Kind: "panel"}
 	bufSecondary := shell.PaneBuffer{BufferID: "slot:workbench.secondary", Title: "Secondary Panel", Kind: "panel"}
@@ -199,6 +205,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 		Windows:          tree,
 		CompactThreshold: cfg.CompactThreshold,
 		formFactor:       cfg.FormFactor,
+		themes:           catalog,
 		theme:            preset,
 		wbGen:            1,
 		onTheme:          cfg.OnThemeChange,
@@ -265,10 +272,32 @@ func (a *AdaptiveShell) FormFactor() ShellFormFactor {
 	return a.formFactor
 }
 
-// ApplyThemePreset applies one curated built-in theme preset across Desktop,
-// Mobile, and any registered WebView callback simultaneously.
+// SetThemes replaces the app-owned theme catalog used by ApplyThemePreset and CycleTheme.
+func (a *AdaptiveShell) SetThemes(presets []ThemePreset) {
+	if a == nil || len(presets) == 0 {
+		return
+	}
+	a.mu.Lock()
+	a.themes = append([]ThemePreset(nil), presets...)
+	curID := a.theme.ID
+	a.mu.Unlock()
+	a.ApplyThemePreset(curID)
+}
+
+// ActiveTheme returns the currently active ThemePreset.
+func (a *AdaptiveShell) ActiveTheme() ThemePreset {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.theme
+}
+
+// ApplyThemePreset applies one theme preset from the app-owned catalog (or
+// library fallback) across Desktop, Mobile, and any WebView callback.
 func (a *AdaptiveShell) ApplyThemePreset(id string) DerivedTheme {
-	return a.ApplyCustomTheme(ThemeByID(id))
+	a.mu.RLock()
+	catalog := a.themes
+	a.mu.RUnlock()
+	return a.ApplyCustomTheme(findThemeInCatalog(catalog, id))
 }
 
 // ApplyCustomTheme projects any Official Marketplace or custom ThemePreset
@@ -299,12 +328,34 @@ func (a *AdaptiveShell) ApplyCustomTheme(preset ThemePreset) DerivedTheme {
 	return dt
 }
 
-// CycleTheme advances Desktop + Mobile simultaneously to the next curated theme.
+// CycleTheme advances Desktop + Mobile simultaneously to the next theme in the
+// app-owned catalog.
 func (a *AdaptiveShell) CycleTheme() DerivedTheme {
 	a.mu.RLock()
+	catalog := a.themes
 	curID := a.theme.ID
 	a.mu.RUnlock()
-	return a.ApplyThemePreset(NextThemePreset(curID).ID)
+	if len(catalog) == 0 {
+		catalog = BuiltinThemes()
+	}
+	for i, p := range catalog {
+		if p.ID == curID {
+			return a.ApplyCustomTheme(catalog[(i+1)%len(catalog)])
+		}
+	}
+	return a.ApplyCustomTheme(catalog[0])
+}
+
+func findThemeInCatalog(catalog []ThemePreset, id string) ThemePreset {
+	if len(catalog) == 0 {
+		return ThemeByID(id)
+	}
+	for _, p := range catalog {
+		if p.ID == id {
+			return p
+		}
+	}
+	return catalog[0]
 }
 
 // EffectiveFormFactor resolves which shell renders at viewportWidth.

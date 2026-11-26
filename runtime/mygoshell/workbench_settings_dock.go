@@ -4,11 +4,7 @@
 
 package mygoshell
 
-import (
-	"fmt"
-
-	"github.com/egoist/mygo/ui"
-)
+import "github.com/egoist/mygo/ui"
 
 // SettingsTab selects the active section inside Marlin's unified Tier-0
 // Settings & Authorization modal.
@@ -110,38 +106,38 @@ func (a *WorkbenchApp) renderSidebarFooterDock(c *ui.Context, dt DerivedTheme) {
 	if !a.hasAnySettingsSection() {
 		return
 	}
-	ui.Column(c.Key("sidebar-footer-dock")).Padding(10, 0, 0, 0).Gap(8).AlignItems(ui.Stretch).
-		BorderWidth(1, 0, 0, 0).BorderColor(glassBorderColor(dt)).Children(func() {
+	ui.Column(c.Key("sidebar-footer-dock")).Padding(8, 0, 0, 0).Gap(6).AlignItems(ui.Stretch).
+		BorderWidth(1, 0, 0, 0).BorderColor(toColor(dt.BorderSubtle)).Children(func() {
 		if a.Auth != nil {
 			vi := a.Auth.CurrentVaultInfo()
 			accountTitle := "Account & Vault"
 			if a.Auth.IsSignedIn() {
 				accountTitle = a.Auth.TopBarLabel()
 			}
-			vaultSub := "Sign in & vault"
+			vaultSub := "Sign in"
 			tone := dt.InkMuted
 			if a.Auth.IsSignedIn() {
-				vaultSub = "Signed in · OS Vault"
+				vaultSub = "Signed in"
 				tone = dt.Success
 			}
 			if vi.Locked {
-				vaultSub = "Vault locked · Tap to unlock"
+				vaultSub = "Vault locked"
 				tone = dt.Warning
 			} else if vi.BackendName != "" {
-				if a.Auth.IsSignedIn() {
-					vaultSub = fmt.Sprintf("Signed in · %s", vi.BackendName)
-				} else {
-					vaultSub = fmt.Sprintf("Vault ready · %s", vi.BackendName)
-				}
+				vaultSub = vi.BackendName
 			}
 			card := ui.ButtonBase(c.Key("sidebar-account-dock")).Label("Account and Authorization").
-				Padding(8, 10).Radius(12).AlignItems(ui.Center).Justify(ui.Start).Gap(8).
-				Background(toColor(dt.SurfaceElevated)).Border(1, glassBorderColor(dt))
+				Padding(6, 8).Radius(RadiusControl).AlignItems(ui.Center).Justify(ui.Start).Gap(8)
+			if card.Hovered() {
+				card.Background(toColor(dt.SurfaceHover))
+			} else {
+				card.Background(ui.Transparent)
+			}
 			card.Children(func() {
-				ui.Icon(c, svgIconShield).Size(15, 15).TextColor(toColor(tone))
+				ui.Icon(c, svgIconShield).Size(14, 14).TextColor(toColor(tone))
 				ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-					ui.Text(c, accountTitle).FontSize(12).FontWeight(600).TextColor(toColor(dt.Ink)).MaxLines(1)
-					ui.Text(c, vaultSub).FontSize(10).TextColor(toColor(dt.InkMuted)).MaxLines(1)
+					ui.Text(c, accountTitle).FontSize(12).FontWeight(500).TextColor(toColor(dt.Ink)).MaxLines(1)
+					ui.Text(c, vaultSub).FontSize(10.5).TextColor(toColor(dt.InkMuted)).MaxLines(1)
 				})
 			})
 			if card.Clicked() {
@@ -154,7 +150,7 @@ func (a *WorkbenchApp) renderSidebarFooterDock(c *ui.Context, dt DerivedTheme) {
 				a.OpenSettings()
 			}
 			if a.GovernanceUI != nil {
-				if ApplePillButton(c, "sidebar-open-governance", "Gov", BtnTinted, dt, svgIconShield, true).Clicked() {
+				if ApplePillButton(c, "sidebar-open-governance", "Gov", BtnGlass, dt, svgIconShield, true).Clicked() {
 					a.OpenSettingsTab(SettingsTabGovernance)
 				}
 			}
@@ -182,10 +178,9 @@ func (a *WorkbenchApp) renderSettingsModal(c *ui.Context, t *ui.Theme, dt Derive
 			tabs = append(tabs, SegmentedItem{ID: string(SettingsTabGovernance), Label: "Governance"})
 		}
 
-		ui.Column(c.Key("settings-center-modal")).Width(560).Gap(12).AlignItems(ui.Stretch).Children(func() {
+		ui.Column(c.Key("settings-center-modal")).Width(560).Gap(14).AlignItems(ui.Stretch).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-				AppleBadgePill(c, "TIER-0 SETTINGS", dt.Accent, dt)
-				ui.Text(c, "Settings & Authorization").FontSize(16.5).FontWeight(700).TextColor(toColor(dt.Ink))
+				ui.Text(c, "Settings & Authorization").FontSize(15).FontWeight(600).TextColor(toColor(dt.Ink))
 				ui.Spacer(c)
 				if ApplePillButton(c, "close-settings", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
 					a.settingsOpen = false
@@ -198,6 +193,8 @@ func (a *WorkbenchApp) renderSettingsModal(c *ui.Context, t *ui.Theme, dt Derive
 					activeTab = a.resolveSettingsTab(a.settingsTab)
 				}
 			}
+
+			ui.Box(c).Height(1).Background(toColor(dt.BorderSubtle))
 
 			switch activeTab {
 			case SettingsTabGeneral:

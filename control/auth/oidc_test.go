@@ -311,6 +311,15 @@ func TestOpenSystemBrowserRejectsUnsafeURLs(t *testing.T) {
 			t.Fatalf("expected ErrInsecureEndpoint for unsafe browser URL %q, got %v", bad, err)
 		}
 	}
+	// Standard RFC 3986 HTTPS OAuth PKCE URLs with '&' query separators MUST pass validation.
+	for _, good := range []string{
+		"https://github.com/login/oauth/authorize?client_id=marlin&redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&code_challenge=abc&code_challenge_method=S256&state=xyz",
+		"https://accounts.google.com/o/oauth2/v2/auth?client_id=marlin&response_type=code&scope=openid%20email",
+	} {
+		if err := auth.ValidateBrowserURL(good); err != nil {
+			t.Fatalf("expected valid OAuth URL %q to pass ValidateBrowserURL, got %v", good, err)
+		}
+	}
 }
 
 func TestDiscoverOIDCProviderValidatesIssuerAndPKCES256(t *testing.T) {

@@ -103,14 +103,25 @@ type UIElement struct {
 	Kind       UIElementKind `json:"kind"`
 	ID         ComponentID   `json:"id,omitempty"`
 	SlotID     SlotID        `json:"slotId,omitempty"`
+	SlotSource UISlotSource  `json:"slotSource,omitempty"`
 	Title      string        `json:"title,omitempty"`
 	Tone       UITone        `json:"tone,omitempty"`
+	Background UIBackground  `json:"background,omitempty"`
 	Flex       uint16        `json:"flex,omitempty"`
 	Cells      uint16        `json:"cells,omitempty"`
 	Action     string        `json:"action,omitempty"`
 	ActionArgs string        `json:"actionArgs,omitempty"`
+	FieldID    string        `json:"fieldId,omitempty"`
+	ActiveID   string        `json:"activeId,omitempty"`
+	Bordered   bool          `json:"bordered,omitempty"`
 	Spans      []UISpan      `json:"spans,omitempty"`
-	Children   []UIElement   `json:"children,omitempty"`
+	// Rich marlin.ui.v1 fields populated losslessly by grpcwire.WorkbenchFromProto.
+	TemplateSpans []UITemplateSpan `json:"templateSpans,omitempty"`
+	BarSegments   []UIBarSegment   `json:"barSegments,omitempty"`
+	ListSource    UIListSourceKind `json:"listSource,omitempty"`
+	InlineRows    []UIListRowValue `json:"inlineRows,omitempty"`
+	ScrollTarget  *UIScrollTarget  `json:"scrollTarget,omitempty"`
+	Children      []UIElement      `json:"children,omitempty"`
 }
 
 // ValidateBounds enforces MAR-UI-R03 bounded tree depth and node count before
@@ -153,14 +164,22 @@ type SlotDeclaration struct {
 	AllowUntrustedPlugin bool            `json:"allowUntrustedPlugin"`
 }
 
-// UIWorkbenchSnapshot is an admitted generation of the Scheme-composed workbench.
+// UIWorkbenchSnapshot is an admitted generation of the Scheme-composed workbench,
+// carrying 100% of marlin.ui.v1.UiWorkbenchSnapshot losslessly.
 type UIWorkbenchSnapshot struct {
-	Generation   uint64            `json:"generation,string"`
-	ProfileName  string            `json:"profileName"`
-	ModelLabel   string            `json:"modelLabel"`
-	SessionLabel string            `json:"sessionLabel"`
-	FocusID      ComponentID       `json:"focusId"`
-	Theme        UITheme           `json:"theme"`
-	FrameTree    UIElement         `json:"frameTree"`
-	Slots        []SlotDeclaration `json:"slots"`
+	Generation   uint64              `json:"generation,string"`
+	ProfileName  string              `json:"profileName"`
+	ModelLabel   string              `json:"modelLabel"`
+	SessionLabel string              `json:"sessionLabel"`
+	FocusID      ComponentID         `json:"focusId"`
+	Theme        UITheme             `json:"theme"`
+	Frame        UIFrame             `json:"frame,omitempty"`
+	RoleRegions  map[string]string   `json:"roleRegions,omitempty"`
+	FrameTree    UIElement           `json:"frameTree"`
+	StatusItems  []UIStatusItem      `json:"statusItems,omitempty"`
+	Extensions   []UIExtensionRegion `json:"extensions,omitempty"`
+	Commands     []UICommandSpec     `json:"commands,omitempty"`
+	Keymap       []UIKeyBindingSpec  `json:"keymap,omitempty"`
+	Transients   []UITransient       `json:"transients,omitempty"`
+	Slots        []SlotDeclaration   `json:"slots"`
 }

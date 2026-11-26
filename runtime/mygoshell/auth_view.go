@@ -265,10 +265,9 @@ func (ac *AuthController) renderSignInOptions(
 
 	if len(oauthProviders) > 0 {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "SINGLE SIGN-ON (EXTERNAL BROWSER · PKCE S256)").
-				FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+			ui.Text(c, "Sign in").FontSize(12).FontWeight(600).TextColor(toColor(dt.InkSecondary))
 			ui.Spacer(c)
-			oidcLbl := "+ Enterprise SSO"
+			oidcLbl := "Enterprise SSO"
 			if ac.oidcOpen {
 				oidcLbl = "Hide SSO"
 			}
@@ -276,7 +275,7 @@ func (ac *AuthController) renderSignInOptions(
 				ac.oidcOpen = !ac.oidcOpen
 			}
 		})
-		ui.Column(c).Gap(8).AlignItems(ui.Stretch).Children(func() {
+		ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 			for _, p := range oauthProviders {
 				prov := p
 				AuthOAuthProviderButton(c, dt, prov, func() {
@@ -285,14 +284,13 @@ func (ac *AuthController) renderSignInOptions(
 			}
 		})
 		if ac.oidcOpen {
-			ui.Column(c).Padding(10, 12).Gap(8).Radius(12).
-				Background(toColor(dt.SurfaceElevated)).Border(1, glassBorderColor(dt)).Children(func() {
-				ui.Text(c, "ENTERPRISE OIDC DISCOVERY (OKTA · ENTRA ID · KEYCLOAK)").
-					FontSize(10).FontWeight(700).TextColor(toColor(dt.InkMuted))
+			ui.Column(c).Padding(10, 12).Gap(8).Radius(RadiusControl).
+				Background(toColor(dt.SurfaceElevated)).Border(1, toColor(dt.Border)).Children(func() {
+				ui.Text(c, "Enterprise OIDC").FontSize(11.5).FontWeight(600).TextColor(toColor(dt.InkSecondary))
 				AuthEmailInputRow(c, dt, "auth-oidc-issuer", svgIconGlobe, &ac.oidcIssuer, "https://sso.company.com", false)
-				AuthEmailInputRow(c, dt, "auth-oidc-client", svgIconKey, &ac.oidcClientID, "Native OIDC Client ID", false)
+				AuthEmailInputRow(c, dt, "auth-oidc-client", svgIconKey, &ac.oidcClientID, "Client ID", false)
 				ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-					if ApplePillButton(c, "auth-oidc-connect", "Connect Enterprise SSO", BtnPrimary, dt, svgIconShield, true).Clicked() {
+					if ApplePillButton(c, "auth-oidc-connect", "Connect SSO", BtnPrimary, dt, nil, true).Clicked() {
 						ac.mu.Lock()
 						iss := ac.oidcIssuer
 						cid := ac.oidcClientID
@@ -314,7 +312,7 @@ func (ac *AuthController) renderSignInOptions(
 							ac.setStatus("", err.Error())
 						} else {
 							ac.oidcOpen = false
-							ac.setStatus("Connected Enterprise OIDC provider via discovery.", "")
+							ac.setStatus("Connected Enterprise OIDC provider.", "")
 						}
 					}
 				})
@@ -322,11 +320,11 @@ func (ac *AuthController) renderSignInOptions(
 		}
 	}
 
-	// Passwordless Email Login (OTP Code or Magic Link).
-	if hasEmailProvider || len(snap.Providers) == 0 {
-		ui.Box(c).Height(1).Background(toColor(dt.Border))
+	// Passwordless Email Login (rendered only when an email provider is registered).
+	if hasEmailProvider {
+		ui.Box(c).Height(1).Background(toColor(dt.BorderSubtle))
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "EMAIL LOGIN (PASSWORDLESS)").FontSize(10.5).FontWeight(700).TextColor(toColor(dt.InkMuted))
+			ui.Text(c, "Email").FontSize(12).FontWeight(600).TextColor(toColor(dt.InkSecondary))
 			ui.Spacer(c)
 			if chosen := AppleSegmentedControl(c, "auth-email-mode", []SegmentedItem{
 				{ID: string(auth.MethodEmailOTP), Label: "6-Digit Code"},
@@ -345,7 +343,7 @@ func (ac *AuthController) renderSignInOptions(
 			sendLabel = "Send Magic Link"
 		}
 		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-			if ApplePillButton(c, "auth-email-send", sendLabel, BtnPrimary, dt, svgIconArrowUp, false).Clicked() {
+			if ApplePillButton(c, "auth-email-send", sendLabel, BtnPrimary, dt, nil, false).Clicked() {
 				ac.mu.Lock()
 				email := ac.emailInput
 				mode := ac.emailMode
