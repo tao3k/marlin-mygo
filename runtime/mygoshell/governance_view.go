@@ -470,6 +470,15 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	if inspAct.toggleStepUp {
 		inspState.probeStepUp = !inspState.probeStepUp
 	}
+	if inspAct.cycleFlowSrc {
+		inspState.flowSrcScope = nextGovernanceScope(inspState.flowSrcScope)
+	}
+	if inspAct.cycleFlowDst {
+		inspState.flowDstScope = nextGovernanceScope(inspState.flowDstScope)
+	}
+	if inspAct.cycleTaintRole {
+		inspState.taintRole = nextTaintRole(inspState.taintRole)
+	}
 	g.inspector = inspState
 	if verifyStepUp {
 		g.stepUpVerified = true
@@ -643,6 +652,65 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 				}
 			}
 		}
+		if inspAct.runRecordFlow {
+			entry := strings.TrimSpace(inspState.flowEntry)
+			srcScope := strings.TrimSpace(inspState.flowSrcScope)
+			target := strings.TrimSpace(inspState.flowTarget)
+			dstScope := strings.TrimSpace(inspState.flowDstScope)
+			if entry != "" && srcScope != "" && target != "" && dstScope != "" {
+				snap, err := mut.RecordContextFlow(entry, srcScope, target, dstScope)
+				g.mu.Lock()
+				if err != nil {
+					g.lastErr = err.Error()
+				} else {
+					g.lastErr = ""
+				}
+				g.mu.Unlock()
+				if err == nil {
+					ledger.RecordAudit("human-console", entry+"->"+target, "record-context-flow", features.AuditAdmitted, fmt.Sprintf("flows-%d", len(snap.FactContextFlows)))
+				}
+			}
+		}
+		if inspAct.runRegisterDer {
+			derivID := strings.TrimSpace(inspState.derivID)
+			polID := strings.TrimSpace(inspState.derivPolicy)
+			premises := splitCSVTokens(inspState.derivPremises)
+			parents := splitCSVTokens(inspState.derivParents)
+			if derivID != "" && polID != "" && len(premises) > 0 {
+				snap, err := mut.RegisterDerivation(derivID, polID, premises, parents)
+				g.mu.Lock()
+				if err != nil {
+					g.lastErr = err.Error()
+				} else {
+					g.lastErr = ""
+				}
+				g.mu.Unlock()
+				if err == nil {
+					ledger.RecordAudit("human-console", derivID, "register-derivation", features.AuditAdmitted, fmt.Sprintf("derivs-%d", len(snap.FactDerivations)))
+				}
+			}
+		}
+		if inspAct.runAddTaintEdge {
+			src := strings.TrimSpace(inspState.taintSrc)
+			dst := strings.TrimSpace(inspState.taintDst)
+			role := strings.TrimSpace(inspState.taintRole)
+			if role == "hop" {
+				role = ""
+			}
+			if src != "" && dst != "" {
+				snap, err := mut.AddTaintEdge(src, dst, role)
+				g.mu.Lock()
+				if err != nil {
+					g.lastErr = err.Error()
+				} else {
+					g.lastErr = ""
+				}
+				g.mu.Unlock()
+				if err == nil {
+					ledger.RecordAudit("human-console", src+"->"+dst, "add-taint-edge", features.AuditAdmitted, fmt.Sprintf("taint-%d", len(snap.FactTaintEdges)))
+				}
+			}
+		}
 	}
 
 	if tripEStop && breaker != nil {
@@ -732,108 +800,4 @@ func formatProofDigestSummary(snap BackendGovernanceSnapshot) string {
 		}
 	}
 	return strings.Join(parts, " · ")
-}
-
-func activeRevocableActors(snap BackendGovernanceSnapshot, maxItems int) []string {
-	out := make([]string, 0, maxItems)
-	seen := make(map[string]struct{}, len(snap.FencedActors)+maxItems)
-	for _, fenced := range snap.FencedActors {
-		seen[fenced] = struct{}{}
-	}
-	for _, edge := range snap.FactDelegations {
-		for _, candidate := range []string{edge.Parent, edge.Child} {
-			c := strings.TrimSpace(candidate)
-			if c == "" {
-				continue
-			}
-			if _, exists := seen[c]; exists {
-				continue
-			}
-			seen[c] = struct{}{}
-			out = append(out, c)
-			if len(out) >= maxItems {
-				return out
-			}
-		}
-	}
-	return out
-}
-
-func activeDeclassifiableEntries(snap BackendGovernanceSnapshot, maxItems int) []string {
-	out := make([]string, 0, maxItems)
-	seen := make(map[string]struct{}, len(snap.FactDeclassifiedEntries)+maxItems)
-	for _, dec := range snap.FactDeclassifiedEntries {
-		seen[dec] = struct{}{}
-	}
-	for _, flow := range snap.FactContextFlows {
-		e := strings.TrimSpace(flow.Entry)
-		if e == "" {
-			continue
-		}
-		if _, exists := seen[e]; exists {
-			continue
-		}
-		seen[e] = struct{}{}
-		out = append(out, e)
-		if len(out) >= maxItems {
-			return out
-		}
-	}
-	return out
-}
-
-func activeRetractablePremises(snap BackendGovernanceSnapshot, maxItems int) []string {
-	out := make([]string, 0, maxItems)
-	seen := make(map[string]struct{}, len(snap.FactRetractedSubjects)+maxItems)
-	for _, r := range snap.FactRetractedSubjects {
-		seen[r] = struct{}{}
-	}
-	for _, d := range snap.FactDerivations {
-		for _, prem := range d.SubjectPremises {
-			p := strings.TrimSpace(prem)
-			if p == "" {
-				continue
-			}
-			if _, exists := seen[p]; exists {
-				continue
-			}
-			seen[p] = struct{}{}
-			out = append(out, p)
-			if len(out) >= maxItems {
-				return out
-			}
-		}
-	}
-	return out
-}
-
-func activeSanitizableTaintNodes(snap BackendGovernanceSnapshot, maxItems int) []string {
-	out := make([]string, 0, maxItems)
-	blocked := make(map[string]struct{}, len(snap.FactTaintSanitizers)+len(snap.FactTaintSources)+len(snap.FactTaintSinks))
-	for _, s := range snap.FactTaintSanitizers {
-		blocked[s] = struct{}{}
-	}
-	for _, s := range snap.FactTaintSources {
-		blocked[s] = struct{}{}
-	}
-	for _, s := range snap.FactTaintSinks {
-		blocked[s] = struct{}{}
-	}
-	for _, edge := range snap.FactTaintEdges {
-		for _, candidate := range []string{edge.Dst, edge.Src} {
-			n := strings.TrimSpace(candidate)
-			if n == "" {
-				continue
-			}
-			if _, skip := blocked[n]; skip {
-				continue
-			}
-			blocked[n] = struct{}{}
-			out = append(out, n)
-			if len(out) >= maxItems {
-				return out
-			}
-		}
-	}
-	return out
 }

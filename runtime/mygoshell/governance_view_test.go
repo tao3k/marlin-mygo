@@ -491,3 +491,113 @@ func TestTier0GovernanceConsoleCedarInspectorAndDelegationBuilder(t *testing.T) 
 		t.Fatalf("expected Delegations: 1 badge after Add Delegation, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }
+
+func TestTier0GovernanceConsoleInteractiveContextFlowDerivationAndTaintBuilders(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	ledger := features.NewGovernanceLedger(features.DefaultGovernancePolicy())
+	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   1,
+		BreakerTripEpoch: 1,
+	})
+
+	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), ledger, features.NewHost())
+	govUI.AttachBackendAuthority(authBridge)
+	govUI.SetShowCedarInspector(true)
+	app.GovernanceUI = govUI
+	app.OpenGovernance()
+
+	tt := ui.NewTester(app.View, 1280, 1180)
+	tt.Frame()
+	for _, want := range []string{
+		"LIVE 5-SCOPE CONTEXT FLOW BUILDER (EXFIL CEDAR SYNTHESIS)",
+		"Record Flow",
+		"LIVE BI-TEMPORAL DERIVATION DAG BUILDER (TRUTH MAINTENANCE)",
+		"Register Derivation",
+		"LIVE CAMEL TAINT FLOW BUILDER (STRATIFIED DATALOG)",
+		"Add Taint Edge",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected interactive builder UI element %q, got %q", want, strings.Join(tt.Texts(), " | "))
+		}
+	}
+
+	// 1. Record 5-Scope private->external flow -> synthesizes Cedar exfil forbid rule & blocks custom Cedar probe!
+	govUI.SetContextFlowDraft("api-key", "private", "ext-sink", "external")
+	tt.Frame()
+	if err := tt.Click("Record Flow"); err != nil {
+		t.Fatalf("click Record Flow: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Flows: 1") || !tt.HasText("marlin.ascent.forbid.exfil.api-key.ext-sink") || !tt.HasText("Declassify api-key") {
+		t.Fatalf("expected private->external flow to synthesize exfil Cedar forbid and Declassify pill, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	govUI.SetProbeDraft("ops-alice", "rearm_breaker", "ext-sink", true)
+	tt.Frame()
+	if err := tt.Click("Run Custom Probe"); err != nil {
+		t.Fatalf("click Run Custom Probe on ext-sink: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("CEDAR DENY") || !tt.HasText("marlin.ascent.forbid.exfil.api-key.ext-sink") {
+		t.Fatalf("expected synthesized exfil forbid to override permit on ext-sink, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	if err := tt.Click("Declassify api-key"); err != nil {
+		t.Fatalf("click Declassify api-key: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Declassified: 1") {
+		t.Fatalf("expected Declassified: 1 after clicking Declassify api-key, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 2. Register 2-node Bi-Temporal Derivation DAG -> Retract root premise -> cascading blast radius!
+	govUI.SetDerivationDraft("D-APPROVAL", "pol.auth", "cert-v1", "")
+	tt.Frame()
+	if err := tt.Click("Register Derivation"); err != nil {
+		t.Fatalf("click Register Derivation (D-APPROVAL): %v", err)
+	}
+	tt.Frame()
+	govUI.SetDerivationDraft("D-DEPLOY", "pol.deploy", "ops-ack", "D-APPROVAL")
+	tt.Frame()
+	if err := tt.Click("Register Derivation"); err != nil {
+		t.Fatalf("click Register Derivation (D-DEPLOY): %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Derivations: 2") || !tt.HasText("Retract cert-v1") {
+		t.Fatalf("expected Derivations: 2 and Retract cert-v1 pill, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Retract cert-v1"); err != nil {
+		t.Fatalf("click Retract cert-v1: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("TM Retracted: D-APPROVAL, D-DEPLOY") {
+		t.Fatalf("expected transitive Bi-Temporal TM blast radius D-APPROVAL, D-DEPLOY, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 3. Record CaMeL taint edge -> exposes Sanitize pill -> click Sanitize!
+	govUI.SetTaintEdgeDraft("webhook-in", "stage-buf", "source")
+	tt.Frame()
+	if err := tt.Click("Add Taint Edge"); err != nil {
+		t.Fatalf("click Add Taint Edge: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Taint Edges: 1") || !tt.HasText("Sanitize stage-buf") {
+		t.Fatalf("expected Taint Edges: 1 and Sanitize stage-buf pill, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Sanitize stage-buf"); err != nil {
+		t.Fatalf("click Sanitize stage-buf: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Sanitizers: 1") {
+		t.Fatalf("expected Sanitizers: 1 after sanitizing stage-buf, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if len(ledger.AuditTrail()) < 7 {
+		t.Fatalf("expected immutable audit trail receipts for all interactive builders, got %d", len(ledger.AuditTrail()))
+	}
+}

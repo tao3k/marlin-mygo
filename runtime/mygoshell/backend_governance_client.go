@@ -270,10 +270,16 @@ func (b *LocalBackendAuthorityBridge) RecordContextFlow(entry, srcScope, target,
 	b.snap.FactContextFlows = append(b.snap.FactContextFlows, GovernanceContextFlow{
 		Entry: entry, SrcScope: srcScope, Target: target, DstScope: dstScope,
 	})
-	if srcScope == "private" && dstScope == "external" {
+	if srcScope == "private" && dstScope == "external" && !sliceContainsString(b.snap.FactDeclassifiedEntries, entry) {
 		b.snap.Admitted = false
 		b.snap.BreakerTripped = true
-		b.snap.RejectionReasons = append(b.snap.RejectionReasons, "ascent-scope-escalation")
+		b.snap.RejectionReasons = appendUniqueString(b.snap.RejectionReasons, "ascent-scope-escalation")
+		policyID := fmt.Sprintf("marlin.ascent.forbid.exfil.%s.%s", entry, target)
+		source := fmt.Sprintf(`forbid (principal, action, resource == Marlin::Resource::"%s");`, target)
+		upsertSynthesizedCedarRule(&b.snap.SynthesizedCedarRules, SynthesizedCedarRule{
+			PolicyID: policyID,
+			Source:   source,
+		})
 	}
 	b.snap.LastEventNote = fmt.Sprintf("context flow %s(%s) -> %s(%s)", entry, srcScope, target, dstScope)
 	return cloneBackendSnapshot(b.snap), nil
@@ -284,6 +290,15 @@ func (b *LocalBackendAuthorityBridge) DeclassifyContext(entry string) (BackendGo
 	defer b.mu.Unlock()
 	b.snap.PolicyRevision++
 	b.snap.FactDeclassifiedEntries = appendUniqueString(b.snap.FactDeclassifiedEntries, entry)
+	prefix := "marlin.ascent.forbid.exfil." + entry + "."
+	filtered := b.snap.SynthesizedCedarRules[:0]
+	for _, r := range b.snap.SynthesizedCedarRules {
+		if len(r.PolicyID) >= len(prefix) && r.PolicyID[:len(prefix)] == prefix {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	b.snap.SynthesizedCedarRules = filtered
 	b.snap.LastEventNote = "declassified " + entry
 	return cloneBackendSnapshot(b.snap), nil
 }
@@ -388,9 +403,21 @@ func (b *LocalBackendAuthorityBridge) CheckCedar(actor, action, resource string,
 	}
 	decision := "implicit_deny"
 	var matched []string
+	var exfilForbids []string
+	suffix := "." + resource
+	for _, r := range b.snap.SynthesizedCedarRules {
+		if len(r.PolicyID) > len("marlin.ascent.forbid.exfil.")+len(suffix) &&
+			r.PolicyID[:len("marlin.ascent.forbid.exfil.")] == "marlin.ascent.forbid.exfil." &&
+			r.PolicyID[len(r.PolicyID)-len(suffix):] == suffix {
+			exfilForbids = append(exfilForbids, r.PolicyID)
+		}
+	}
 	if sliceContainsString(b.snap.FencedActors, actor) {
 		decision = "deny"
 		matched = []string{"marlin.ascent.forbid.fenced." + actor}
+	} else if len(exfilForbids) > 0 {
+		decision = "deny"
+		matched = exfilForbids
 	} else if (action == "rearm_breaker" || action == "promote_context_scope") && len(actor) >= 5 && actor[:5] == "agent" {
 		decision = "deny"
 		matched = []string{"marlin.forbid.agent-privileged-governance"}
@@ -409,6 +436,16 @@ func (b *LocalBackendAuthorityBridge) CheckCedar(actor, action, resource string,
 	}
 	b.snap.LastEventNote = fmt.Sprintf("cedar probe #%d -> %s", seq, decision)
 	return cloneBackendSnapshot(b.snap), nil
+}
+
+func upsertSynthesizedCedarRule(rules *[]SynthesizedCedarRule, next SynthesizedCedarRule) {
+	for i := range *rules {
+		if (*rules)[i].PolicyID == next.PolicyID {
+			(*rules)[i] = next
+			return
+		}
+	}
+	*rules = append(*rules, next)
 }
 
 func appendUniqueString(items []string, value string) []string {
