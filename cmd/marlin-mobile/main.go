@@ -15,6 +15,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -23,9 +25,70 @@ import (
 
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 )
+
+func wireMobileGovernance(
+	ctx context.Context,
+	liveTarget *grpcwire.Target,
+	schemeHostBin, schemeGovMode, schemeGovDB, sessionID string,
+	onSnap func(mygoshell.BackendGovernanceSnapshot),
+) (*mygoshell.GovernanceController, func()) {
+	govUI := mygoshell.NewGovernanceController(
+		features.NewRegistry(),
+		features.NewGovernanceLedger(features.DefaultGovernancePolicy()),
+		features.NewHost(),
+	)
+	if liveTarget != nil {
+		auth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
+			Target:     liveTarget,
+			ProjectID:  "default",
+			SessionID:  sessionID,
+			OnSnapshot: onSnap,
+		})
+		govUI.AttachBackendAuthority(auth)
+		_ = auth.Start(ctx)
+		return govUI, auth.Stop
+	}
+
+	if !strings.EqualFold(strings.TrimSpace(schemeHostBin), "off") {
+		dbPath := strings.TrimSpace(schemeGovDB)
+		if dbPath == "" {
+			if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+				dbPath = filepath.Join(cacheDir, "marlin", "mobile-governance-authority.db")
+			}
+		}
+		if h, err := grpcwire.LaunchGovernanceSidecar(ctx, grpcwire.GovernanceSidecarConfig{
+			ExplicitPath: schemeHostBin,
+			Mode:         schemeGovMode,
+			TursoPath:    dbPath,
+			ProjectID:    "default",
+			SessionID:    sessionID,
+			OnSnapshot:   onSnap,
+		}); err == nil {
+			log.Printf("[mobile] governance authority connected to %s (%s)", h.BinaryPath, h.DiscoverySource)
+			govUI.AttachBackendAuthority(h.Authority)
+			return govUI, func() { _ = h.Close() }
+		} else if strings.TrimSpace(schemeHostBin) != "" {
+			log.Printf("[mobile] explicit -scheme-host %q failed (%v); falling back to preview bridge", schemeHostBin, err)
+		}
+	}
+
+	govUI.AttachBackendAuthority(mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   1,
+		BreakerTripEpoch: 1,
+		SynthesizedCedarRules: []mygoshell.SynthesizedCedarRule{
+			{PolicyID: "marlin.forbid.agent-privileged-governance", Source: `forbid (principal in Marlin::Role::"Agent", action in [Marlin::Action::"rearm_breaker", Marlin::Action::"promote_context_scope"], resource);`},
+			{PolicyID: "marlin.permit.verified-human-governance", Source: `permit (principal in Marlin::Role::"VerifiedHuman", action in [Marlin::Action::"rearm_breaker", Marlin::Action::"promote_context_scope"], resource) when { context.step_up_fresh == true };`},
+		},
+		LastEventNote: "mobile standalone preview (connect -host or build marlin-scheme-host-aot for live Rust+Scheme authority)",
+	}))
+	return govUI, nil
+}
 
 func main() {
 	platformFlag := flag.String("platform", "ios", "mobile platform profile: ios | android")
@@ -37,6 +100,9 @@ func main() {
 	certFile := flag.String("cert", "", "optional mTLS client certificate PEM file")
 	keyFile := flag.String("key", "", "optional mTLS client private key PEM file")
 	sessionID := flag.String("session", "mobile-session", "Marlin session ID")
+	schemeHostBin := flag.String("scheme-host", "", "optional Linked-AOT marlin-scheme-host-aot binary path (empty=auto-discover, 'off'=disable)")
+	schemeGovMode := flag.String("scheme-gov-mode", "clean", "initial Scheme governance mode: clean | incident")
+	schemeGovDB := flag.String("scheme-gov-db", "", "optional Turso SQLite WAL path for durable mobile governance checkpoints")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,6 +143,25 @@ func main() {
 
 	mobile := mygoshell.NewMobileCompanionAppForPlatform(spec.Platform, spec.ID, targetLabel)
 	mobile.SetThemePreset(*themeFlag)
+
+	var activeWin *mygo.Window
+	govUI, stopGov := wireMobileGovernance(
+		ctx,
+		liveTarget,
+		*schemeHostBin,
+		*schemeGovMode,
+		*schemeGovDB,
+		*sessionID,
+		func(mygoshell.BackendGovernanceSnapshot) {
+			if activeWin != nil {
+				activeWin.Invalidate()
+			}
+		},
+	)
+	if stopGov != nil {
+		defer stopGov()
+	}
+	mobile.GovernanceUI = govUI
 
 	mobile.AppendMobileMessage(true, "You", "Check today's Org Agenda and pending approval gates.", "9:40")
 	mobile.AppendMobileMessage(false, "Marlin", "3 Org tasks scheduled today. 1 Tier-0 notification gate is awaiting your approval.", "9:41")
@@ -127,6 +212,7 @@ func main() {
 			MaxHeight:      932,
 			Content:        ui.View(mobile.View),
 		})
+		activeWin = win
 		mobile.OnSendPrompt = func(prompt string) {
 			if liveTarget != nil {
 				log.Printf("[mobile] queued remote turn on session=%s: %s", *sessionID, prompt)

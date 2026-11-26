@@ -69,5 +69,16 @@ func wireWebFeaturesAndGovernance(adaptive *mygoshell.AdaptiveShell, onDraftChan
 	host := features.NewHost()
 	reg.Activate(features.ParseFeatureSpec("all"), ledger, host)
 	govUI := mygoshell.NewGovernanceController(reg, ledger, host)
+	govUI.AttachBackendAuthority(mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   1,
+		BreakerTripEpoch: 1,
+		SynthesizedCedarRules: []mygoshell.SynthesizedCedarRule{
+			{PolicyID: "marlin.forbid.agent-privileged-governance", Source: `forbid (principal in Marlin::Role::"Agent", action in [Marlin::Action::"rearm_breaker", Marlin::Action::"promote_context_scope"], resource);`},
+			{PolicyID: "marlin.permit.verified-human-governance", Source: `permit (principal in Marlin::Role::"VerifiedHuman", action in [Marlin::Action::"rearm_breaker", Marlin::Action::"promote_context_scope"], resource) when { context.step_up_fresh == true };`},
+		},
+		LastEventNote: "web WASM interactive governance preview",
+	}))
 	adaptive.SetFeatureHost(host, govUI)
 }
