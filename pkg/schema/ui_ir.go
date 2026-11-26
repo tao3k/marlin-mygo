@@ -102,6 +102,7 @@ const (
 type UIElement struct {
 	Kind       UIElementKind `json:"kind"`
 	ID         ComponentID   `json:"id,omitempty"`
+	Classes    []string      `json:"classes,omitempty"`
 	SlotID     SlotID        `json:"slotId,omitempty"`
 	SlotSource UISlotSource  `json:"slotSource,omitempty"`
 	Title      string        `json:"title,omitempty"`

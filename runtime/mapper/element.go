@@ -13,16 +13,18 @@ import (
 
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/style"
 )
 
 const cellDP float32 = 22
 
-// Context supplies live facts, bindings, width budget, slot resolvers, and
-// typed UI intent callbacks for one MapElement pass.
+// Context supplies live facts, bindings, width budget, optional CSS-subset
+// StyleSheet, slot resolvers, and typed UI intent callbacks for one MapElement pass.
 type Context struct {
 	WidthCols   uint32
 	Bindings    map[string]string
 	Facts       map[string]bool
+	Sheet       *style.Sheet
 	Slots       *shell.SlotRegistry
 	SlotContext shell.RenderContext
 
@@ -62,6 +64,7 @@ func MapElement(c *ui.Context, node schema.UIElement, skin Skin, ctx Context) {
 		if node.Tone != "" && node.Tone != schema.ToneNormal {
 			panel.Border(1, skin.ToneColor(node.Tone))
 		}
+		applyNodeStyle(panel, node, ctx.Sheet, style.StateNone)
 		applyConstraints(panel, node)
 		panel.Children(func() {
 			if node.Title != "" {
@@ -192,12 +195,16 @@ func MapElement(c *ui.Context, node schema.UIElement, skin Skin, ctx Context) {
 		btn := ui.ButtonBase(c.Key(key)).Label(label).
 			Padding(5, 12).Radius(skin.RadiusControl).Background(skin.SurfaceElevated).
 			AlignItems(ui.Center).Justify(ui.Center)
+		pstate := style.StateNone
 		if btn.Hovered() {
 			btn.Background(skin.SurfaceHover)
+			pstate |= style.StateHover
 		}
+		cs := applyNodeStyle(btn, node, ctx.Sheet, pstate)
 		btn.Children(func() {
-			ui.Text(c, label).Font(skin.Font).FontSize(skin.FontSizeMeta).FontWeight(600).
+			txt := ui.Text(c, label).Font(skin.Font).FontSize(skin.FontSizeMeta).FontWeight(600).
 				TextColor(skin.ToneColor(node.Tone)).NoWrap()
+			cs.ApplyToText(txt)
 		})
 		if btn.Clicked() && ctx.OnAction != nil && node.Action != "" {
 			ctx.OnAction(node.Action, node.ActionArgs)
@@ -322,6 +329,15 @@ func mapList(c *ui.Context, node schema.UIElement, skin Skin, ctx Context) {
 			}
 		}
 	})
+}
+
+func applyNodeStyle(el ui.Element, node schema.UIElement, sheet *style.Sheet, state style.PseudoState) style.ComputedStyle {
+	if sheet == nil || len(node.Classes) == 0 {
+		return style.ComputedStyle{}
+	}
+	cs := sheet.Resolve(node.Classes, state)
+	cs.ApplyToElement(el)
+	return cs
 }
 
 func applyConstraints(el ui.Element, node schema.UIElement) {
