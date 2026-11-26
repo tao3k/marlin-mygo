@@ -12,6 +12,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/features"
+	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
 )
@@ -127,7 +128,7 @@ func TestFeatureHostDesktopPaletteAndMobileSpacesIntegration(t *testing.T) {
 	renderedDesktop := false
 	renderedMobile := false
 	host.AddBuffer(shell.PaneBuffer{
-		BufferID: "feature:demo",
+		BufferID: "feature:chatroom",
 		Title:    "Agent Room",
 		Kind:     "native-gpu",
 	}, func(surface any, _ any) {
@@ -139,14 +140,15 @@ func TestFeatureHostDesktopPaletteAndMobileSpacesIntegration(t *testing.T) {
 	})
 	as.SetFeatureHost(host, mygoshell.NewGovernanceController(nil, nil, host))
 
-	// 1. Desktop: OpenFeatureBuffer mounts the opt-in feature into the focused Emacs split pane!
-	if !as.Desktop.OpenFeatureBuffer("feature:demo") {
-		t.Fatal("expected OpenFeatureBuffer(feature:demo) to succeed")
+	// 1. Desktop: SPC o r chord opens feature:chatroom directly in the focused Emacs split pane!
+	as.Desktop.SetKeyMode(input.ScopeNormal)
+	for _, tok := range []string{"SPC", "o", "r"} {
+		_, _ = as.Desktop.HandleKeyToken(input.ScopeNormal, tok)
 	}
 	dtt := ui.NewTester(as.Desktop.View, 1220, 820)
 	dtt.Frame()
 	if !renderedDesktop || !dtt.HasText("OPT-IN FEATURE SURFACE ACTIVE") {
-		t.Fatalf("expected Desktop Emacs pane to render opt-in FeatureHost buffer, got %q", strings.Join(dtt.Texts(), " | "))
+		t.Fatalf("expected Desktop SPC o r chord to render opt-in FeatureHost buffer, got %q", strings.Join(dtt.Texts(), " | "))
 	}
 
 	// 2. Mobile (393x852): Spaces pill appears ONLY when FeatureHost has buffers -> opens overlay -> Back closes cleanly!

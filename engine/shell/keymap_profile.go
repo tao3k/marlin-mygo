@@ -107,6 +107,11 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", ":"}, ActionKind: "studio", CommandName: CmdStudioOpenPalette},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "?"}, ActionKind: "studio", CommandName: CmdStudioToggleWhichKey},
 
+		// Opt-in Feature Spaces (SPC o ...; clean no-op when pruned in marlin_minimal)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "r"}, ActionKind: "feature", CommandName: "feature.open-chatroom"},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "c"}, ActionKind: "feature", CommandName: "feature.open-compare"},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "d"}, ActionKind: "feature", CommandName: "feature.open-canvas"},
+
 		// Transition from Normal/Leader mode into Emacs Insert/Edit mode
 		{Scope: input.ScopeNormal, Sequence: []string{"i"}, ActionKind: "mode", CommandName: CmdModeInsert},
 		{Scope: input.ScopeNormal, Sequence: []string{"a"}, ActionKind: "mode", CommandName: CmdModeInsert},
