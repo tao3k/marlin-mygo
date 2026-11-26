@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
@@ -130,6 +131,7 @@ type MobileCompanionApp struct {
 	Theme             schema.UITheme
 	Transcript        *TranscriptController
 	PromptGate        *PromptGateController
+	FeatureHost       *features.Host
 	Windows           *shell.WindowTree
 	Auth              *AuthController
 	OnSendPrompt      func(prompt string)
@@ -144,6 +146,7 @@ type MobileCompanionApp struct {
 	LastStatusLine    string
 	mu                sync.Mutex
 	authOpen          bool
+	activeFeatureID   string
 	bridgeDescriptors []device.CapabilityDescriptor
 	themePresetID     string
 	activeTab         MobileTab
@@ -220,6 +223,34 @@ func (m *MobileCompanionApp) ShowAuthPrompt(req promptgate.PromptRequest) error 
 	}
 	req.Kind = promptgate.PromptAuth
 	return m.PromptGate.Enqueue(req)
+}
+
+// OpenFeature opens an opt-in FeatureHost buffer (e.g. "feature:chatroom") on Mobile.
+func (m *MobileCompanionApp) OpenFeature(bufferID string) bool {
+	if m.FeatureHost == nil || bufferID == "" {
+		return false
+	}
+	if _, ok := m.FeatureHost.Renderer(bufferID); !ok {
+		return false
+	}
+	m.mu.Lock()
+	m.activeFeatureID = bufferID
+	m.mu.Unlock()
+	return true
+}
+
+// CloseFeature returns from an open opt-in Feature view back to the phone tabs.
+func (m *MobileCompanionApp) CloseFeature() {
+	m.mu.Lock()
+	m.activeFeatureID = ""
+	m.mu.Unlock()
+}
+
+// ActiveFeatureID returns the currently open opt-in feature buffer ID on Mobile, if any.
+func (m *MobileCompanionApp) ActiveFeatureID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeFeatureID
 }
 
 func (m *MobileCompanionApp) SetTab(tab MobileTab) {
@@ -464,6 +495,35 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 		m.renderBottomBar(c, t, dt, plat, dev, tab, len(gates), &nextTab)
 	})
 
+	// Optional FeatureHost full-height mobile overlay (only rendered when features are compiled & active).
+	if featID := m.ActiveFeatureID(); featID != "" && m.FeatureHost != nil {
+		if renderFn, ok := m.FeatureHost.Renderer(featID); ok {
+			closeFeat := false
+			ui.Column(c.Key("mob-feat-overlay-"+featID)).Absolute().Top(0).Right(0).Bottom(0).Left(0).ZIndex(920).
+				Background(toColor(dt.Canvas)).Padding(12, 10, 14, 10).Gap(8).AlignItems(ui.Stretch).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					if ApplePillButton(c, "mob-feat-back", "Back", BtnGlass, dt, nil, true).Clicked() {
+						closeFeat = true
+					}
+					for _, fb := range m.FeatureHost.Buffers() {
+						buf := fb
+						v := BtnGlass
+						if buf.BufferID == featID {
+							v = BtnTinted
+						}
+						if ApplePillButton(c, "mob-feat-sw-"+buf.BufferID, buf.Title, v, dt, nil, true).Clicked() {
+							m.OpenFeature(buf.BufferID)
+						}
+					}
+				})
+				renderFn(c, t)
+			})
+			if closeFeat {
+				m.CloseFeature()
+			}
+		}
+	}
+
 	if m.Auth != nil {
 		ui.Modal(c, &m.authOpen, func() {
 			m.Auth.Render(c, t, dt, func() {
@@ -692,9 +752,19 @@ func (m *MobileCompanionApp) renderNavigationBar(
 			}
 		})
 
-		// Row 2: Authentic Apple Large Title (or Material 3 Top App Bar Title) + live connection dot.
+		// Row 2: Authentic Apple Large Title (or Material 3 Top App Bar Title) + live connection dot + opt-in Feature pill.
 		ui.Column(c).Gap(2).Children(func() {
-			ui.Text(c, heading).FontSize(titleSize).FontWeight(700).LetterSpacing(-0.4).TextColor(toColor(dt.Ink))
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, heading).FontSize(titleSize).FontWeight(700).LetterSpacing(-0.4).TextColor(toColor(dt.Ink))
+				ui.Spacer(c)
+				if m.FeatureHost != nil {
+					if fbufs := m.FeatureHost.Buffers(); len(fbufs) > 0 {
+						if ApplePillButton(c, "mob-open-spaces", "Spaces", BtnTinted, dt, svgIconSparkles, true).Clicked() {
+							m.OpenFeature(fbufs[0].BufferID)
+						}
+					}
+				}
+			})
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Box(c).Size(6, 6).Radius(3).Background(toColor(dt.Success))
 				ui.Text(c, m.TargetLabel).FontSize(11.5).FontWeight(500).TextColor(toColor(dt.InkMuted))

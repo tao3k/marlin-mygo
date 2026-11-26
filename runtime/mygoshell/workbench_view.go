@@ -361,7 +361,10 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.projectionOpen = false
 		a.gateOpen = false
 	default:
-		if strings.HasPrefix(commandName, "edit.") && a.OnEditCommand != nil {
+		if strings.HasPrefix(commandName, "feature.open-") {
+			bufID := "feature:" + strings.TrimPrefix(commandName, "feature.open-")
+			a.OpenFeatureBuffer(bufID)
+		} else if strings.HasPrefix(commandName, "edit.") && a.OnEditCommand != nil {
 			a.OnEditCommand(commandName)
 		}
 	}
@@ -784,6 +787,25 @@ func (a *WorkbenchApp) OpenGovernance() {
 
 // IsGovernanceOpen reports whether the Tier-0 Governance Console modal is visible.
 func (a *WorkbenchApp) IsGovernanceOpen() bool { return a.governanceOpen }
+
+// OpenFeatureBuffer opens an active opt-in Feature buffer (e.g. "feature:chatroom",
+// "feature:compare", "feature:canvas") as a tab in the focused Emacs split pane.
+func (a *WorkbenchApp) OpenFeatureBuffer(bufferID string) bool {
+	if a.FeatureHost == nil || a.Windows == nil || bufferID == "" {
+		return false
+	}
+	for _, buf := range a.FeatureHost.Buffers() {
+		if buf.BufferID == bufferID {
+			a.RegisterWindowBuffer(buf)
+			_, _ = a.Windows.OpenTabInFocused(buf)
+			if a.OnLayoutChanged != nil {
+				a.OnLayoutChanged(a.Windows.Snapshot())
+			}
+			return true
+		}
+	}
+	return false
+}
 
 // DismissTopOverlay handles global ESC keyboard accessibility: closes the
 // active non-gate Tier-0 modal or cancels an in-progress Hydra chord / Which-Key HUD.

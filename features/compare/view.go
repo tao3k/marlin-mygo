@@ -82,6 +82,16 @@ func (m *Module) SetGovernanceLedger(ledger *features.GovernanceLedger) {
 	}
 }
 
+// SetPromoteHandler wires a transport-free callback invoked when a user promotes a winning lane.
+func (m *Module) SetPromoteHandler(fn func(modelLabel, text string)) {
+	if m == nil || m.View == nil || m.View.Ctrl == nil || fn == nil {
+		return
+	}
+	m.View.Ctrl.OnPromoteWinner = func(lane ModelLane) {
+		fn(lane.ModelLabel, lane.ResponseText)
+	}
+}
+
 func (m *Module) Meta() features.FeatureMeta {
 	return features.FeatureMeta{
 		ID:                   features.FeatureCompare,

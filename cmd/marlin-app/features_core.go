@@ -48,9 +48,32 @@ func wireFeaturesAndGovernance(
 	type governanceAware interface {
 		SetGovernanceLedger(*features.GovernanceLedger)
 	}
+	type revisionAware interface {
+		SetRevisionHandler(func(docID string, version int, instruction string))
+	}
+	type winnerAware interface {
+		SetPromoteHandler(func(modelLabel, text string))
+	}
 	for _, mod := range compiledFeatureModules {
 		if ga, ok := mod.(governanceAware); ok {
 			ga.SetGovernanceLedger(ledger)
+		}
+		if ra, ok := mod.(revisionAware); ok {
+			ra.SetRevisionHandler(func(docID string, version int, instruction string) {
+				if app != nil && app.OnSendPrompt != nil {
+					app.OnSendPrompt(fmt.Sprintf("[canvas %s@v%d] %s", docID, version, instruction))
+				}
+			})
+		}
+		if wa, ok := mod.(winnerAware); ok {
+			wa.SetPromoteHandler(func(modelLabel, text string) {
+				if app != nil && app.Transcript != nil && text != "" {
+					ord := app.Transcript.ActiveTurn() + 1
+					app.Transcript.BeginAssistantTurn(ord)
+					app.Transcript.ApplyCheckpoint(ord, fmt.Sprintf("promote-%d", ord), fmt.Sprintf("[%s promoted] %s", modelLabel, text))
+					app.Transcript.CompleteTurn(ord, "PROMOTED")
+				}
+			})
 		}
 	}
 	host := features.NewHost()

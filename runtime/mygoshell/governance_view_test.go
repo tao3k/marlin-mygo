@@ -120,3 +120,54 @@ func TestTier0GovernanceConsoleFeatureTogglesPolicyDenialAndSPCShortcut(t *testi
 		t.Fatal("expected ESC DismissTopOverlay to close Governance Console")
 	}
 }
+
+func TestFeatureHostDesktopPaletteAndMobileSpacesIntegration(t *testing.T) {
+	as := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{BrandTitle: "Marlin"})
+	host := features.NewHost()
+	renderedDesktop := false
+	renderedMobile := false
+	host.AddBuffer(shell.PaneBuffer{
+		BufferID: "feature:demo",
+		Title:    "Agent Room",
+		Kind:     "native-gpu",
+	}, func(surface any, _ any) {
+		if c, ok := surface.(*ui.Context); ok {
+			ui.Text(c, "OPT-IN FEATURE SURFACE ACTIVE")
+			renderedDesktop = true
+			renderedMobile = true
+		}
+	})
+	as.SetFeatureHost(host, mygoshell.NewGovernanceController(nil, nil, host))
+
+	// 1. Desktop: OpenFeatureBuffer mounts the opt-in feature into the focused Emacs split pane!
+	if !as.Desktop.OpenFeatureBuffer("feature:demo") {
+		t.Fatal("expected OpenFeatureBuffer(feature:demo) to succeed")
+	}
+	dtt := ui.NewTester(as.Desktop.View, 1220, 820)
+	dtt.Frame()
+	if !renderedDesktop || !dtt.HasText("OPT-IN FEATURE SURFACE ACTIVE") {
+		t.Fatalf("expected Desktop Emacs pane to render opt-in FeatureHost buffer, got %q", strings.Join(dtt.Texts(), " | "))
+	}
+
+	// 2. Mobile (393x852): Spaces pill appears ONLY when FeatureHost has buffers -> opens overlay -> Back closes cleanly!
+	renderedMobile = false
+	mtt := ui.NewTester(as.Mobile.View, 393, 852)
+	mtt.Frame()
+	if !mtt.HasText("Spaces") {
+		t.Fatalf("expected Mobile Spaces pill when FeatureHost has active buffers, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+	if err := mtt.Click("Spaces"); err != nil {
+		t.Fatalf("click Mobile Spaces pill: %v", err)
+	}
+	mtt.Frame()
+	if !renderedMobile || !mtt.HasText("OPT-IN FEATURE SURFACE ACTIVE") {
+		t.Fatalf("expected Mobile Spaces overlay to render feature buffer, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+	if err := mtt.Click("Back"); err != nil {
+		t.Fatalf("click Mobile feature Back button: %v", err)
+	}
+	mtt.Frame()
+	if as.Mobile.ActiveFeatureID() != "" {
+		t.Fatalf("expected Mobile feature overlay closed after Back, got %q", as.Mobile.ActiveFeatureID())
+	}
+}

@@ -76,6 +76,7 @@ jobs:
             wazero-aot-${{ runner.os }}-
       - run: bun install --frozen-lockfile
       - run: just check-file-size
+      - run: just check-feature-pruning
       - run: just ci go-unit-and-build
 
   go-race-detector:

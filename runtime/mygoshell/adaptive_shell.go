@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
@@ -60,6 +61,37 @@ type AdaptiveShell struct {
 	theme      ThemePreset
 	wbGen      uint64
 	onTheme    func(DerivedTheme)
+}
+
+// SetFeatureHost attaches an opt-in FeatureHost (compiled via build tags and
+// governed by GovernanceLedger) identically across Desktop and Mobile views.
+func (a *AdaptiveShell) SetFeatureHost(host *features.Host, govUI *GovernanceController) {
+	if a == nil {
+		return
+	}
+	if a.Desktop != nil {
+		a.Desktop.FeatureHost = host
+		if govUI != nil {
+			a.Desktop.GovernanceUI = govUI
+		}
+		if host != nil {
+			for _, buf := range host.Buffers() {
+				a.Desktop.RegisterWindowBuffer(buf)
+			}
+			existing := make(map[string]struct{}, len(a.Desktop.Commands))
+			for _, c := range a.Desktop.Commands {
+				existing[c.Name] = struct{}{}
+			}
+			for _, cmd := range host.Commands() {
+				if _, ok := existing[cmd.Name]; !ok {
+					a.Desktop.Commands = append(a.Desktop.Commands, cmd)
+				}
+			}
+		}
+	}
+	if a.Mobile != nil {
+		a.Mobile.FeatureHost = host
+	}
 }
 
 // NewAdaptiveShell constructs a complete 4-target Marlin shell sharing one

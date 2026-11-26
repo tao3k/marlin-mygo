@@ -72,6 +72,13 @@ func (m *Module) SetGovernanceLedger(ledger *features.GovernanceLedger) {
 	}
 }
 
+// SetRevisionHandler wires a transport-free callback invoked when a user requests an artifact revision.
+func (m *Module) SetRevisionHandler(fn func(docID string, version int, instruction string)) {
+	if m != nil && m.View != nil && m.View.Ctrl != nil {
+		m.View.Ctrl.OnRequestRevision = fn
+	}
+}
+
 func (m *Module) Meta() features.FeatureMeta {
 	return features.FeatureMeta{
 		ID:                   features.FeatureCanvas,

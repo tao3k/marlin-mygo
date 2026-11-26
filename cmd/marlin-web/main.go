@@ -139,6 +139,7 @@ func main() {
 		Auth:           webAuth,
 	})
 	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, multimodal composer, and theme tokens on Web deploy.")
+	wireWebFeaturesAndGovernance(adaptive)
 	adaptive.Desktop.Transcript.SetContextUsage(0, 200_000)
 	_, _ = adaptive.Desktop.Transcript.AttachFile(composer.AttachmentInput{
 		Filename: "adaptive_shell.go",
@@ -164,6 +165,8 @@ func main() {
 			adaptive.Desktop.OpenMarketplace()
 		case "studio.open-federation":
 			adaptive.Desktop.OpenFederation()
+		case "studio.open-governance":
+			adaptive.Desktop.OpenGovernance()
 		case "studio.cycle-theme":
 			adaptive.CycleTheme()
 		}

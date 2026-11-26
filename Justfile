@@ -115,6 +115,21 @@ build-features tags="marlin_feat_chatroom" out="./dist/marlin-app-custom":
 build-full out="./dist/marlin-app-full":
     CGO_ENABLED=0 go build -tags marlin_full -o {{out}} ./cmd/marlin-app
 
+# Verify Rust-Cargo-style compile-time zero-bloat pruning across Desktop & Web WASM targets.
+check-feature-pruning:
+    @if go list -tags marlin_minimal -deps ./cmd/marlin-app | grep -q "features/"; then echo "FAIL: marlin_minimal linked optional features into marlin-app"; exit 1; fi
+    @if GOOS=js GOARCH=wasm go list -tags marlin_minimal -deps ./cmd/marlin-web | grep -q "features/"; then echo "FAIL: marlin_minimal linked optional features into marlin-web"; exit 1; fi
+    @go list -tags marlin_feat_chatroom -deps ./cmd/marlin-app | grep -q "features/chatroom"
+    @if go list -tags marlin_feat_chatroom -deps ./cmd/marlin-app | grep -q "features/compare"; then echo "FAIL: marlin_feat_chatroom leaked features/compare"; exit 1; fi
+    @go list -tags marlin_full -deps ./cmd/marlin-app | grep -q "features/chatroom"
+    @go list -tags marlin_full -deps ./cmd/marlin-app | grep -q "features/compare"
+    @go list -tags marlin_full -deps ./cmd/marlin-app | grep -q "features/canvas"
+    @CGO_ENABLED=0 go build -tags marlin_minimal -o /dev/null ./cmd/marlin-app
+    @CGO_ENABLED=0 go build -tags marlin_full -o /dev/null ./cmd/marlin-app
+    @GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -tags marlin_minimal -o /dev/null ./cmd/marlin-web
+    @GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -tags marlin_full -o /dev/null ./cmd/marlin-web
+    @echo "OK: compile-time feature pruning verified across Desktop & Web WASM"
+
 # Serve a signed Marketplace catalog directory over local HTTP.
 serve-catalog dir="./dist/marketplace" addr="127.0.0.1:8787":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool serve-catalog -dir "{{dir}}" -addr "{{addr}}"
