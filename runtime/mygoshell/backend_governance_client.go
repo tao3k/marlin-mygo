@@ -31,8 +31,16 @@ type GovernanceContextFlow struct {
 	DstScope string `json:"dst_scope"`
 }
 
+// GovernanceDerivationSpec mirrors one dynamically registered Bi-Temporal causal derivation node.
+type GovernanceDerivationSpec struct {
+	DerivationID      string   `json:"derivation_id"`
+	PolicyID          string   `json:"policy_id"`
+	SubjectPremises   []string `json:"subject_premises"`
+	ParentDerivations []string `json:"parent_derivations"`
+}
+
 // BackendGovernanceSnapshot mirrors the authoritative 14-slot Rust+Scheme
-// GovernanceProofEnvelope, ExecutionCircuitBreaker, and MGF1 fact-graph state
+// GovernanceProofEnvelope, ExecutionCircuitBreaker, and MGF1 v2 fact-graph state
 // projected from `marlin-agent-core`.
 type BackendGovernanceSnapshot struct {
 	Admitted                bool
@@ -59,6 +67,7 @@ type BackendGovernanceSnapshot struct {
 	FactContextFlows        []GovernanceContextFlow
 	FactDeclassifiedEntries []string
 	FactRetractedSubjects   []string
+	FactDerivations         []GovernanceDerivationSpec
 }
 
 // BackendGovernanceAuthority is the thin-client boundary between `marlin-mygo`'s
@@ -79,6 +88,7 @@ type BackendGovernanceMutator interface {
 	RevokeActor(actor string) (BackendGovernanceSnapshot, error)
 	RecordContextFlow(entry, srcScope, target, dstScope string) (BackendGovernanceSnapshot, error)
 	DeclassifyContext(entry string) (BackendGovernanceSnapshot, error)
+	RegisterDerivation(derivationID, policyID string, subjectPremises, parentDerivations []string) (BackendGovernanceSnapshot, error)
 	RetractPremise(subject string) (BackendGovernanceSnapshot, error)
 }
 
@@ -252,6 +262,31 @@ func (b *LocalBackendAuthorityBridge) DeclassifyContext(entry string) (BackendGo
 	return cloneBackendSnapshot(b.snap), nil
 }
 
+func (b *LocalBackendAuthorityBridge) RegisterDerivation(derivationID, policyID string, subjectPremises, parentDerivations []string) (BackendGovernanceSnapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.snap.PolicyRevision++
+	spec := GovernanceDerivationSpec{
+		DerivationID:      derivationID,
+		PolicyID:          policyID,
+		SubjectPremises:   append([]string(nil), subjectPremises...),
+		ParentDerivations: append([]string(nil), parentDerivations...),
+	}
+	replaced := false
+	for i := range b.snap.FactDerivations {
+		if b.snap.FactDerivations[i].DerivationID == derivationID {
+			b.snap.FactDerivations[i] = spec
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		b.snap.FactDerivations = append(b.snap.FactDerivations, spec)
+	}
+	b.snap.LastEventNote = fmt.Sprintf("registered derivation %s (%s)", derivationID, policyID)
+	return cloneBackendSnapshot(b.snap), nil
+}
+
 func (b *LocalBackendAuthorityBridge) RetractPremise(subject string) (BackendGovernanceSnapshot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -260,7 +295,36 @@ func (b *LocalBackendAuthorityBridge) RetractPremise(subject string) (BackendGov
 	b.snap.Admitted = false
 	b.snap.BreakerTripped = true
 	b.snap.FactRetractedSubjects = appendUniqueString(b.snap.FactRetractedSubjects, subject)
-	b.snap.RetractedConclusions = appendUniqueString(b.snap.RetractedConclusions, "D-TOOL-EXEC")
+	if len(b.snap.FactDerivations) > 0 {
+		// Propagate reverse-dependency blast radius over local preview derivation DAG.
+		var affected []string
+		for _, d := range b.snap.FactDerivations {
+			if sliceContainsString(d.SubjectPremises, subject) {
+				affected = appendUniqueString(affected, d.DerivationID)
+			}
+		}
+		changed := true
+		for changed {
+			changed = false
+			for _, d := range b.snap.FactDerivations {
+				if sliceContainsString(affected, d.DerivationID) {
+					continue
+				}
+				for _, p := range d.ParentDerivations {
+					if sliceContainsString(affected, p) {
+						affected = append(affected, d.DerivationID)
+						changed = true
+						break
+					}
+				}
+			}
+		}
+		for _, id := range affected {
+			b.snap.RetractedConclusions = appendUniqueString(b.snap.RetractedConclusions, id)
+		}
+	} else {
+		b.snap.RetractedConclusions = appendUniqueString(b.snap.RetractedConclusions, "D-TOOL-EXEC")
+	}
 	b.snap.LastEventNote = "retracted " + subject
 	return cloneBackendSnapshot(b.snap), nil
 }
@@ -293,5 +357,16 @@ func cloneBackendSnapshot(in BackendGovernanceSnapshot) BackendGovernanceSnapsho
 	out.FactContextFlows = append([]GovernanceContextFlow(nil), in.FactContextFlows...)
 	out.FactDeclassifiedEntries = append([]string(nil), in.FactDeclassifiedEntries...)
 	out.FactRetractedSubjects = append([]string(nil), in.FactRetractedSubjects...)
+	if len(in.FactDerivations) > 0 {
+		out.FactDerivations = make([]GovernanceDerivationSpec, len(in.FactDerivations))
+		for i, d := range in.FactDerivations {
+			out.FactDerivations[i] = GovernanceDerivationSpec{
+				DerivationID:      d.DerivationID,
+				PolicyID:          d.PolicyID,
+				SubjectPremises:   append([]string(nil), d.SubjectPremises...),
+				ParentDerivations: append([]string(nil), d.ParentDerivations...),
+			}
+		}
+	}
 	return out
 }

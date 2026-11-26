@@ -341,6 +341,29 @@ func (a *RustGovernanceAuthority) DeclassifyContext(entry string) (mygoshell.Bac
 	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-declassify %s", strings.TrimSpace(entry)))
 }
 
+// RegisterDerivation registers a dynamic Bi-Temporal Truth Maintenance derivation node
+// into the live MGF1 v2 fact store and triggers immediate Linked-AOT/VM Scheme re-evaluation.
+func (a *RustGovernanceAuthority) RegisterDerivation(
+	derivationID, policyID string,
+	subjectPremises, parentDerivations []string,
+) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	premisesCSV := strings.Join(subjectPremises, ",")
+	parentsCSV := "none"
+	if len(parentDerivations) > 0 {
+		parentsCSV = strings.Join(parentDerivations, ",")
+	}
+	cmd := fmt.Sprintf(
+		"scheme:governance-register-derivation %s %s %s %s",
+		strings.TrimSpace(derivationID),
+		strings.TrimSpace(policyID),
+		strings.TrimSpace(premisesCSV),
+		strings.TrimSpace(parentsCSV),
+	)
+	return a.triggerSchemeEval(ctx, cmd)
+}
+
 // RetractPremise retracts a Bi-Temporal Truth Maintenance premise in the live Scheme VM
 // and computes reverse-dependency blast radius invalidation.
 func (a *RustGovernanceAuthority) RetractPremise(subject string) (mygoshell.BackendGovernanceSnapshot, error) {
@@ -552,6 +575,10 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 	if raw := strings.TrimSpace(facets["fact_context_flows_json"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &factFlows)
 	}
+	var factDerivations []mygoshell.GovernanceDerivationSpec
+	if raw := strings.TrimSpace(facets["fact_derivations_json"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &factDerivations)
+	}
 
 	return mygoshell.BackendGovernanceSnapshot{
 		Admitted:                parseBool("admitted"),
@@ -578,6 +605,7 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 		FactContextFlows:        factFlows,
 		FactDeclassifiedEntries: parseStringSlice("fact_declassified_entries_json"),
 		FactRetractedSubjects:   parseStringSlice("fact_retracted_subjects_json"),
+		FactDerivations:         factDerivations,
 	}
 }
 
@@ -593,5 +621,16 @@ func cloneGovernanceSnapshot(in mygoshell.BackendGovernanceSnapshot) mygoshell.B
 	out.FactContextFlows = append([]mygoshell.GovernanceContextFlow(nil), in.FactContextFlows...)
 	out.FactDeclassifiedEntries = append([]string(nil), in.FactDeclassifiedEntries...)
 	out.FactRetractedSubjects = append([]string(nil), in.FactRetractedSubjects...)
+	if len(in.FactDerivations) > 0 {
+		out.FactDerivations = make([]mygoshell.GovernanceDerivationSpec, len(in.FactDerivations))
+		for i, d := range in.FactDerivations {
+			out.FactDerivations[i] = mygoshell.GovernanceDerivationSpec{
+				DerivationID:      d.DerivationID,
+				PolicyID:          d.PolicyID,
+				SubjectPremises:   append([]string(nil), d.SubjectPremises...),
+				ParentDerivations: append([]string(nil), d.ParentDerivations...),
+			}
+		}
+	}
 	return out
 }

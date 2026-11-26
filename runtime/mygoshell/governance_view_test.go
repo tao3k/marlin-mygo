@@ -328,6 +328,10 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 		FactContextFlows: []mygoshell.GovernanceContextFlow{
 			{Entry: "vault-secret", SrcScope: "private", Target: "ext-webhook", DstScope: "external"},
 		},
+		FactDerivations: []mygoshell.GovernanceDerivationSpec{
+			{DerivationID: "D-TOKEN", PolicyID: "pol.cert", SubjectPremises: []string{"token-cert-v1"}},
+			{DerivationID: "D-DEPLOY", PolicyID: "pol.deploy", SubjectPremises: []string{"approval-sig"}, ParentDerivations: []string{"D-TOKEN"}},
+		},
 	})
 
 	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), ledger, features.NewHost())
@@ -341,8 +345,10 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 		"Delegations: 2",
 		"Flows: 1",
 		"Declassified: 0",
+		"Derivations: 2",
 		"Revoke agent-lead",
 		"Declassify vault-secret",
+		"Retract token-cert-v1",
 	} {
 		if !tt.HasText(want) {
 			t.Fatalf("expected interactive fact-graph control %q, got %q", want, strings.Join(tt.Texts(), " | "))
@@ -368,8 +374,18 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 	if len(snap.FactDeclassifiedEntries) != 1 || snap.FactDeclassifiedEntries[0] != "vault-secret" || !tt.HasText("Declassified: 1") {
 		t.Fatalf("expected vault-secret declassified, snap=%+v texts=%q", snap, strings.Join(tt.Texts(), " | "))
 	}
+
+	// Click Retract token-cert-v1 -> computes Bi-Temporal reverse-dependency blast radius (D-TOKEN & D-DEPLOY) and auto-trips fail-closed!
+	if err := tt.Click("Retract token-cert-v1"); err != nil {
+		t.Fatalf("click Retract token-cert-v1: %v", err)
+	}
+	tt.Frame()
+	snap = authBridge.Snapshot()
+	if !snap.BreakerTripped || len(snap.RetractedConclusions) != 2 || !tt.HasText("TM Retracted: D-TOKEN, D-DEPLOY") {
+		t.Fatalf("expected dynamic Bi-Temporal TM blast radius D-TOKEN & D-DEPLOY, snap=%+v texts=%q", snap, strings.Join(tt.Texts(), " | "))
+	}
 	trail := ledger.AuditTrail()
-	if len(trail) < 2 {
-		t.Fatalf("expected immutable audit receipts recorded for interactive revoke & declassify, got %d", len(trail))
+	if len(trail) < 3 {
+		t.Fatalf("expected immutable audit receipts recorded for interactive revoke, declassify, and retract, got %d", len(trail))
 	}
 }

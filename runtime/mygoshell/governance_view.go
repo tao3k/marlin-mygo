@@ -126,6 +126,7 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 		evalClean       bool
 		revokeActor     string
 		declassifyEntry string
+		retractPremise  string
 		nextFilter      = filter
 	)
 
@@ -235,11 +236,14 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 					ui.Text(c, "Proof Digests: "+digests).
 						FontSize(10.5).TextColor(toColor(dt.InkMuted))
 				}
-				if len(bsnap.FactDelegations) > 0 || len(bsnap.FactContextFlows) > 0 || len(bsnap.FactDeclassifiedEntries) > 0 {
+				if len(bsnap.FactDelegations) > 0 || len(bsnap.FactContextFlows) > 0 || len(bsnap.FactDeclassifiedEntries) > 0 || len(bsnap.FactDerivations) > 0 {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						AppleBadgePill(c, fmt.Sprintf("Delegations: %d", len(bsnap.FactDelegations)), dt.Info, dt)
 						AppleBadgePill(c, fmt.Sprintf("Flows: %d", len(bsnap.FactContextFlows)), dt.Accent, dt)
 						AppleBadgePill(c, fmt.Sprintf("Declassified: %d", len(bsnap.FactDeclassifiedEntries)), dt.Success, dt)
+						if len(bsnap.FactDerivations) > 0 {
+							AppleBadgePill(c, fmt.Sprintf("Derivations: %d", len(bsnap.FactDerivations)), dt.Warning, dt)
+						}
 					})
 				}
 				if _, ok := backendAuth.(BackendGovernanceMutator); ok {
@@ -260,6 +264,12 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 							e := entry
 							if ApplePillButton(c, "gov-declassify-"+e, "Declassify "+e, BtnTinted, dt, nil, true).Clicked() {
 								declassifyEntry = e
+							}
+						}
+						for _, premise := range activeRetractablePremises(bsnap, 2) {
+							p := premise
+							if ApplePillButton(c, "gov-retract-"+p, "Retract "+p, BtnDestructive, dt, nil, true).Clicked() {
+								retractPremise = p
 							}
 						}
 					})
@@ -511,6 +521,19 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 				ledger.RecordAudit("human-console", declassifyEntry, "declassify-context", features.AuditAdmitted, fmt.Sprintf("rev-%d", snap.PolicyRevision))
 			}
 		}
+		if retractPremise != "" {
+			snap, err := mut.RetractPremise(retractPremise)
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", retractPremise, "retract-premise", features.AuditAdmitted, fmt.Sprintf("retracted-%d", len(snap.RetractedConclusions)))
+			}
+		}
 	}
 
 	if tripEStop && breaker != nil {
@@ -645,6 +668,31 @@ func activeDeclassifiableEntries(snap BackendGovernanceSnapshot, maxItems int) [
 		out = append(out, e)
 		if len(out) >= maxItems {
 			return out
+		}
+	}
+	return out
+}
+
+func activeRetractablePremises(snap BackendGovernanceSnapshot, maxItems int) []string {
+	out := make([]string, 0, maxItems)
+	seen := make(map[string]struct{}, len(snap.FactRetractedSubjects)+maxItems)
+	for _, r := range snap.FactRetractedSubjects {
+		seen[r] = struct{}{}
+	}
+	for _, d := range snap.FactDerivations {
+		for _, prem := range d.SubjectPremises {
+			p := strings.TrimSpace(prem)
+			if p == "" {
+				continue
+			}
+			if _, exists := seen[p]; exists {
+				continue
+			}
+			seen[p] = struct{}{}
+			out = append(out, p)
+			if len(out) >= maxItems {
+				return out
+			}
 		}
 	}
 	return out

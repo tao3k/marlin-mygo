@@ -759,6 +759,19 @@ func TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E(t *testing.T) {
 		if _, err := govAuth.DelegateActor("agent-lead", "agent-worker"); err != nil {
 			t.Fatalf("Phase 1 DelegateActor agent-lead->agent-worker: %v", err)
 		}
+		// Register custom 4-node dynamic Bi-Temporal causal derivation DAG persisted into MGF1 v2!
+		if _, err := govAuth.RegisterDerivation("D-TOKEN", "pol.cert", []string{"token-cert-v1"}, nil); err != nil {
+			t.Fatalf("Phase 1 RegisterDerivation D-TOKEN: %v", err)
+		}
+		if _, err := govAuth.RegisterDerivation("D-PLAN", "pol.plan", []string{"workspace-ok"}, []string{"D-TOKEN"}); err != nil {
+			t.Fatalf("Phase 1 RegisterDerivation D-PLAN: %v", err)
+		}
+		if _, err := govAuth.RegisterDerivation("D-DEPLOY", "pol.deploy", []string{"approval-sig"}, []string{"D-PLAN"}); err != nil {
+			t.Fatalf("Phase 1 RegisterDerivation D-DEPLOY: %v", err)
+		}
+		if _, err := govAuth.RegisterDerivation("D-AUDIT", "pol.audit", []string{"audit-log-ok"}, nil); err != nil {
+			t.Fatalf("Phase 1 RegisterDerivation D-AUDIT: %v", err)
+		}
 		exfil, err := govAuth.RecordContextFlow("vault-secret", "private", "ext-webhook", "external")
 		if err != nil || !exfil.BreakerTripped {
 			t.Fatalf("Phase 1 expected exfil trip, err=%v snap=%+v", err, exfil)
@@ -803,6 +816,25 @@ func TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E(t *testing.T) {
 		if !hasCedarPolicyID(rev.SynthesizedCedarRules, "marlin.ascent.forbid.fenced.agent-lead") ||
 			!hasCedarPolicyID(rev.SynthesizedCedarRules, "marlin.ascent.forbid.fenced.agent-worker") {
 			t.Fatalf("expected synthesized Cedar forbids for both fenced actors after restart, got %+v", rev.SynthesizedCedarRules)
+		}
+		if len(restored.FactDerivations) != 4 {
+			t.Fatalf("MGF1 v2 DYNAMIC DERIVATIONS LOST ON RESTART: expected 4, got %+v", restored.FactDerivations)
+		}
+		// Incremental post-restart Bi-Temporal premise retraction over pre-restart dynamic DAG!
+		retracted, err := govAuth.RetractPremise("token-cert-v1")
+		if err != nil {
+			t.Fatalf("Phase 2 post-restart RetractPremise(token-cert-v1): %v", err)
+		}
+		if retracted.Admitted || !retracted.BreakerTripped {
+			t.Fatalf("expected post-restart dynamic premise retraction to auto-trip breaker, got %+v", retracted)
+		}
+		for _, want := range []string{"D-TOKEN", "D-PLAN", "D-DEPLOY"} {
+			if !containsString(retracted.RetractedConclusions, want) {
+				t.Fatalf("expected post-restart Bi-Temporal TM blast radius to include %q, got %v", want, retracted.RetractedConclusions)
+			}
+		}
+		if containsString(retracted.RetractedConclusions, "D-AUDIT") {
+			t.Fatalf("unrelated derivation D-AUDIT must NOT be invalidated, got %v", retracted.RetractedConclusions)
 		}
 	default:
 		t.Fatalf("unknown MARLIN_SCHEME_HOST_FACT_RESTART_PHASE=%q", phase)
