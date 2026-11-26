@@ -14,6 +14,7 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -22,6 +23,7 @@ import (
 const (
 	BufferIDCompare    = "feature:compare"
 	CommandOpenCompare = "feature.open-compare"
+	compareDraftScope  = "compare:prompt"
 )
 
 // ViewMode switches between Parallel Model Arena and Non-Destructive Branch Tree.
@@ -35,13 +37,15 @@ const (
 // View renders Marlin's Multi-Model Compare Arena & Branch Tree on Desktop
 // (side-by-side split columns) and Phone (compact lane switcher, zero overflow).
 type View struct {
-	Ctrl *Controller
+	Ctrl       *Controller
+	Resilience *resilience.SessionResilience
 
-	mu         sync.Mutex
-	mode       ViewMode
-	draft      string
-	draftRev   uint64
-	activeLane int
+	mu             sync.Mutex
+	mode           ViewMode
+	draft          string
+	draftRev       uint64
+	activeLane     int
+	onDraftChanged func(scopeID, text string)
 }
 
 // NewView constructs a Marlin-native Compare GPU view.
@@ -55,12 +59,47 @@ func NewView(ctrl *Controller) *View {
 	}
 }
 
-// SetPromptDraft programmatically sets the parallel compare prompt input.
+// SetPromptDraft programmatically sets the parallel compare prompt input and
+// persists it into the shared SessionResilience store for power-loss recovery.
 func (v *View) SetPromptDraft(text string) {
 	v.mu.Lock()
 	v.draft = text
 	v.draftRev++
+	res := v.Resilience
+	cb := v.onDraftChanged
 	v.mu.Unlock()
+	if res != nil {
+		res.SetDraft(compareDraftScope, text)
+		if cb != nil {
+			cb(compareDraftScope, text)
+		}
+	}
+}
+
+// PromptDraft returns the active parallel compare prompt draft buffer.
+func (v *View) PromptDraft() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.draft
+}
+
+// RestoreDraftFromResilience restores any power-loss persisted compare prompt
+// into the GPU input widget.
+func (v *View) RestoreDraftFromResilience() string {
+	v.mu.Lock()
+	res := v.Resilience
+	v.mu.Unlock()
+	if res == nil {
+		return ""
+	}
+	saved := res.Draft(compareDraftScope)
+	if saved != "" {
+		v.mu.Lock()
+		v.draft = saved
+		v.draftRev++
+		v.mu.Unlock()
+	}
+	return saved
 }
 
 // Module implements features.FeatureModule for opt-in build-tag compilation.
@@ -80,6 +119,19 @@ func (m *Module) SetGovernanceLedger(ledger *features.GovernanceLedger) {
 	if m != nil && m.View != nil && m.View.Ctrl != nil {
 		m.View.Ctrl.SetGovernanceLedger(ledger)
 	}
+}
+
+// SetResilience attaches the shared crash-durable SessionResilience store and
+// immediately restores any unsent compare prompt draft after a restart.
+func (m *Module) SetResilience(r *resilience.SessionResilience, onDraftChanged func(scopeID, text string)) {
+	if m == nil || m.View == nil || r == nil {
+		return
+	}
+	m.View.mu.Lock()
+	m.View.Resilience = r
+	m.View.onDraftChanged = onDraftChanged
+	m.View.mu.Unlock()
+	m.View.RestoreDraftFromResilience()
 }
 
 // SetPromoteHandler wires a transport-free callback invoked when a user promotes a winning lane.
@@ -131,8 +183,11 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 	v.mu.Lock()
 	mode := v.mode
 	draft := v.draft
+	prevDraft := draft
 	draftRev := v.draftRev
 	activeLane := v.activeLane
+	res := v.Resilience
+	draftCB := v.onDraftChanged
 	v.mu.Unlock()
 
 	if activeLane < 0 || activeLane >= len(snap.Lanes) {
@@ -189,6 +244,20 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 
 		if snap.LastError != "" {
 			ui.Text(c, snap.LastError).FontSize(11.5).FontWeight(600).TextColor(rgbColor(dt.Danger))
+		}
+		if res != nil {
+			resSnap := res.Snapshot(compareDraftScope)
+			if banner := resSnap.BannerText(); banner != "" {
+				bTone := dt.Warning
+				if resSnap.State == resilience.ConnOffline {
+					bTone = dt.Danger
+				}
+				ui.Row(c.Key("cmp-continuity-banner")).Padding(5, 9).Gap(6).Radius(10).AlignItems(ui.Center).
+					Background(rgbaColor(bTone, 0.10)).Border(1, rgbaColor(bTone, 0.35)).Children(func() {
+					mygoshell.AppleBadgePill(c, string(resSnap.State), bTone, dt)
+					ui.Text(c, banner).FontSize(11).FontWeight(600).TextColor(rgbColor(dt.Ink))
+				})
+			}
 		}
 
 		if mode == ModeBranches {
@@ -260,6 +329,12 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 	v.draft = draft
 	v.activeLane = nextLaneIdx
 	v.mu.Unlock()
+	if draft != prevDraft && res != nil {
+		res.SetDraft(compareDraftScope, draft)
+		if draftCB != nil {
+			draftCB(compareDraftScope, draft)
+		}
+	}
 
 	if toggleModelID != "" {
 		v.Ctrl.ToggleModelSelection(toggleModelID)

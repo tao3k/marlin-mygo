@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+TITLE: Marlin MyGo Optional Features, Tier-0 PromptGate, and Frontend Continuity Architecture
+#+OPTIONS: toc:2 num:t
+
+* Overview
+
+=marlin-mygo= maintains a razor-thin, 120Hz pure-Go (=CGO_ENABLED=0=) frontend
+engine shared across macOS, Linux, Windows, iOS, Android, and WebAssembly
+(=GOOS=js GOARCH=wasm=). Durable conversation journals, tool execution,
+authorization enforcement, and document parsing remain strictly owned by the
+Rust =marlin-agent-core= host.
+
+This document specifies four cooperating frontend layers:
+1. Rust-Cargo-style compile-time feature gating (=engine/features= + =features/*=).
+2. Tier-0 interactive PromptGate & UI Governance (=engine/promptgate=, =SPC G=).
+3. Multi-Role Agent Chat Room with human-only gate receipts (=features/chatroom=).
+4. Power-loss draft durability, idempotent offline outbox, and cursor-resuming reconnects (=engine/resilience= + =grpcwire.ContinuityCoordinator=).
+
+* Rust-Cargo-Style Compile-Time Feature Pruning
+
+Optional interaction paradigms live under =features/= and are never imported
+directly by =runtime/mygoshell= or minimal core builds:
+
+| Build Tag              | Compiled Feature Modules                         | Binary Guarantee                          |
+|------------------------+--------------------------------------------------+-------------------------------------------|
+| =marlin_minimal=       | None (core Chat + Workbench + Governance only)   | Zero imports from =features/*=            |
+| =marlin_feat_chatroom= | =features/chatroom=                              | =compare= and =canvas= pruned at compile  |
+| =marlin_feat_compare=  | =features/compare=                               | =chatroom= and =canvas= pruned at compile |
+| =marlin_feat_canvas=   | =features/canvas=                                | =chatroom= and =compare= pruned at compile|
+| =marlin_full=          | All compiled feature modules                     | Desktop & Web WASM full suite             |
+
+Verification is enforced in CI via =just check-feature-pruning=, inspecting
+=go list -deps= and compiling both =./cmd/marlin-app= and =GOOS=js GOARCH=wasm ./cmd/marlin-web=.
+
+** Duck-Typed Host Integration
+
+Core entrypoints (=cmd/marlin-app/features_core.go= and
+=cmd/marlin-web/features_web.go=) connect compiled modules to host services via
+small local capability interfaces (=governanceAware=, =resilienceAware=,
+=promptGateAware=, =revisionAware=, =winnerAware=). This preserves strict
+compile-time pruning in =marlin_minimal= while giving every enabled feature
+shared governance audit logging, crash-durable drafts, and Tier-0 gate routing.
+
+* Tier-0 PromptGate & UI Governance
+
+** Fail-Closed Prompt Queue (=engine/promptgate=)
+
+- Supports =PromptAsk= (freeform input), =PromptOption= (single/multi-select
+  plus optional custom input), and =PromptAuth= (=marlin.gate.v1= tool review,
+  graph human gate, and device capability approvals).
+- Every decision is claimed atomically once with a generated =IdempotencyKey=
+  to prevent duplicate submissions across UI frames or reconnects.
+- =PromptAuth= modals and mobile bottom sheets cannot be dismissed via =ESC=;
+  only an explicit human decision (=Approve Once=, =Reject=, =Ask Question=, or
+  =Request Patch=) resolves the gate.
+
+** UI Governance Console (=SPC G= / =/governance=)
+
+- Every runtime feature toggle, denied RBAC action, and resolved PromptGate
+  receipt is appended to =features.GovernanceLedger=.
+- =DefaultGovernancePolicy= fails closed on undeclared capabilities and allows
+  operators to inspect active feature trust tiers and live audit logs.
+
+* Multi-Role Agent Chat Room (=features/chatroom=)
+
+- Models humans and specialized Marlin AI agent roles (=Architect=, =Reviewer=,
+  =Security=) inside shared channels, threads, and collaborative =Matters=.
+- Role-based permissions (=CanPost=, =CanManageItems=, =CanInvokeTools=,
+  =RequireGate=, =CanApproveGates=) are checked fail-closed on every mutation.
+- *Human-Only Approval Invariant*: =CanApproveGates= can never be granted to an
+  AI agent (=ErrAgentCannotApproveGate=).
+- When a permitted agent calls =RequestAgentGate=, the room transitions the
+  agent to =waiting-gate=, marks any linked =Matter= as =BLOCKED=, posts a
+  transparent gate-linked message, and enqueues an authoritative =PromptAuth=
+  into Marlin's Tier-0 =promptgate.Queue=. Human sign-off writes a signed
+  receipt reply back into the thread and unblocks the linked =Matter=.
+
+* Frontend Continuity & Power-Loss Durability (=engine/resilience=)
+
+** Atomic Power-Loss Draft Recovery
+
+- Unsent composer drafts, staged =@= context mentions (=DraftMention=), pending
+  offline outbox entries, and per-scope =LastEventID= stream cursors are
+  serialized into a bounded versioned =RecoverySnapshot=.
+- Desktop writes use =0600= temporary files with explicit =tmp.Sync()= fsync
+  followed by atomic =os.Rename= (=~/.config/marlin/recovery-state.json=).
+- Web WASM persists the identical schema to =window.localStorage=
+  (=marlin.recovery.v1=) with browser =offline=/=online= and
+  =pagehide=/=beforeunload= listeners.
+- Corrupt or oversized snapshots fail closed (=FuzzDecodeRecoverySnapshot=).
+- Shared across Desktop Chat (=chat:*=), Mobile Companion (=mobile:chat=,
+  =mobile:capture=), Agent Chat Room (=room:*=, =thread:*=), Model Compare
+  (=compare:prompt=), and Live Canvas (=canvas:*=).
+
+** Reconnect Backoff, Cursor Resume, and Idempotent Outbox
+
+- =grpcwire.ContinuityCoordinator= listens for transport errors, manual
+  =Retry Queue= clicks, and =SwitchableTargetProvider.WaitSwap= Federation node
+  switches.
+- On reconnect, it executes exponential backoff probing, resumes from each
+  scope's =LastEventID= while deduplicating replayed event IDs via a bounded
+  O(1) ring (=AdmitEvent=), and flushes queued outbound turns in FIFO order
+  preserving their client =SubmissionID= for Rust-side idempotency.
+
+* 120Hz Zero-Allocation Performance Discipline
+
+=cmd/marlin-mygo-tool perf-gate= enforces 18 latency, byte, and strict
+allocation SLOs, including:
+- =BenchmarkResilienceAdmitEventHotPath=: =0 B/op=, =0 allocs/op=
+- =BenchmarkPromptGateQueueActive=: =0 B/op=, =0 allocs/op=
+- =BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame=: O(1) thinking-row
+  tracking, =<= 24 allocs/op=, =<= 1536 B/op= (darwin)

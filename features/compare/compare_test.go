@@ -5,12 +5,14 @@
 package compare_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/features"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/features/compare"
 )
 
@@ -89,5 +91,45 @@ func TestCompareMobileCompactLaneSwitcherZeroOverflow(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("Fast Latency Path") {
 		t.Fatalf("expected mobile Branches list, got %q", strings.Join(tt.Texts(), " | "))
+	}
+}
+
+func TestComparePowerLossPromptDraftRecoveryAndOfflineBanner(t *testing.T) {
+	recoveryFile := filepath.Join(t.TempDir(), "compare-recovery.json")
+
+	res1 := resilience.NewSessionResilience()
+	mod1 := compare.NewModule(nil)
+	mod1.SetResilience(res1, nil)
+	mod1.View.SetPromptDraft("Compare cold-start latency across 3 quantized models")
+	if err := res1.SaveFile(recoveryFile); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+
+	// Cold restart -> restore draft into brand-new Compare module & show OFFLINE banner.
+	res2 := resilience.NewSessionResilience()
+	if err := res2.LoadFile(recoveryFile); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	res2.MarkOffline("network disconnected")
+	mod2 := compare.NewModule(nil)
+	mod2.SetResilience(res2, nil)
+	if got := mod2.View.PromptDraft(); got != "Compare cold-start latency across 3 quantized models" {
+		t.Fatalf("expected restored compare draft, got %q", got)
+	}
+
+	theme := ui.DarkTheme()
+	tt := ui.NewTester(func(c *ui.Context) {
+		mod2.View.Render(c, theme, false)
+	}, 1100, 720)
+	tt.Frame()
+	if !tt.HasText("OFFLINE") {
+		t.Fatalf("expected OFFLINE banner in Compare view, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Compare"); err != nil {
+		t.Fatalf("click Compare on restored draft: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Compare cold-start latency across 3 quantized models") {
+		t.Fatalf("expected restored draft submitted to Compare arena, got %q", strings.Join(tt.Texts(), " | "))
 	}
 }

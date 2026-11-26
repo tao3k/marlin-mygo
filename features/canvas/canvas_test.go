@@ -5,12 +5,14 @@
 package canvas_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/tao3k/marlin-mygo/engine/features"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/features/canvas"
 )
 
@@ -103,5 +105,48 @@ func TestCanvasMobileCompactViewZeroOverflow(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("VERSION DIFF v1 -> v2") {
 		t.Fatalf("expected mobile Canvas diff view, got %q", strings.Join(tt.Texts(), " | "))
+	}
+}
+
+func TestCanvasPowerLossRevisionDraftRecoveryAndOfflineBanner(t *testing.T) {
+	recoveryFile := filepath.Join(t.TempDir(), "canvas-recovery.json")
+
+	res1 := resilience.NewSessionResilience()
+	mod1 := canvas.NewModule(nil)
+	mod1.SetResilience(res1, nil)
+	mod1.View.SetRevisionDraft("Add retry backoff diagram to section 2")
+	if err := res1.SaveFile(recoveryFile); err != nil {
+		t.Fatalf("SaveFile: %v", err)
+	}
+
+	// Cold restart -> restore draft into brand-new Canvas module & verify OFFLINE banner + Revise submit.
+	res2 := resilience.NewSessionResilience()
+	if err := res2.LoadFile(recoveryFile); err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	res2.MarkOffline("socket closed")
+	mod2 := canvas.NewModule(nil)
+	mod2.SetResilience(res2, nil)
+	if got := mod2.View.RevisionDraft(); got != "Add retry backoff diagram to section 2" {
+		t.Fatalf("expected restored canvas draft, got %q", got)
+	}
+
+	var gotInst string
+	mod2.SetRevisionHandler(func(_ string, _ int, inst string) { gotInst = inst })
+
+	theme := ui.DarkTheme()
+	tt := ui.NewTester(func(c *ui.Context) {
+		mod2.View.Render(c, theme, false)
+	}, 1100, 720)
+	tt.Frame()
+	if !tt.HasText("OFFLINE") {
+		t.Fatalf("expected OFFLINE banner in Canvas view, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Revise"); err != nil {
+		t.Fatalf("click Revise on restored draft: %v", err)
+	}
+	tt.Frame()
+	if gotInst != "Add retry backoff diagram to section 2" {
+		t.Fatalf("expected restored revision submitted cleanly, got %q", gotInst)
 	}
 }

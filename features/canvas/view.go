@@ -13,6 +13,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/resilience"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/mygoshell"
@@ -25,13 +26,15 @@ const (
 
 // View renders Marlin's pinned Live Artifact & Version Canvas on Desktop or Mobile.
 type View struct {
-	Ctrl *Controller
+	Ctrl       *Controller
+	Resilience *resilience.SessionResilience
 
-	mu         sync.Mutex
-	revDraft   string
-	revDraftID uint64
-	folded     map[string]bool
-	copiedKey  string
+	mu             sync.Mutex
+	revDraft       string
+	revDraftID     uint64
+	folded         map[string]bool
+	copiedKey      string
+	onDraftChanged func(scopeID, text string)
 }
 
 // NewView constructs a Live Canvas GPU view bound to ctrl.
@@ -45,12 +48,57 @@ func NewView(ctrl *Controller) *View {
 	}
 }
 
-// SetRevisionDraft programmatically sets the inline artifact revision prompt.
+func (v *View) draftScope() string {
+	if v.Ctrl != nil {
+		if id := strings.TrimSpace(v.Ctrl.Snapshot().ActiveDocID); id != "" {
+			return "canvas:" + id
+		}
+	}
+	return "canvas:default"
+}
+
+// SetRevisionDraft programmatically sets the inline artifact revision prompt
+// and persists it into the shared SessionResilience store.
 func (v *View) SetRevisionDraft(text string) {
 	v.mu.Lock()
 	v.revDraft = text
 	v.revDraftID++
+	res := v.Resilience
+	cb := v.onDraftChanged
 	v.mu.Unlock()
+	if res != nil {
+		scope := v.draftScope()
+		res.SetDraft(scope, text)
+		if cb != nil {
+			cb(scope, text)
+		}
+	}
+}
+
+// RevisionDraft returns the active inline artifact revision draft buffer.
+func (v *View) RevisionDraft() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.revDraft
+}
+
+// RestoreDraftFromResilience restores any power-loss persisted revision prompt
+// for the active canvas document.
+func (v *View) RestoreDraftFromResilience() string {
+	v.mu.Lock()
+	res := v.Resilience
+	v.mu.Unlock()
+	if res == nil {
+		return ""
+	}
+	saved := res.Draft(v.draftScope())
+	if saved != "" {
+		v.mu.Lock()
+		v.revDraft = saved
+		v.revDraftID++
+		v.mu.Unlock()
+	}
+	return saved
 }
 
 // Module implements features.FeatureModule for opt-in build-tag compilation.
@@ -70,6 +118,19 @@ func (m *Module) SetGovernanceLedger(ledger *features.GovernanceLedger) {
 	if m != nil && m.View != nil && m.View.Ctrl != nil {
 		m.View.Ctrl.SetGovernanceLedger(ledger)
 	}
+}
+
+// SetResilience attaches the shared crash-durable SessionResilience store and
+// immediately restores any unsent artifact revision draft after a restart.
+func (m *Module) SetResilience(r *resilience.SessionResilience, onDraftChanged func(scopeID, text string)) {
+	if m == nil || m.View == nil || r == nil {
+		return
+	}
+	m.View.mu.Lock()
+	m.View.Resilience = r
+	m.View.onDraftChanged = onDraftChanged
+	m.View.mu.Unlock()
+	m.View.RestoreDraftFromResilience()
 }
 
 // SetRevisionHandler wires a transport-free callback invoked when a user requests an artifact revision.
@@ -117,13 +178,20 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 
 	v.mu.Lock()
 	draft := v.revDraft
+	prevDraft := draft
 	draftRev := v.revDraftID
 	copiedKey := v.copiedKey
+	res := v.Resilience
+	draftCB := v.onDraftChanged
 	foldedSnap := make(map[string]bool, len(v.folded))
 	for k, val := range v.folded {
 		foldedSnap[k] = val
 	}
 	v.mu.Unlock()
+	curScope := "canvas:" + snap.ActiveDocID
+	if snap.ActiveDocID == "" {
+		curScope = "canvas:default"
+	}
 
 	var activeDoc ArtifactDoc
 	for _, d := range snap.Docs {
@@ -244,6 +312,20 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 				ui.Text(c, activeVer.Summary).FontSize(11.5).TextColor(rgbColor(dt.InkMuted))
 			})
 		}
+		if res != nil {
+			resSnap := res.Snapshot(curScope)
+			if banner := resSnap.BannerText(); banner != "" {
+				bTone := dt.Warning
+				if resSnap.State == resilience.ConnOffline {
+					bTone = dt.Danger
+				}
+				ui.Row(c.Key("cv-continuity-banner")).Padding(5, 9).Gap(6).Radius(10).AlignItems(ui.Center).
+					Background(rgbaColor(bTone, 0.10)).Border(1, rgbaColor(bTone, 0.35)).Children(func() {
+					mygoshell.AppleBadgePill(c, string(resSnap.State), bTone, dt)
+					ui.Text(c, banner).FontSize(11).FontWeight(600).TextColor(rgbColor(dt.Ink))
+				})
+			}
+		}
 
 		// Artifact Content Surface.
 		mygoshell.AppleGlassCard(c, "cv-body-"+activeDoc.ID, dt, 12, 12, 6, func() {
@@ -302,9 +384,16 @@ func (v *View) Render(c *ui.Context, t *ui.Theme, compact bool) {
 		}
 	}
 	v.mu.Unlock()
+	if draft != prevDraft && res != nil {
+		res.SetDraft(curScope, draft)
+		if draftCB != nil {
+			draftCB(curScope, draft)
+		}
+	}
 
 	if selectDocID != "" {
 		_ = v.Ctrl.SelectDoc(selectDocID)
+		v.RestoreDraftFromResilience()
 	}
 	if selectVer > 0 {
 		_ = v.Ctrl.SelectVersion(activeDoc.ID, selectVer)
