@@ -25,11 +25,11 @@ import (
 // GPU-to-Kernel control loop against the REAL zero-`.ss` Linked-AOT
 // `marlin-scheme-host-aot` OS process:
 //
-//   GPU UI Clicks (mygoshell.GovernanceController)
-//     -> gRPC (DispatchUiEvent / ResolveHumanGate / QueryProjectGraph)
-//     -> Embedded Linked-AOT Gerbil/Gambit VM (POO x ASCENT x Bi-Temporal TM x Cedar)
-//     -> Rust GovernanceAdmissionGate + Compiled Cedar Engine + Turso WAL (MGV1 + MGF1 v2)
-//     -> Back to GPU UI rendered badges, rules, probe decisions, and audit receipts!
+//	GPU UI Clicks (mygoshell.GovernanceController)
+//	  -> gRPC (DispatchUiEvent / ResolveHumanGate / QueryProjectGraph)
+//	  -> Embedded Linked-AOT Gerbil/Gambit VM (POO x ASCENT x Bi-Temporal TM x Cedar)
+//	  -> Rust GovernanceAdmissionGate + Compiled Cedar Engine + Turso WAL (MGV1 + MGF1 v2)
+//	  -> Back to GPU UI rendered badges, rules, probe decisions, and audit receipts!
 func TestLiveGPUConsoleDrivesRealSchemeHostAOTProcessE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
@@ -255,14 +255,14 @@ func TestLiveGPUConsoleDrivesRealSchemeHostAOTProcessE2E(t *testing.T) {
 // and MGF1 v2 durability across a real OS-level SIGTERM death and reboot of the
 // zero-`.ss` Linked-AOT `marlin-scheme-host-aot` daemon:
 //
-//   Process 1: GPU UI records OBO delegation, private->external exfil flow (synthesizing
-//              external-scope unless-declassified Cedar forbid + tripping E-Stop), and a
-//              dynamic Bi-Temporal derivation -> clean SIGTERM shutdown.
-//   Process 2: Brand-new OS daemon booted with `Mode: "clean"` on the same Turso SQLite WAL
-//              -> fresh GPU GovernanceController opens via SPC G and IMMEDIATELY displays
-//              `BACKEND FAIL-CLOSED`, restored `Delegations: 2`, `Flows: 1`, `Derivations: 1`,
-//              `marlin.ascent.forbid.scope.external-unless-declassified`, then executes live
-//              post-restart `Revoke ops-admin` (fencing `agent-persist`) and `Retract persist-cert-v1`!
+//	Process 1: GPU UI records OBO delegation, private->external exfil flow (synthesizing
+//	           external-scope unless-declassified Cedar forbid + tripping E-Stop), and a
+//	           dynamic Bi-Temporal derivation -> clean SIGTERM shutdown.
+//	Process 2: Brand-new OS daemon booted with `Mode: "clean"` on the same Turso SQLite WAL
+//	           -> fresh GPU GovernanceController opens via SPC G and IMMEDIATELY displays
+//	           `BACKEND FAIL-CLOSED`, restored `Delegations: 2`, `Flows: 1`, `Derivations: 1`,
+//	           `marlin.ascent.forbid.scope.external-unless-declassified`, then executes live
+//	           post-restart `Revoke ops-admin` (fencing `agent-persist`) and `Retract persist-cert-v1`!
 func TestLiveGPUConsoleSurvivesSchemeHostAOTRestartE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()

@@ -448,22 +448,22 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 	dt := DeriveTheme(preset.ID, preset.Name, theme)
 
 	var (
-		nextTab          = tab
-		nextChannel      = channel
-		decideGateID     string
-		decideApprove    bool
-		submitPrompt     string
-		submitCapture    string
-		drainQueueNow    bool
-		pullVoiceNow     bool
-		activatePackID   string
-		selectThemeID    string
-		cycleThemeNow    bool
-		togglePlatformTo MobilePlatform
-		pickPhotoNow     bool
-		takePhotoNow     bool
-		pickDocNow       bool
-		removeAttID      string
+		nextTab           = tab
+		nextChannel       = channel
+		decideGateID      string
+		decideApprove     bool
+		submitPrompt      string
+		submitCapture     string
+		drainQueueNow     bool
+		pullVoiceNow      bool
+		activatePackID    string
+		selectThemeID     string
+		cycleThemeNow     bool
+		togglePlatformTo  MobilePlatform
+		pickPhotoNow      bool
+		takePhotoNow      bool
+		pickDocNow        bool
+		removeAttID       string
 		openPreviewAtt    *composer.AttachmentRef
 		closePreviewNow   bool
 		submittedMobTurn  *composer.TurnSubmission
