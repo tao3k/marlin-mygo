@@ -17,6 +17,7 @@ const (
 	CmdStudioOpenProjection    = "studio.open-projection"
 	CmdStudioOpenFederation    = "studio.open-federation"
 	CmdStudioOpenGovernance    = "studio.open-governance"
+	CmdStudioOpenHelmSearch    = "studio.open-helm-search"
 	CmdStudioOpenPalette       = "studio.open-palette"
 	CmdStudioOpenGate          = "studio.open-gate"
 	CmdStudioOpenAuth          = "studio.open-auth"
@@ -111,6 +112,9 @@ func NormalLeaderBindings() []input.Binding {
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "r"}, ActionKind: "feature", CommandName: "feature.open-chatroom"},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "c"}, ActionKind: "feature", CommandName: "feature.open-compare"},
 		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "d"}, ActionKind: "feature", CommandName: "feature.open-canvas"},
+
+		// High-Throughput 120Hz Helm Live Search & Minibuffer (SPC s ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "s", "s"}, ActionKind: "search", CommandName: CmdStudioOpenHelmSearch},
 
 		// Transition from Normal/Leader mode into Emacs Insert/Edit mode
 		{Scope: input.ScopeNormal, Sequence: []string{"i"}, ActionKind: "mode", CommandName: CmdModeInsert},

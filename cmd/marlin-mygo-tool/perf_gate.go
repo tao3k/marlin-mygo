@@ -82,6 +82,10 @@ func activePerfBudgets() []PerfBudget {
 		{Name: "BenchmarkLazyLoader_100Plugins_IdleReapCheck_O1", MaxNs: 60, MaxBytes: 0, MaxAllocs: 0},
 		{Name: "BenchmarkResilienceAdmitEventHotPath", MaxNs: 150, MaxBytes: 0, MaxAllocs: 0},
 		{Name: "BenchmarkPromptGateQueueActive", MaxNs: 120, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkHelm100kHits_VisibleWindowZeroAlloc", MaxNs: 600, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkHelm100kHits_ScrollAndMoveSelection", MaxNs: 200, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkHelmStaleBatchDropZeroAlloc", MaxNs: 80, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkWindowTree_Snapshot120HzZeroAlloc", MaxNs: 100, MaxBytes: 0, MaxAllocs: 0},
 	}
 }
 

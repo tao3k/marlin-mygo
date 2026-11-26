@@ -14,6 +14,7 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/input"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
+	"github.com/tao3k/marlin-mygo/engine/search"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
@@ -116,6 +117,7 @@ type WorkbenchApp struct {
 	SettingsSchema      *schema.BoundedSchema
 	SettingsState       *SchemaFormState
 	OnSaveSettings      func(values map[string]any)
+	HelmSearch          *HelmMinibufferController
 
 	mu                 sync.Mutex
 	selectedID         string
@@ -124,6 +126,7 @@ type WorkbenchApp struct {
 	paletteRankValid   bool
 	paletteLastQuery   string
 	paletteLastCmdLen  int
+	helmSearchOpen     bool
 	bufferPickerOpen   bool
 	bufferPickerQuery  string
 	marketplaceOpen    bool
@@ -314,6 +317,8 @@ func (a *WorkbenchApp) invokeCommand(commandName string) {
 		a.OpenFederation()
 	case shell.CmdStudioOpenGovernance:
 		a.OpenGovernance()
+	case shell.CmdStudioOpenHelmSearch:
+		a.OpenHelmSearch()
 	case shell.CmdStudioOpenSearch:
 		if a.Transcript != nil {
 			a.Transcript.OpenSearch()
@@ -791,6 +796,76 @@ func (a *WorkbenchApp) OpenCommandPalette() {
 	a.paletteQuery = ""
 }
 
+// OpenHelmSearch opens Marlin's unified 120Hz Helm / Minibuffer search surface
+// without mutating the active WindowTree layout.
+func (a *WorkbenchApp) OpenHelmSearch() {
+	if a.HelmSearch == nil {
+		a.HelmSearch = NewHelmMinibufferController(search.DefaultMaxCandidates)
+	}
+	if a.HelmSearch.OnExecuteAction == nil {
+		a.HelmSearch.OnExecuteAction = a.handleHelmAction
+	}
+	a.helmSearchOpen = true
+	a.paletteOpen = false
+	a.bufferPickerOpen = false
+}
+
+// IsHelmSearchOpen reports whether the 120Hz Helm Minibuffer surface is open.
+func (a *WorkbenchApp) IsHelmSearchOpen() bool { return a.helmSearchOpen }
+
+func (a *WorkbenchApp) handleHelmAction(action search.TargetAction, targets []search.Candidate) {
+	if len(targets) == 0 {
+		return
+	}
+	switch action {
+	case search.ActionMentionInComposer:
+		if a.Transcript != nil && a.Transcript.Composer != nil {
+			for _, t := range targets {
+				kind := t.PayloadKind
+				if kind == "" {
+					kind = t.SourceID
+				}
+				target := t.PayloadTarget
+				if target == "" {
+					target = t.Title
+				}
+				a.Transcript.Composer.AddMention(composer.ContextMention{
+					Kind: kind, Target: target, Label: "@" + t.Title,
+				})
+			}
+			a.Transcript.SyncDraftMentionsToResilience()
+		}
+	case search.ActionOpenSplitRight:
+		if a.Windows != nil {
+			t := targets[0]
+			buf := shell.PaneBuffer{BufferID: t.PayloadTarget, Title: t.Title, Kind: "native-gpu"}
+			if buf.BufferID == "" {
+				buf.BufferID = "builtin:projection"
+			}
+			_, _ = a.Windows.SplitRight(buf)
+		}
+	case search.ActionOpenInNewTab:
+		if a.Windows != nil {
+			for _, t := range targets {
+				buf := shell.PaneBuffer{BufferID: t.PayloadTarget, Title: t.Title, Kind: "native-gpu"}
+				if buf.BufferID == "" {
+					buf.BufferID = "builtin:projection"
+				}
+				_, _ = a.Windows.OpenTabInFocused(buf)
+			}
+		}
+	default:
+		t := targets[0]
+		if t.PayloadKind == "command" && t.PayloadTarget != "" {
+			a.invokeCommand(t.PayloadTarget)
+			return
+		}
+		if a.Windows != nil && t.PayloadTarget != "" {
+			_, _ = a.Windows.OpenTabInFocused(shell.PaneBuffer{BufferID: t.PayloadTarget, Title: t.Title, Kind: "native-gpu"})
+		}
+	}
+}
+
 // IsGovernanceOpen reports whether the Tier-0 Governance Console modal is visible.
 func (a *WorkbenchApp) IsGovernanceOpen() bool { return a.governanceOpen }
 
@@ -818,6 +893,9 @@ func (a *WorkbenchApp) OpenFeatureBuffer(bufferID string) bool {
 // Security invariant: Approval Gates (gateOpen) are intentionally NOT bypassed by ESC.
 func (a *WorkbenchApp) DismissTopOverlay() bool {
 	switch {
+	case a.helmSearchOpen:
+		a.helmSearchOpen = false
+		return true
 	case a.paletteOpen:
 		a.paletteOpen = false
 		return true

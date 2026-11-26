@@ -277,6 +277,13 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		})
 	})
 
+	// 120Hz non-destructive Helm / Minibuffer Live Search surface (Overlay or BottomDock).
+	if a.helmSearchOpen && a.HelmSearch != nil {
+		a.HelmSearch.Render(c, dt, 0, func() {
+			a.helmSearchOpen = false
+		})
+	}
+
 	// Tier-0 Ask / Option / Authorization queue floats at the highest z-order above all slots and modals.
 	if a.PromptGate != nil {
 		a.PromptGate.RenderDesktopModal(c, dt)

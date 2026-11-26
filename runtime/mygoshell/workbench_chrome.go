@@ -195,6 +195,8 @@ func whichKeyGroupName(k string) string {
 		return "perspective"
 	case "o":
 		return "spaces"
+	case "s":
+		return "search"
 	case "t":
 		return "theme"
 	default:
