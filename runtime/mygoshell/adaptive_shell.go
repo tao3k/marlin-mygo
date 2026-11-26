@@ -123,6 +123,7 @@ func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {
 
 	mobile := NewMobileCompanionAppForPlatform(cfg.MobilePlatform, "", cfg.BrandTitle)
 	mobile.Transcript = transcript
+	mobile.PromptGate = desktop.PromptGate
 	mobile.Windows = tree
 	mobile.Auth = cfg.Auth
 	mobile.SetThemePreset(preset.ID)

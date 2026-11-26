@@ -289,7 +289,7 @@ func (d *SessionDriver) ApproveGateOnce(
 	callID string,
 	idempotencyKey string,
 ) (*gatev1.GateDecisionReceipt, error) {
-	return d.submitGateDecision(ctx, gateID, callID, gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_APPROVE_ONCE, idempotencyKey)
+	return d.SubmitToolReviewWithRationale(ctx, gateID, callID, true, "", idempotencyKey)
 }
 
 // RejectGate submits a fail-closed rejection decision to Rust ApprovalGateService
@@ -300,26 +300,71 @@ func (d *SessionDriver) RejectGate(
 	callID string,
 	idempotencyKey string,
 ) (*gatev1.GateDecisionReceipt, error) {
-	return d.submitGateDecision(ctx, gateID, callID, gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_REJECT, idempotencyKey)
+	return d.SubmitToolReviewWithRationale(ctx, gateID, callID, false, "", idempotencyKey)
 }
 
-func (d *SessionDriver) submitGateDecision(
+// SubmitToolReviewWithRationale submits a one-shot tool-review decision carrying
+// an optional human rationale string to Rust ApprovalGateService.
+func (d *SessionDriver) SubmitToolReviewWithRationale(
 	ctx context.Context,
 	gateID string,
 	callID string,
-	decision gatev1.ToolReviewDecision,
+	approve bool,
+	rationale string,
+	idempotencyKey string,
+) (*gatev1.GateDecisionReceipt, error) {
+	decision := gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_REJECT
+	if approve {
+		decision = gatev1.ToolReviewDecision_TOOL_REVIEW_DECISION_APPROVE_ONCE
+	}
+	target, _ := d.activeTarget()
+	if target == nil {
+		return nil, fmt.Errorf("grpcwire: SessionDriver has no active Target")
+	}
+	req := &gatev1.SubmitToolReviewDecisionRequest{
+		GateId:         gateID,
+		CallId:         callID,
+		Decision:       decision,
+		IdempotencyKey: idempotencyKey,
+	}
+	if rationale != "" {
+		r := rationale
+		req.Rationale = &r
+	}
+	resp, err := target.Gate().SubmitToolReviewDecision(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	rcpt := resp.GetReceipt()
+	if rcpt != nil && rcpt.GetClaimed() {
+		d.clearGate(gateID)
+	}
+	return rcpt, nil
+}
+
+// SubmitGraphHumanDecision submits a structured graph human-gate decision
+// (Approve, Reject, AskQuestion, or RequestPatch) with an optional note.
+func (d *SessionDriver) SubmitGraphHumanDecision(
+	ctx context.Context,
+	gateID string,
+	decision gatev1.GraphHumanDecision,
+	note string,
 	idempotencyKey string,
 ) (*gatev1.GateDecisionReceipt, error) {
 	target, _ := d.activeTarget()
 	if target == nil {
 		return nil, fmt.Errorf("grpcwire: SessionDriver has no active Target")
 	}
-	resp, err := target.Gate().SubmitToolReviewDecision(ctx, &gatev1.SubmitToolReviewDecisionRequest{
+	req := &gatev1.SubmitGraphHumanDecisionRequest{
 		GateId:         gateID,
-		CallId:         callID,
 		Decision:       decision,
 		IdempotencyKey: idempotencyKey,
-	})
+	}
+	if note != "" {
+		n := note
+		req.Note = &n
+	}
+	resp, err := target.Gate().SubmitGraphHumanDecision(ctx, req)
 	if err != nil {
 		return nil, err
 	}

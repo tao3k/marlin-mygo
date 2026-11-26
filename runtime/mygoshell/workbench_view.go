@@ -12,6 +12,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/input"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 )
@@ -79,6 +80,9 @@ type WorkbenchApp struct {
 
 	// Optional Tier-0 native GPU Federation Cockpit topology inspector (lazy-created on open).
 	FederationUI *FederationController
+
+	// Tier-0 Ask, Option, and Authorization modal queue floating above all WebViews.
+	PromptGate *PromptGateController
 
 	// Optional Emacs-style composable binary split WindowTree. When non-nil, the
 	// main workspace renders dynamic split panes with active/inactive modelines
@@ -153,9 +157,10 @@ func NewWorkbenchApp(
 	wb *shell.WorkbenchController,
 ) *WorkbenchApp {
 	app := &WorkbenchApp{
-		Targets:   targets,
-		Slots:     slots,
-		Workbench: wb,
+		Targets:    targets,
+		Slots:      slots,
+		Workbench:  wb,
+		PromptGate: NewPromptGateController(),
 	}
 	if active, ok := targets.Active(); ok {
 		app.selectedID = active.Meta().ID
@@ -413,6 +418,33 @@ func (a *WorkbenchApp) SetPendingGate(gate PendingGateView, openNow bool) {
 // ShowPendingGate opens the authoritative Approval Gate modal above all slots.
 func (a *WorkbenchApp) ShowPendingGate(gate PendingGateView) {
 	a.SetPendingGate(gate, true)
+}
+
+// ShowAskPrompt enqueues a Tier-0 Ask question modal floating above all WebViews.
+func (a *WorkbenchApp) ShowAskPrompt(req promptgate.PromptRequest) error {
+	if a.PromptGate == nil {
+		a.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptAsk
+	return a.PromptGate.Enqueue(req)
+}
+
+// ShowOptionPrompt enqueues a Tier-0 single/multi-select Option modal above all WebViews.
+func (a *WorkbenchApp) ShowOptionPrompt(req promptgate.PromptRequest) error {
+	if a.PromptGate == nil {
+		a.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptOption
+	return a.PromptGate.Enqueue(req)
+}
+
+// ShowAuthPrompt enqueues a Tier-0 Authorization gate modal above all WebViews.
+func (a *WorkbenchApp) ShowAuthPrompt(req promptgate.PromptRequest) error {
+	if a.PromptGate == nil {
+		a.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptAuth
+	return a.PromptGate.Enqueue(req)
 }
 
 // activeWorkbench resolves the WorkbenchController for the currently selected target,

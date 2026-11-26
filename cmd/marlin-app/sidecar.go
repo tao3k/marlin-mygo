@@ -22,6 +22,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 	gatev1 "github.com/tao3k/marlin-mygo/gen/marlin/gate/v1"
@@ -368,12 +369,16 @@ func wireLiveSession(
 			if app.Notifications != nil {
 				grpcwire.NewNotifyBridge(app.Notifications.Center).OnPendingGate(g)
 			}
-			app.ShowPendingGate(mygoshell.PendingGateView{
-				GateID:      g.GetGateId(),
-				ToolName:    g.GetToolOrNodeName(),
-				Prompt:      g.GetPrompt(),
-				Description: g.GetDetailsHeading(),
-			})
+			if app.PromptGate != nil {
+				_ = app.ShowAuthPrompt(grpcwire.PromptRequestFromPendingGate(g))
+			} else {
+				app.ShowPendingGate(mygoshell.PendingGateView{
+					GateID:      g.GetGateId(),
+					ToolName:    g.GetToolOrNodeName(),
+					Prompt:      g.GetPrompt(),
+					Description: g.GetDetailsHeading(),
+				})
+			}
 			markDirty()
 		},
 	})
@@ -397,6 +402,37 @@ func wireLiveSession(
 			_, _ = liveDriver.RejectGate(ctx, gateID, "call-"+gateID, "ui-reject-"+gateID)
 		}
 		markDirty()
+	}
+	if app.PromptGate != nil {
+		app.PromptGate.OnResolve = func(req promptgate.PromptRequest, resp promptgate.PromptResponse) {
+			go func() {
+				switch req.Kind {
+				case promptgate.PromptAuth:
+					if _, err := grpcwire.DispatchPromptResponseToDriver(ctx, liveDriver, req, resp); err != nil {
+						log.Printf("DispatchPromptResponseToDriver(%s): %v", req.ID, err)
+					}
+				case promptgate.PromptAsk:
+					if resp.Action == promptgate.ActionSubmit && resp.TextInput != "" && app.OnSendPrompt != nil {
+						app.OnSendPrompt(resp.TextInput)
+					}
+				case promptgate.PromptOption:
+					if resp.Action == promptgate.ActionSubmit && app.OnSendPrompt != nil {
+						summary := strings.Join(resp.SelectedIDs, ", ")
+						if resp.TextInput != "" {
+							if summary != "" {
+								summary += " (" + resp.TextInput + ")"
+							} else {
+								summary = resp.TextInput
+							}
+						}
+						if summary != "" {
+							app.OnSendPrompt(summary)
+						}
+					}
+				}
+				markDirty()
+			}()
+		}
 	}
 
 	turnCtrl := grpcwire.NewTurnStreamControllerWithProvider(provider)

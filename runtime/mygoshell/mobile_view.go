@@ -11,6 +11,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/device"
@@ -128,6 +129,7 @@ type MobileCompanionApp struct {
 	Device            MobileDeviceSpec
 	Theme             schema.UITheme
 	Transcript        *TranscriptController
+	PromptGate        *PromptGateController
 	Windows           *shell.WindowTree
 	Auth              *AuthController
 	OnSendPrompt      func(prompt string)
@@ -184,12 +186,40 @@ func NewMobileCompanionAppForPlatform(platform MobilePlatform, deviceID, targetL
 		Theme:          preset.Base,
 		themePresetID:  preset.ID,
 		Transcript:     NewTranscriptController(),
+		PromptGate:     NewPromptGateController(),
 		activeTab:      MobileTabChat,
 		captureChannel: defaultChannel,
 		messages: []MobileMessage{
 			{FromUser: false, Sender: "Marlin", Text: greeting, Meta: "mTLS · live"},
 		},
 	}
+}
+
+// ShowAskPrompt enqueues a Tier-0 Ask question bottom sheet above all phone tabs.
+func (m *MobileCompanionApp) ShowAskPrompt(req promptgate.PromptRequest) error {
+	if m.PromptGate == nil {
+		m.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptAsk
+	return m.PromptGate.Enqueue(req)
+}
+
+// ShowOptionPrompt enqueues a Tier-0 Option picker bottom sheet above all phone tabs.
+func (m *MobileCompanionApp) ShowOptionPrompt(req promptgate.PromptRequest) error {
+	if m.PromptGate == nil {
+		m.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptOption
+	return m.PromptGate.Enqueue(req)
+}
+
+// ShowAuthPrompt enqueues a Tier-0 Authorization gate bottom sheet above all phone tabs.
+func (m *MobileCompanionApp) ShowAuthPrompt(req promptgate.PromptRequest) error {
+	if m.PromptGate == nil {
+		m.PromptGate = NewPromptGateController()
+	}
+	req.Kind = promptgate.PromptAuth
+	return m.PromptGate.Enqueue(req)
 }
 
 func (m *MobileCompanionApp) SetTab(tab MobileTab) {
@@ -453,6 +483,10 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 				func() { closeModelSheet = true },
 			)
 		}
+	}
+	// Tier-0 Ask / Option / Authorization bottom sheet floats at highest z-order over any active phone tab.
+	if m.PromptGate != nil {
+		m.PromptGate.RenderMobileSheet(c, dt)
 	}
 
 	// Commit state transitions atomically outside layout closures.

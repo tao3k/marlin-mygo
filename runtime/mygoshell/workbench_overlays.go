@@ -268,6 +268,11 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 			}
 		})
 	})
+
+	// Tier-0 Ask / Option / Authorization queue floats at the highest z-order above all slots and modals.
+	if a.PromptGate != nil {
+		a.PromptGate.RenderDesktopModal(c, dt)
+	}
 }
 
 func remoteTargetFormSchema() schema.BoundedSchema {
