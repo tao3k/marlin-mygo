@@ -36,6 +36,22 @@ iOS/Android bridges).
   waking, O(1) intrusive LRU working-set eviction, idle memory reclamation, and
   1-command security-certified =doctor= / =publish= into Ed25519-signed
   =catalog.json= registries.
+- *Rust-Cargo-Style Compile-Time Feature Pruning & Tier-0 Governance*: Optional
+  interaction paradigms (=features/chatroom= Multi-Role Agent Room,
+  =features/compare= Parallel Model Arena & Branch Tree, and =features/canvas=
+  Live Artifact Canvas) are strictly gated by Go build tags (=marlin_minimal=,
+  =marlin_feat_*=, =marlin_full=) with zero dead code in minimal Desktop or Web
+  WASM builds (=just check-feature-pruning=), governed by the Tier-0 UI
+  Governance Console (=SPC G=), ESC-unbypassable =engine/promptgate= human
+  approval modals, and fail-closed RBAC where AI agents never hold
+  =CanApproveGates=.
+- *Power-Loss Durability & Reconnect Continuity*: Unsent drafts, =@= context
+  mentions, pending offline outbox turns, and =LastEventID= stream cursors are
+  persisted atomically via =0600= + =fsync= + =os.Rename= on Desktop and
+  =window.localStorage= on Web WASM (=engine/resilience= +
+  =grpcwire.ContinuityCoordinator=), with automatic exponential-backoff
+  reconnect, replay deduplication, and FIFO idempotent outbox draining across
+  Chat, Mobile Companion, Agent Room, Compare, and Canvas.
 - *Formally Verified Security Boundaries*: Ten core isolation invariants
   (restricted =approval.gate= protection, Ed25519 release integrity,
   =CallerPage == Host= WebView origin pinning + MyGo WebKit =ContentRules=
@@ -48,8 +64,8 @@ iOS/Android bridges).
 
 * Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro Baseline, Zero CGO)
 
-All 16 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
-(strict =0 allocs/op= on all 9 core engine & 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
+All 18 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
+(strict =0 allocs/op= on all 11 core engine, resilience, promptgate, and 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
 Reference measurements below were recorded on Apple M2 Pro (=darwin/arm64=, Go 1.27.3);
 newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf-gate= to print your local host hardware and measurements:
 
@@ -63,6 +79,8 @@ newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf
 | =engine/bus= COW route fan-out (16 plugins, per-ring lock)| *483 ns* | <= 1.5 µs     | *0*    |
 | =control/marketplace= 100-plugin lazy hook dispatch (COW) | *12.4 ns*| <= 60 ns      | *0*    |
 | =control/marketplace= 100-plugin O(1) idle-reap check     | *20.4 ns*| <= 60 ns      | *0*    |
+| =engine/resilience= stream event replay dedup (=AdmitEvent=) | *36.1 ns*| <= 150 ns  | *0*    |
+| =engine/promptgate= Tier-0 active gate lookup (=Active=)  | *29.8 ns*| <= 120 ns     | *0*    |
 | =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |
 | =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *112 µs* | <= 300 µs     | <= 18  |
 | =runtime/mygoshell= full headless workbench GPU frame     | *37.9 µs*| <= 90 µs      | <= 24  |
@@ -117,6 +135,12 @@ just doctor ./tmp-plugin
 CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool keygen -out ./tmp-keys/acme
 just publish ./tmp-plugin acme.dev ./tmp-keys/acme.key ./tmp-keys/acme.pub ./dist/marketplace
 
+# Verify Rust-Cargo-style compile-time feature pruning across Desktop & Web WASM
+just check-feature-pruning
+just build-core
+just build-features "marlin_feat_chatroom"
+just build-full
+
 # Enforce strict Go + TypeScript latency, byte, and zero-allocation performance gate
 just perf-gate
 
@@ -144,6 +168,7 @@ CGO_ENABLED=0 go run ./cmd/marlin-app -sidecar /path/to/marlin-mygo-host -real-s
 - [[file:docs/04-plugin-ecosystem.org][docs/04-plugin-ecosystem.org]] — Marketplace ecosystem design, trust tiers, lifecycle & certification gate
 - [[file:docs/05-scheme-leverage-adr.org][docs/05-scheme-leverage-adr.org]] — ADR: Why Gerbil Scheme, three-plane separation & anti-redundancy guardrails
 - [[file:docs/06-plugin-author-guide.org][docs/06-plugin-author-guide.org]] — Concise Human & LLM Plugin Author Guide (Go WASI, TS WebView, Declarative, Emacs Lazy Loader & Publish)
+- [[file:docs/07-features-resilience-architecture.org][docs/07-features-resilience-architecture.org]] — Compile-Time Feature Pruning, Tier-0 PromptGate, Multi-Role Agent Room & Power-Loss Continuity Architecture
 - [[file:spec/quint/frontend-security.qnt][spec/quint/frontend-security.qnt]] — Quint formal adversarial security specification
 
 * License
