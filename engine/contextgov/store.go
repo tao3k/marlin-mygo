@@ -349,6 +349,42 @@ func (s *GovernanceStore) IsChannelTainted(tenantID, channelID string) bool {
 	return s.channelTainted[channelKey(tenantID, channelID)]
 }
 
+// ScopeCounts returns a snapshot of governed context entry counts grouped by ContextScope.
+func (s *GovernanceStore) ScopeCounts() map[ContextScope]int {
+	counts := map[ContextScope]int{
+		ScopePrivate:   0,
+		ScopeDM:        0,
+		ScopeChannel:   0,
+		ScopeWorkspace: 0,
+		ScopeExternal:  0,
+	}
+	if s == nil {
+		return counts
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ent := range s.entries {
+		counts[ent.Scope]++
+	}
+	return counts
+}
+
+// TaintedChannelCount returns how many tenant channels currently carry tainted shared context.
+func (s *GovernanceStore) TaintedChannelCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, tainted := range s.channelTainted {
+		if tainted {
+			n++
+		}
+	}
+	return n
+}
+
 // PromoteScope widens an entry's scope (e.g. private -> channel or workspace).
 // Strictly enforced invariants:
 //   - AI agents may NEVER promote scope or declassify context.

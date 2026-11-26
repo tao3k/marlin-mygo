@@ -11,23 +11,44 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"github.com/tao3k/marlin-mygo/engine/contextgov"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
 // GovernanceController renders Marlin's Tier-0 UI Governance & Feature Security
 // Console modal, surfacing compiled feature modules, trust-tier isolation,
-// runtime enable/disable toggles governed by GovernancePolicy, and the
-// immutable newest-first audit receipt trail.
+// runtime enable/disable toggles governed by GovernancePolicy, AI/Tool E-Stop
+// circuit-breaker controls, 5-scope Shared Context posture, and the immutable
+// newest-first audit receipt trail.
 type GovernanceController struct {
 	mu          sync.RWMutex
 	Registry    *features.Registry
 	Ledger      *features.GovernanceLedger
 	Host        *features.Host
+	Breaker     *pluginhost.ExecutionBreaker
+	PluginHost  *pluginhost.Host
+	ContextGov  *contextgov.GovernanceStore
 	auditFilter string // "all" | "admitted" | "denied" | "gate"
 	lastErr     string
 
 	OnFeatureChanged func(id features.FeatureID, enabled bool)
+	OnEmergencyStop  func(tripped bool, epoch uint64)
+}
+
+// AttachSecurityControls links Marlin's AI/Tool ExecutionBreaker, pluginhost.Host,
+// and 5-scope contextgov.GovernanceStore into the Tier-0 Governance Console.
+func (g *GovernanceController) AttachSecurityControls(
+	breaker *pluginhost.ExecutionBreaker,
+	pluginHost *pluginhost.Host,
+	contextGov *contextgov.GovernanceStore,
+) {
+	g.mu.Lock()
+	g.Breaker = breaker
+	g.PluginHost = pluginHost
+	g.ContextGov = contextGov
+	g.mu.Unlock()
 }
 
 // NewGovernanceController constructs a Tier-0 UI Governance Console controller.
@@ -55,9 +76,13 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	reg := g.Registry
 	ledger := g.Ledger
 	host := g.Host
+	breaker := g.Breaker
+	pluginHost := g.PluginHost
+	ctxGov := g.ContextGov
 	filter := g.auditFilter
 	lastErr := g.lastErr
 	onChanged := g.OnFeatureChanged
+	onEStop := g.OnEmergencyStop
 	g.mu.RUnlock()
 
 	dt := derivedThemeFromUITheme(t)
@@ -78,6 +103,8 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	var (
 		toggleID     features.FeatureID
 		toggleEnable bool
+		tripEStop    bool
+		rearmEStop   bool
 		nextFilter   = filter
 	)
 
@@ -111,6 +138,54 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 
 		if lastErr != "" {
 			ui.Text(c, lastErr).FontSize(11.5).FontWeight(600).TextColor(toColor(dt.Danger))
+		}
+
+		// AI & Tool Execution Circuit Breaker (E-Stop / 脱扣) Control Plane.
+		if breaker != nil {
+			tripped, tripEp, budgetUsed, activeLeases := breaker.State()
+			AppleGlassCard(c, "gov-estop-card", dt, 12, 10, 6, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, "AI & TOOL EXECUTION CIRCUIT BREAKER").
+						FontSize(10.5).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
+					if tripped {
+						AppleBadgePill(c, "TRIPPED · FAIL-CLOSED", dt.Danger, dt)
+					} else {
+						AppleBadgePill(c, "ARMED", dt.Success, dt)
+					}
+					AppleBadgePill(c, fmt.Sprintf("Epoch: %d", tripEp), dt.Info, dt)
+					AppleBadgePill(c, fmt.Sprintf("Budget: %d · Leases: %d", budgetUsed, activeLeases), dt.Accent, dt)
+					ui.Spacer(c)
+					if tripped {
+						if ApplePillButton(c, "gov-estop-rearm", "Human Re-Arm", BtnTinted, dt, nil, true).Clicked() {
+							rearmEStop = true
+						}
+					} else {
+						if ApplePillButton(c, "gov-estop-trip", "Trip E-Stop", BtnDestructive, dt, nil, true).Clicked() {
+							tripEStop = true
+						}
+					}
+				})
+			})
+		}
+
+		// 5-Scope Shared Context Governance Posture Strip.
+		if ctxGov != nil {
+			counts := ctxGov.ScopeCounts()
+			taintedCh := ctxGov.TaintedChannelCount()
+			AppleGlassCard(c, "gov-context-scopes", dt, 12, 10, 6, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, "SHARED CONTEXT SCOPES").
+						FontSize(10.5).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
+					AppleBadgePill(c, fmt.Sprintf("Private: %d", counts[contextgov.ScopePrivate]), dt.Danger, dt)
+					AppleBadgePill(c, fmt.Sprintf("DM: %d", counts[contextgov.ScopeDM]), dt.Warning, dt)
+					AppleBadgePill(c, fmt.Sprintf("Channel: %d", counts[contextgov.ScopeChannel]), dt.Info, dt)
+					AppleBadgePill(c, fmt.Sprintf("Workspace: %d", counts[contextgov.ScopeWorkspace]), dt.Success, dt)
+					AppleBadgePill(c, fmt.Sprintf("External: %d", counts[contextgov.ScopeExternal]), dt.InkMuted, dt)
+					if taintedCh > 0 {
+						AppleBadgePill(c, fmt.Sprintf("Tainted Ch: %d", taintedCh), dt.Danger, dt)
+					}
+				})
+			})
 		}
 
 		// Compiled Optional Features Matrix.
@@ -212,6 +287,30 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	g.mu.Lock()
 	g.auditFilter = nextFilter
 	g.mu.Unlock()
+
+	if tripEStop && breaker != nil {
+		breaker.Trip("human-console", "manual Tier-0 Governance Console E-Stop")
+		if pluginHost != nil {
+			pluginHost.TripEmergencyStop()
+		}
+		_, ep, _, _ := breaker.State()
+		if onEStop != nil {
+			onEStop(true, ep)
+		}
+	}
+	if rearmEStop && breaker != nil {
+		ep, err := breaker.Rearm("human-console", false, true)
+		g.mu.Lock()
+		if err != nil {
+			g.lastErr = err.Error()
+		} else {
+			g.lastErr = ""
+		}
+		g.mu.Unlock()
+		if err == nil && onEStop != nil {
+			onEStop(false, ep)
+		}
+	}
 
 	if toggleID != "" {
 		err := reg.SetEnabled(toggleID, toggleEnable, ledger, host)

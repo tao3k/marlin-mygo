@@ -37,7 +37,7 @@ jobs:
       - run: just ci proto-contract
 
   formal-security-quint:
-    name: Quint Formal Adversarial Security Gate
+    name: Quint Formal Adversarial Security & MBT Gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,8 +48,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: oven-sh/setup-bun@v2
       - run: npm install -g @informalsystems/quint
+      - run: bun install --frozen-lockfile
       - run: just ci formal-security
+      - run: just ci formal-threat-mbt
 
   go-unit-and-build:
     name: Go Unit, WASM & Zero-CGO Build (${{ matrix.os }})

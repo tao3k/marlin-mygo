@@ -33,10 +33,13 @@ var (
 
 // CatalogIndex is the deterministic, Ed25519-signed Marketplace registry manifest.
 type CatalogIndex struct {
-	SchemaVersion  int                `json:"schemaVersion"`
-	Publisher      schema.PublisherID `json:"publisher"`
-	SourceRevision string             `json:"sourceRevision"`
-	Entries        []CatalogEntry     `json:"entries"`
+	SchemaVersion   int                `json:"schemaVersion"`
+	Publisher       schema.PublisherID `json:"publisher"`
+	SourceRevision  string             `json:"sourceRevision"`
+	MetadataVersion uint64             `json:"metadataVersion,omitempty"`
+	SnapshotVersion uint64             `json:"snapshotVersion,omitempty"`
+	ExpiresAtUnix   int64              `json:"expiresAtUnix,omitempty"`
+	Entries         []CatalogEntry     `json:"entries"`
 }
 
 // InstalledPanel captures a live, cryptographically verified panel mounted via Host.Activate.

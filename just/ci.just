@@ -20,6 +20,14 @@ proto-contract:
 formal-security samples="500":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate -backend=typescript -samples={{samples}}
 
+# Run all 25 upstream + @quint-extends threat overlays and MBT action-coverage audits.
+formal-threat-mbt:
+    bun run check:auth-threat
+    bun run check:tenant-chatroom-threat
+    bun run check:execution-context-threat
+    bun run check:supply-chain-mls-threat
+    bun run check:auth-mbt-audit
+
 # Run Pure-Go zero-cgo unit/WASM tests, go vet, and desktop + mobile shell builds.
 go-unit-and-build:
     CGO_ENABLED=0 go test -v ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
@@ -27,9 +35,9 @@ go-unit-and-build:
     CGO_ENABLED=0 go build ./cmd/marlin-app
     CGO_ENABLED=0 go build ./cmd/marlin-mobile
 
-# Run Go race detector across concurrent engine, pluginhost, and device planes.
+# Run Go race detector across concurrent engine, feature, control, pluginhost, and device planes.
 go-race:
-    go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device/...
+    go test -race ./pkg/... ./engine/... ./features/... ./control/... ./runtime/pluginhost ./runtime/device/...
 
 # Run 10-target Go fuzz smoke suite across protocol, schema, arena, input, and marketplace boundaries.
 go-fuzz time="3s":

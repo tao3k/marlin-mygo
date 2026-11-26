@@ -15,9 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tao3k/marlin-mygo/engine/contextgov"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/resilience"
+	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
 var (
@@ -153,6 +155,8 @@ type Controller struct {
 	mu              sync.RWMutex
 	ledger          *features.GovernanceLedger
 	promptGates     *promptgate.Queue
+	contextGov      *contextgov.GovernanceStore
+	breaker         *pluginhost.ExecutionBreaker
 	gateReceipts    map[string]GateReceiptRecord
 	gateSeq         uint64
 	tenantID        string
@@ -507,7 +511,15 @@ func (c *Controller) IngestExternalMessage(
 			c.channelTainted = make(map[string]bool)
 		}
 		c.channelTainted[msg.ChannelID] = true
+		ctxGov := c.contextGov
+		tid := c.tenantID
 		c.mu.Unlock()
+		if ctxGov != nil {
+			if tid == "" {
+				tid = proof.TenantID
+			}
+			ctxGov.MarkChannelTainted(tid, msg.ChannelID, proof.ConnectorID, "external chatroom ingress")
+		}
 	}
 	return dup, detectedGap, nil
 }

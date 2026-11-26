@@ -15,9 +15,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tao3k/marlin-mygo/engine/contextgov"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/features/chatroom"
+	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
 type roomItfBigInt struct {
@@ -512,5 +514,22 @@ func TestChatroomSecurityRegressionHardening(t *testing.T) {
 	}
 	if err := ctrl.InvokeAgentTool("ch-workspace", "agent-architect", "deploy.prod", ""); !errors.Is(err, chatroom.ErrPermissionDenied) {
 		t.Fatalf("expected ErrPermissionDenied on tainted channel without approved gate, got %v", err)
+	}
+
+	// 6. Wired contextgov + ExecutionBreaker E-Stop enforcement inside Chat Room!
+	ctxGov := contextgov.NewGovernanceStore(ledger)
+	brk := pluginhost.NewExecutionBreaker(2, ledger)
+	ctrl.SetContextGovernance(ctxGov)
+	ctrl.SetExecutionBreaker(brk)
+	if _, _, err := ctrl.IngestExternalMessage("e7", 7, chatroom.RoomMessage{ChannelID: "ch-architecture", AuthorID: "ext-2", Body: "external ping"}, chatroom.ExternalIngressProof{OriginVerified: true, ConnectorID: "slack", TenantID: "tenant-acme"}); err != nil {
+		t.Fatalf("external message into ch-architecture failed: %v", err)
+	}
+	if !ctxGov.IsChannelTainted("tenant-acme", "ch-architecture") {
+		t.Fatal("expected external chatroom ingress to propagate channel taint to contextgov.GovernanceStore")
+	}
+	// Clean channel invocation fails closed immediately after Trip E-Stop!
+	brk.Trip("human-owner", "console E-Stop")
+	if err := ctrl.InvokeAgentTool("ch-governance", "agent-architect", "audit.scan", ""); !errors.Is(err, pluginhost.ErrBreakerTripped) {
+		t.Fatalf("expected ErrBreakerTripped in ChatRoom after ExecutionBreaker E-Stop, got %v", err)
 	}
 }

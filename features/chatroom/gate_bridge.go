@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tao3k/marlin-mygo/engine/contextgov"
 	"github.com/tao3k/marlin-mygo/engine/features"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/resilience"
+	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
 // GateReceiptStatus tracks the human-governed decision lifecycle for an agent
@@ -51,6 +53,23 @@ type GateReceiptRecord struct {
 func (c *Controller) SetPromptGateQueue(q *promptgate.Queue) {
 	c.mu.Lock()
 	c.promptGates = q
+	c.mu.Unlock()
+}
+
+// SetContextGovernance binds Marlin's 5-scope Shared Context GovernanceStore so
+// external room ingress propagates channel taint and tool invocations respect
+// multi-party context taint status.
+func (c *Controller) SetContextGovernance(store *contextgov.GovernanceStore) {
+	c.mu.Lock()
+	c.contextGov = store
+	c.mu.Unlock()
+}
+
+// SetExecutionBreaker binds Marlin's AI & Tool Execution Circuit Breaker so an
+// operator E-Stop or tool budget exhaustion immediately halts Chat Room tools.
+func (c *Controller) SetExecutionBreaker(breaker *pluginhost.ExecutionBreaker) {
+	c.mu.Lock()
+	c.breaker = breaker
 	c.mu.Unlock()
 }
 
@@ -365,7 +384,11 @@ func (c *Controller) InvokeAgentTool(channelID, actorID, toolName, approvedGateI
 		c.mu.Unlock()
 		return ErrChannelNotFound
 	}
-	if c.channelTainted[channelID] {
+	tainted := c.channelTainted[channelID]
+	if !tainted && c.contextGov != nil && c.contextGov.IsChannelTainted(c.tenantID, channelID) {
+		tainted = true
+	}
+	if tainted {
 		rec, exists := c.gateReceipts[approvedGateID]
 		if !exists || rec.ChannelID != channelID || rec.Status != GateStatusApproved {
 			reason := fmt.Sprintf("channel %s has tainted external ingress; human-approved gate required before invoking %s", channelID, toolName)
@@ -378,8 +401,18 @@ func (c *Controller) InvokeAgentTool(channelID, actorID, toolName, approvedGateI
 			return fmt.Errorf("%w: %s", ErrPermissionDenied, reason)
 		}
 	}
+	breaker := c.breaker
 	ledger := c.ledger
 	c.mu.Unlock()
+	if breaker != nil {
+		lease, err := breaker.AcquireToolLease(actorID, toolName)
+		if err != nil {
+			return err
+		}
+		if err := breaker.CommitToolEffect(lease); err != nil {
+			return err
+		}
+	}
 	if ledger != nil {
 		ledger.RecordAudit(actor.Handle, toolName, "chatroom.tool.invoke", features.AuditAdmitted, approvedGateID)
 	}
