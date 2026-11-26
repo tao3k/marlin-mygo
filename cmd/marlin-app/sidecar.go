@@ -21,6 +21,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/transport"
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
 	gatev1 "github.com/tao3k/marlin-mygo/gen/marlin/gate/v1"
@@ -399,6 +400,21 @@ func wireLiveSession(
 	}
 
 	turnCtrl := grpcwire.NewTurnStreamControllerWithProvider(provider)
+	var usedTokens atomic.Int64
+	recordTokens := func(text string) {
+		add := composer.EstimateTokenCount(text)
+		if add <= 0 {
+			return
+		}
+		total := int(usedTokens.Add(int64(add)))
+		maxTok := transcript.ContextUsage().MaxTokens
+		if maxTok <= 0 {
+			maxTok = 200_000
+		}
+		transcript.SetContextUsage(total, maxTok)
+	}
+	wireComposerWorkspaceHooks(ctx, app, transcript, turnCtrl, &usedTokens, win, publishProjection)
+
 	var (
 		turnMu     sync.Mutex
 		sessionUp  bool
@@ -408,6 +424,7 @@ func wireLiveSession(
 	)
 	app.OnSendPrompt = func(prompt string) {
 		transcript.AppendUser(prompt)
+		recordTokens(prompt)
 		markDirty()
 		go func() {
 			turnMu.Lock()
@@ -439,6 +456,7 @@ func wireLiveSession(
 			}, func(upd grpcwire.TurnStreamUpdate) {
 				if upd.TextDelta != "" {
 					transcript.ApplyCheckpoint(upd.TurnOrdinal, upd.EventID, upd.TextDelta)
+					recordTokens(upd.TextDelta)
 					markDirty()
 				}
 				if tc := upd.ToolCall; tc != nil {
@@ -546,13 +564,21 @@ func wireStandaloneDemo(
 	publishProjection func(string, any),
 ) {
 	var demoTurn atomic.Uint64
+	var usedTokens atomic.Int64
+	wireComposerWorkspaceHooks(context.Background(), app, transcript, nil, &usedTokens, win, publishProjection)
 	app.OnSendPrompt = func(prompt string) {
 		transcript.AppendUser(prompt)
 		ord := demoTurn.Add(1)
 		transcript.BeginAssistantTurn(ord)
-		transcript.ApplyCheckpoint(ord, fmt.Sprintf("demo-%d", ord),
-			fmt.Sprintf("[standalone preview] Received %q — launch with a local marlin-app-server binary (auto-hooked on boot) or -host <addr> for live Rust streaming.", prompt))
+		reply := fmt.Sprintf("[standalone preview] Received %q — launch with a local marlin-app-server binary (auto-hooked on boot) or -host <addr> for live Rust streaming.", prompt)
+		transcript.ApplyCheckpoint(ord, fmt.Sprintf("demo-%d", ord), reply)
 		transcript.CompleteTurn(ord, "DEMO_COMPLETED")
+		total := int(usedTokens.Add(int64(composer.EstimateTokenCount(prompt) + composer.EstimateTokenCount(reply))))
+		maxTok := transcript.ContextUsage().MaxTokens
+		if maxTok <= 0 {
+			maxTok = 200_000
+		}
+		transcript.SetContextUsage(total, maxTok)
 		fireHook("after-turn-complete")
 		publishProjection("session.summary", map[string]any{
 			"sessionId":   sessionID,

@@ -101,6 +101,21 @@ func (p *ProjectionController) SetSnapshot(snap ProjectionSnapshot) {
 	p.mu.Unlock()
 }
 
+// Snapshot returns a thread-safe shallow copy of the current backend-pushed
+// marlin.projection.v1 snapshot for read-only UI consumers and @ mention suggestions.
+func (p *ProjectionController) Snapshot() ProjectionSnapshot {
+	if p == nil {
+		return ProjectionSnapshot{}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return ProjectionSnapshot{
+		GraphNodes: append([]GraphNodeReceiptView(nil), p.snap.GraphNodes...),
+		DiffFiles:  append([]WorkspaceDiffFileView(nil), p.snap.DiffFiles...),
+		Processes:  append([]ManagedProcessView(nil), p.snap.Processes...),
+	}
+}
+
 func (p *ProjectionController) SetActiveTab(tab ProjectionTab) {
 	p.mu.Lock()
 	p.activeTab = tab

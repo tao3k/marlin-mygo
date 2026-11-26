@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tao3k/marlin-mygo/engine/composer"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
 	"github.com/tao3k/marlin-mygo/runtime/device"
 	"github.com/tao3k/marlin-mygo/runtime/device/nativebridge"
@@ -32,7 +33,20 @@ func (m *MobileCompanionApp) AttachDeviceBridge(br *device.Bridge) {
 	m.mu.Lock()
 	m.DeviceBridge = br
 	m.bridgeDescriptors = descs
+	tc := m.Transcript
+	if m.OnPickPhoto == nil {
+		m.OnPickPhoto = m.pickRecentScreenshotFromBridge
+	}
 	m.mu.Unlock()
+
+	if tc != nil {
+		if tc.OnStopVoice == nil {
+			tc.OnStopVoice = m.completeChatVoiceFromBridge
+		}
+		if tc.OnModelChanged == nil {
+			tc.OnModelChanged = m.syncMobileModelSelection
+		}
+	}
 }
 
 // WireNativeTransport registers all 5 mobile protocol families onto a fresh device.Bridge
@@ -168,4 +182,120 @@ func (m *MobileCompanionApp) pullLatestNativeVoice() {
 		m.LastStatusLine = "No voice transcript available"
 	}
 	m.mu.Unlock()
+}
+
+// completeChatVoiceFromBridge resolves the active mobile Chat Voice bar by
+// pulling the latest OS-native transcript from the attached iOS/Android bridge
+// and inserting it cleanly into the Chat composer draft.
+func (m *MobileCompanionApp) completeChatVoiceFromBridge() {
+	m.mu.Lock()
+	br := m.DeviceBridge
+	plat := m.Platform
+	tc := m.Transcript
+	m.mu.Unlock()
+	if br == nil {
+		if tc != nil && tc.Voice != nil {
+			tc.Voice.Cancel()
+		}
+		return
+	}
+	capID := device.CapIOSVoiceTranscribe
+	if plat == MobilePlatformAndroid {
+		capID = device.CapAndroidVoiceTranscribe
+	}
+	res, err := br.Dispatch(context.Background(), device.InvocationRequest{
+		InvocationID: "inv-mob-chat-voice",
+		CapabilityID: capID,
+	})
+	if err != nil {
+		if tc != nil && tc.Voice != nil {
+			tc.Voice.Fail(err)
+		}
+		m.mu.Lock()
+		m.LastStatusLine = fmt.Sprintf("Voice capture error: %v", err)
+		m.mu.Unlock()
+		return
+	}
+	var tr device.VoiceTranscript
+	_ = json.Unmarshal(res.Result, &tr)
+	text := strings.TrimSpace(tr.Text)
+	if tc != nil && tc.Voice != nil {
+		tc.Voice.Cancel()
+	}
+	m.mu.Lock()
+	if text != "" {
+		if strings.TrimSpace(m.chatDraft) == "" {
+			m.chatDraft = text
+		} else {
+			m.chatDraft = strings.TrimSpace(m.chatDraft) + " " + text
+		}
+		m.LastStatusLine = fmt.Sprintf("Voice transcript (%s · %dms)", tr.Locale, tr.DurationMS)
+	} else {
+		m.LastStatusLine = "No voice transcript available"
+	}
+	m.mu.Unlock()
+}
+
+// pickRecentScreenshotFromBridge fetches the latest OS screenshot metadata via
+// iOS PHPicker/PhotoKit or Android MediaStore and attaches it as a structured
+// `@photo:<localId>` context mention in the mobile Chat composer.
+func (m *MobileCompanionApp) pickRecentScreenshotFromBridge() {
+	m.mu.Lock()
+	br := m.DeviceBridge
+	plat := m.Platform
+	tc := m.Transcript
+	m.mu.Unlock()
+	if br == nil {
+		return
+	}
+	capID := device.CapIOSPhotosRecent
+	if plat == MobilePlatformAndroid {
+		capID = device.CapAndroidPhotosRecent
+	}
+	res, err := br.Dispatch(context.Background(), device.InvocationRequest{
+		InvocationID: "inv-mob-photo",
+		CapabilityID: capID,
+		Args:         json.RawMessage(`{"limit":5}`),
+	})
+	if err != nil {
+		m.mu.Lock()
+		m.LastStatusLine = fmt.Sprintf("Photo picker error: %v", err)
+		m.mu.Unlock()
+		return
+	}
+	var items []device.PhotoItem
+	_ = json.Unmarshal(res.Result, &items)
+	if len(items) == 0 {
+		m.mu.Lock()
+		m.LastStatusLine = "No recent screenshots available"
+		m.mu.Unlock()
+		return
+	}
+	first := items[0]
+	label := first.LocalID
+	if label == "" {
+		label = "screenshot"
+	}
+	if tc != nil && tc.Composer != nil {
+		tc.Composer.AddMention(composer.ContextMention{
+			Kind:   "photo",
+			Target: first.LocalID,
+			Label:  label,
+		})
+	}
+	m.mu.Lock()
+	m.LastStatusLine = fmt.Sprintf("Attached screenshot %s (%dx%d)", label, first.Width, first.Height)
+	m.mu.Unlock()
+}
+
+func (m *MobileCompanionApp) syncMobileModelSelection(opt composer.ModelOption) {
+	m.mu.Lock()
+	tc := m.Transcript
+	m.LastStatusLine = fmt.Sprintf("Model: %s (%s)", opt.Label, opt.ContextLabel)
+	m.mu.Unlock()
+	if tc != nil {
+		if winToks := composer.ParseContextWindowTokens(opt.ContextLabel); winToks > 0 {
+			tc.SetContextUsage(tc.ContextUsage().UsedTokens, winToks)
+		}
+	}
 }

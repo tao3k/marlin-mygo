@@ -6,6 +6,8 @@ package composer
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -120,4 +122,41 @@ func (m *StreamMetrics) Label() string {
 	}
 	tps := approxTokens / secs
 	return fmt.Sprintf("%.0f tok/s · %.1fs", tps, el.Seconds())
+}
+
+// ParseContextWindowTokens parses human context labels advertised by models
+// (e.g. "128K", "200K", "1M", "1.5M") into an integer token ceiling.
+func ParseContextWindowTokens(label string) int {
+	s := strings.ToUpper(strings.TrimSpace(label))
+	if s == "" {
+		return 0
+	}
+	mult := 1.0
+	switch {
+	case strings.HasSuffix(s, "M"):
+		mult = 1_000_000
+		s = strings.TrimSuffix(s, "M")
+	case strings.HasSuffix(s, "K"):
+		mult = 1_000
+		s = strings.TrimSuffix(s, "K")
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return int(v * mult)
+}
+
+// EstimateTokenCount returns a fast, allocation-free approximation of prompt or
+// streamed response token count (~4 UTF-8 bytes/token) for UI context headroom.
+func EstimateTokenCount(text string) int {
+	n := len(strings.TrimSpace(text))
+	if n == 0 {
+		return 0
+	}
+	toks := n / 4
+	if toks < 1 {
+		return 1
+	}
+	return toks
 }

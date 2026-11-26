@@ -102,3 +102,68 @@ func TestMobileCompanionLiveDeviceBridgeWiringEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+type mockMobileMediaBridgeTransport struct {
+	mockMobileBridgeTransport
+}
+
+func (t *mockMobileMediaBridgeTransport) Call(ctx context.Context, method string, argsJSON []byte) ([]byte, error) {
+	if method == "photos.recentScreenshots" {
+		return []byte(`{"items":[{"localId":"shot-42","width":1179,"height":2556,"isScreenshot":true,"mimeType":"image/png"}]}`), nil
+	}
+	return t.mockMobileBridgeTransport.Call(ctx, method, argsJSON)
+}
+
+func TestMobileCompanionBridgeChatVoicePhotoAndModelSheetEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	for _, plat := range []MobilePlatform{MobilePlatformIOS, MobilePlatformAndroid} {
+		tr := &mockMobileMediaBridgeTransport{}
+		mob := NewMobileCompanionAppForPlatform(plat, "", "")
+		if _, err := mob.WireNativeTransport(ctx, tr); err != nil {
+			t.Fatalf("WireNativeTransport(%s): %v", plat, err)
+		}
+
+		tt := ui.NewTester(mob.View, 393, 852)
+		tt.Frame()
+
+		// 1. Tap Photo in mobile Chat -> invokes OS photos.recentScreenshots bridge & stages @photo mention!
+		if err := tt.Click("Photo"); err != nil {
+			t.Fatalf("click Photo (%s): %v", plat, err)
+		}
+		tt.Frame()
+		mentions := mob.Transcript.Composer.Snapshot().Mentions
+		if len(mentions) != 1 || mentions[0].Kind != "photo" || mentions[0].Target != "shot-42" {
+			t.Fatalf("expected @photo:shot-42 mention from native bridge (%s), got %+v", plat, mentions)
+		}
+
+		// 2. Tap Voice -> Attach Voice in mobile Chat -> invokes OS voice.latestTranscript bridge & populates chat draft!
+		if err := tt.Click("Voice"); err != nil {
+			t.Fatalf("click Voice (%s): %v", plat, err)
+		}
+		tt.Frame()
+		if err := tt.Click("Attach Voice"); err != nil {
+			t.Fatalf("click Attach Voice (%s): %v", plat, err)
+		}
+		tt.Frame()
+		mob.mu.Lock()
+		draft := mob.chatDraft
+		status := mob.LastStatusLine
+		mob.mu.Unlock()
+		if draft != "Review PR #1 tonight" || !tt.HasText("Voice transcript (en-US · 1800ms)") {
+			t.Fatalf("expected native voice transcript in chat draft (%s), got draft=%q status=%q", plat, draft, status)
+		}
+
+		// 3. Open Model & Reasoning sheet -> switch to Marlin Pro -> updates context window to 1M and status line!
+		if err := tt.Click("Marlin Core"); err != nil {
+			t.Fatalf("click Marlin Core (%s): %v", plat, err)
+		}
+		tt.Frame()
+		if err := tt.Click("Marlin Pro"); err != nil {
+			t.Fatalf("click Marlin Pro (%s): %v", plat, err)
+		}
+		tt.Frame()
+		if gotMax := mob.Transcript.ContextUsage().MaxTokens; gotMax != 1_000_000 {
+			t.Fatalf("expected context window updated to 1M on mobile model switch (%s), got %d", plat, gotMax)
+		}
+	}
+}

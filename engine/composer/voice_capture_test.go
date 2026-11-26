@@ -29,6 +29,18 @@ func TestContextUsageAndStreamMetricsFormatting(t *testing.T) {
 	if !strings.Contains(lbl, "tok/s") {
 		t.Fatalf("expected throughput label with tok/s, got %q", lbl)
 	}
+	if got := ParseContextWindowTokens("200K"); got != 200_000 {
+		t.Fatalf("expected 200K -> 200000, got %d", got)
+	}
+	if got := ParseContextWindowTokens("1M"); got != 1_000_000 {
+		t.Fatalf("expected 1M -> 1000000, got %d", got)
+	}
+	if got := ParseContextWindowTokens("1.5M"); got != 1_500_000 {
+		t.Fatalf("expected 1.5M -> 1500000, got %d", got)
+	}
+	if got := EstimateTokenCount("hello world"); got < 1 {
+		t.Fatalf("expected positive token estimate, got %d", got)
+	}
 }
 
 func TestNativeAudioRecorderIdleStopAndCancelSafety(t *testing.T) {

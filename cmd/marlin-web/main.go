@@ -139,10 +139,19 @@ func main() {
 		Auth:           webAuth,
 	})
 	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, multimodal composer, and theme tokens on Web deploy.")
+	adaptive.Desktop.Transcript.SetContextUsage(0, 200_000)
 	_, _ = adaptive.Desktop.Transcript.AttachFile(composer.AttachmentInput{
 		Filename: "adaptive_shell.go",
 		Data:     []byte("package mygoshell\n// Shared Desktop, iOS, Android, and Web WASM shell\n"),
 	})
+	adaptive.Desktop.Transcript.OnModelChanged = func(m composer.ModelOption) {
+		winToks := composer.ParseContextWindowTokens(m.ContextLabel)
+		if winToks <= 0 {
+			winToks = 200_000
+		}
+		used := adaptive.Desktop.Transcript.ContextUsage().UsedTokens
+		adaptive.Desktop.Transcript.SetContextUsage(used, winToks)
+	}
 	adaptive.Desktop.Transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 		switch cmd.ActionID {
 		case "studio.open-auth":
@@ -153,6 +162,8 @@ func main() {
 			adaptive.Desktop.OpenActivityCenter()
 		case "studio.open-marketplace":
 			adaptive.Desktop.OpenMarketplace()
+		case "studio.open-federation":
+			adaptive.Desktop.OpenFederation()
 		case "studio.cycle-theme":
 			adaptive.CycleTheme()
 		}
@@ -163,6 +174,11 @@ func main() {
 			refs = append(refs, att.Ref)
 		}
 		adaptive.Desktop.Transcript.AppendUserWithAttachments(sub.Prompt, refs)
+		cur := adaptive.Desktop.Transcript.ContextUsage()
+		if cur.MaxTokens <= 0 {
+			cur.MaxTokens = 200_000
+		}
+		adaptive.Desktop.Transcript.SetContextUsage(cur.UsedTokens+composer.EstimateTokenCount(sub.Prompt), cur.MaxTokens)
 	}
 	adaptive.Desktop.ActiveSessionID = "web-session-1"
 	adaptive.Desktop.Sessions = []mygoshell.SessionSummaryView{
@@ -189,6 +205,7 @@ func main() {
 			Height:  820,
 			Content: ui.View(adaptive.View),
 		})
+		wireWebMultimodalCapture(adaptive.Desktop.Transcript, win)
 		win.Invalidate()
 	})
 	if err := mygo.App.Run(); err != nil {
