@@ -49,9 +49,12 @@ func BindDefaultHelmSources(app *WorkbenchApp, backendStreamFn func(gen uint64, 
 					if title == "" {
 						title = b.BufferID
 					}
-					score, mask, ok := search.ScoreAndMask(q, title+" "+b.BufferID)
+					score, mask, ok := search.ScoreOrderlessAndMask(q, title+" "+b.BufferID)
 					if !ok {
 						continue
+					}
+					if _, tm, tok := search.ScoreOrderlessAndMask(q, title); tok && tm != 0 {
+						mask = tm
 					}
 					cands = append(cands, search.Candidate{
 						ID:            "buf:" + b.BufferID,
@@ -103,7 +106,7 @@ func BindDefaultHelmSources(app *WorkbenchApp, backendStreamFn func(gen uint64, 
 			psnap := app.Projection.Snapshot()
 			var fileCands []search.Candidate
 			for _, f := range psnap.DiffFiles {
-				score, mask, ok := search.ScoreAndMask(q, f.Path)
+				score, mask, ok := search.ScoreOrderlessAndMask(q, f.Path)
 				if !ok {
 					continue
 				}
