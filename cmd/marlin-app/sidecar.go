@@ -481,6 +481,10 @@ func wireLiveSession(
 					scope := "chat:" + cfg.sessionID
 					transcript.Resilience.MarkOffline(err.Error())
 					_, _ = transcript.Resilience.Outbox.Enqueue(scope, "user", "", prompt)
+					if transcript.OnRetryOutbox != nil {
+						// Kick the ContinuityCoordinator exponential-backoff drain loop automatically.
+						transcript.OnRetryOutbox()
+					}
 					markDirty()
 				}
 				return
@@ -508,7 +512,9 @@ func wireLiveSession(
 				if transcript.Resilience != nil {
 					transcript.Resilience.MarkOnline()
 					if upd.EventID != "" {
-						transcript.Resilience.AdmitEvent("chat:"+cfg.sessionID, upd.EventID, upd.TurnOrdinal, 0)
+						if dup, _ := transcript.Resilience.AdmitEvent("chat:"+cfg.sessionID, upd.EventID, upd.TurnOrdinal, 0); dup {
+							return
+						}
 					}
 				}
 				if upd.TextDelta != "" {
@@ -544,11 +550,24 @@ func wireLiveSession(
 						ReceiptID: hg.GetReceipt().GetReceiptId(),
 					})
 					if !hg.GetResolved() {
-						app.SetPendingGate(mygoshell.PendingGateView{
-							GateID:   hg.GetGateId(),
-							ToolName: hg.GetCallId(),
-							Prompt:   hg.GetPrompt(),
-						}, true)
+						if app.PromptGate != nil {
+							_ = app.ShowAuthPrompt(promptgate.PromptRequest{
+								ID:         hg.GetGateId(),
+								Kind:       promptgate.PromptAuth,
+								Title:      "Authoritative Human Gate",
+								Prompt:     hg.GetPrompt(),
+								ToolName:   hg.GetCallId(),
+								CallID:     hg.GetCallId(),
+								AuthFamily: promptgate.AuthGraphHumanGate,
+								Risk:       promptgate.RiskHigh,
+							})
+						} else {
+							app.SetPendingGate(mygoshell.PendingGateView{
+								GateID:   hg.GetGateId(),
+								ToolName: hg.GetCallId(),
+								Prompt:   hg.GetPrompt(),
+							}, true)
+						}
 					}
 					markDirty()
 				}
@@ -565,6 +584,12 @@ func wireLiveSession(
 			})
 			if watchErr != nil {
 				log.Printf("WatchSessionTurn error: %v", watchErr)
+				if transcript.Resilience != nil {
+					transcript.Resilience.MarkOffline(watchErr.Error())
+					if transcript.OnDraftChanged != nil {
+						transcript.OnDraftChanged("chat:"+cfg.sessionID, transcript.ComposerText())
+					}
+				}
 				transcript.CompleteTurn(turnRef.GetOrdinal(), "INTERRUPTED")
 				markDirty()
 			} else if outcome == appv1.SessionTurnOutcome_SESSION_TURN_OUTCOME_COMPLETED {

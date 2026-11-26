@@ -171,8 +171,11 @@ func (vc *VoiceController) Snapshot() VoiceSnapshot {
 	if vc.phase == VoiceRecording && !vc.startedAt.IsZero() && el == 0 {
 		el = time.Since(vc.startedAt)
 	}
-	lvls := make([]float32, len(vc.levels))
-	copy(lvls, vc.levels)
+	var lvls []float32
+	if len(vc.levels) > 0 {
+		lvls = make([]float32, len(vc.levels))
+		copy(lvls, vc.levels)
+	}
 	return VoiceSnapshot{
 		Phase:     vc.phase,
 		Elapsed:   el,

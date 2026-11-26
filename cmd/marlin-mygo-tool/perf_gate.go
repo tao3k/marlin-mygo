@@ -80,6 +80,8 @@ func activePerfBudgets() []PerfBudget {
 		{Name: "BenchmarkMyGoShell_100kRowVirtualizedTranscriptFrame", MaxNs: 250_000, MaxBytes: transcriptMaxBytes, MaxAllocs: transcriptMaxAllocs},
 		{Name: "BenchmarkLazyLoader_100Plugins_HookDispatch_ZeroAlloc", MaxNs: 60, MaxBytes: 0, MaxAllocs: 0},
 		{Name: "BenchmarkLazyLoader_100Plugins_IdleReapCheck_O1", MaxNs: 60, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkResilienceAdmitEventHotPath", MaxNs: 150, MaxBytes: 0, MaxAllocs: 0},
+		{Name: "BenchmarkPromptGateQueueActive", MaxNs: 120, MaxBytes: 0, MaxAllocs: 0},
 	}
 }
 

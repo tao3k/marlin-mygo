@@ -395,20 +395,29 @@ func (s *State) BuildAndResetSubmission(prompt string) (TurnSubmission, bool) {
 func (s *State) Snapshot() ComposerSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	refs := make([]AttachmentRef, len(s.attachments))
-	for i, a := range s.attachments {
-		refs[i] = a.Ref
+	var refs []AttachmentRef
+	if len(s.attachments) > 0 {
+		refs = make([]AttachmentRef, len(s.attachments))
+		for i, a := range s.attachments {
+			refs[i] = a.Ref
+		}
+	}
+	var mentions []ContextMention
+	if len(s.mentions) > 0 {
+		mentions = append([]ContextMention(nil), s.mentions...)
 	}
 	var active ModelOption
 	if len(s.models) > 0 && s.activeModel < len(s.models) {
 		active = s.models[s.activeModel]
 	}
+	// s.models is copy-on-write (replaced as a new slice on SetModels), so
+	// sharing the read-only header avoids per-frame slice allocation at 120Hz.
 	return ComposerSnapshot{
 		Attachments:     refs,
 		TotalBytes:      s.totalBytes,
-		Mentions:        append([]ContextMention(nil), s.mentions...),
+		Mentions:        mentions,
 		ActiveModel:     active,
-		Models:          append([]ModelOption(nil), s.models...),
+		Models:          s.models,
 		ReasoningEffort: s.effort,
 		LastError:       s.lastError,
 	}

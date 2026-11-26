@@ -133,8 +133,13 @@ type TranscriptController struct {
 	viewportH     uint64
 	wrapCols      int
 	autoFollow    bool
-	composerText    string
-	composerRev     uint64
+	composerText          string
+	composerRev           uint64
+	cachedComposerRev     uint64
+	cachedComposerKey     string
+	thinkingCount         int
+	thinkingExpandedCount int
+	frameAct              transcriptFrameActions
 	activeTurn      uint64
 	inFlight        bool
 	deepThink       bool
@@ -228,6 +233,11 @@ func (tc *TranscriptController) SetAllThinkingFolded(folded bool) int {
 			tc.updateRowHeightLocked(i)
 			changed++
 		}
+	}
+	if folded {
+		tc.thinkingExpandedCount = 0
+	} else {
+		tc.thinkingExpandedCount = tc.thinkingCount
 	}
 	return changed
 }
@@ -332,6 +342,10 @@ func (tc *TranscriptController) AppendThinking(title, text string, folded bool) 
 		Text:        text,
 		Collapsible: true,
 		Folded:      folded,
+	}
+	tc.thinkingCount++
+	if !folded {
+		tc.thinkingExpandedCount++
 	}
 	return tc.appendLocked(entry)
 }
@@ -546,6 +560,15 @@ func (tc *TranscriptController) ToggleFold(row int) bool {
 		return false
 	}
 	tc.entries[row].Folded = !tc.entries[row].Folded
+	if tc.entries[row].Role == RoleThinking {
+		if tc.entries[row].Folded {
+			if tc.thinkingExpandedCount > 0 {
+				tc.thinkingExpandedCount--
+			}
+		} else {
+			tc.thinkingExpandedCount++
+		}
+	}
 	tc.updateRowHeightLocked(row)
 	return tc.entries[row].Folded
 }

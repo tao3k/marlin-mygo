@@ -15,6 +15,16 @@ import (
 	"github.com/tao3k/marlin-mygo/engine/richtext"
 )
 
+var transcriptDropOptions = transfer.DropOptions{
+	Formats: []transfer.Format{transfer.FileList, transfer.PNG},
+}
+
+type transcriptFrameActions struct {
+	draft            string
+	searchQuery      string
+	modelPickerQuery string
+}
+
 // Render paints ONLY the Fenwick-virtualized visible slice of transcript rows
 // plus the interactive chat composer onto MyGo's GPU scene graph.
 func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(string), onCancel func()) {
@@ -30,8 +40,8 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	deepThink := tc.deepThink
 	modelLbl := tc.modelLabel
 	lastCopied := tc.lastCopiedKey
-	draft := tc.composerText
-	prevDraft := draft
+	tc.frameAct.draft = tc.composerText
+	prevDraft := tc.frameAct.draft
 	composerRev := tc.composerRev
 	resCtrl := tc.Resilience
 	resScope := tc.ResilienceScope
@@ -42,9 +52,12 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	discardOutboxFn := tc.OnDiscardOutbox
 	draftChangedFn := tc.OnDraftChanged
 	searchOpen := tc.searchOpen
-	searchQuery := tc.searchQuery
+	tc.frameAct.searchQuery = tc.searchQuery
 	searchLastQ := tc.searchLastQuery
-	searchHits := append([]SessionSearchHit(nil), tc.searchHits...)
+	var searchHits []SessionSearchHit
+	if searchOpen && len(tc.searchHits) > 0 {
+		searchHits = append([]SessionSearchHit(nil), tc.searchHits...)
+	}
 	searchHitIdx := tc.searchHitIdx
 	searchFn := tc.OnSearchSession
 	retryTurnFn := tc.OnRetryTurn
@@ -60,17 +73,9 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 	ctxUsage := tc.contextUsage
 	streamMetrics := tc.streamMetrics
 	modelPickerOpen := tc.modelPickerOpen
-	modelPickerQuery := tc.modelPickerQuery
-	hasThinking := false
-	anyThinkingExpanded := false
-	for i := range tc.entries {
-		if tc.entries[i].Role == RoleThinking && tc.entries[i].Collapsible {
-			hasThinking = true
-			if !tc.entries[i].Folded {
-				anyThinkingExpanded = true
-			}
-		}
-	}
+	tc.frameAct.modelPickerQuery = tc.modelPickerQuery
+	hasThinking := tc.thinkingCount > 0
+	anyThinkingExpanded := tc.thinkingExpandedCount > 0
 	var activePreview *composer.AttachmentRef
 	var activePreviewBlocks []richtext.Block
 	if tc.previewAtt != nil {
@@ -164,6 +169,15 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		tc.statsHeight = totalH
 		tc.cachedStatsStr = fmt.Sprintf("rows:%d visible:%d height:%dpx", totalRows, len(visible), totalH)
 	}
+	if tc.cachedComposerKey == "" || tc.cachedComposerRev != composerRev {
+		tc.cachedComposerRev = composerRev
+		if composerRev == 0 {
+			tc.cachedComposerKey = "transcript-composer-0"
+		} else {
+			tc.cachedComposerKey = fmt.Sprintf("transcript-composer-%d", composerRev)
+		}
+	}
+	composerKey := tc.cachedComposerKey
 	statsLine := tc.cachedStatsStr
 
 	root := ui.Column(c.Key("transcript-root")).Grow(1).MinWidth(0).Padding(10).Gap(8).Radius(12).
@@ -203,7 +217,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		})
 
 		if searchOpen {
-			RenderSessionSearchBar(c, dt, &searchQuery, searchHits, searchHitIdx,
+			RenderSessionSearchBar(c, dt, &tc.frameAct.searchQuery, searchHits, searchHitIdx,
 				func() { stepSearchDelta = -1 },
 				func() { stepSearchDelta = 1 },
 				func() { closeSearchNow = true },
@@ -451,18 +465,15 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 		}
 
 		// 2-row T3 Chat / DeepSeek floating glass capsule composer with native OS Drag-and-Drop.
-		dropOpts := transfer.DropOptions{
-			Formats: []transfer.Format{transfer.FileList, transfer.PNG},
-		}
 		composerBox := ui.Column(c.Key("transcript-composer-dropzone")).Gap(6).Padding(8, 10, 6, 12).Radius(20).
 			Background(toColor(dt.SurfaceElevated)).
 			Border(1, glassBorderColor(dt)).
 			InsetShadow(0, 1, 0, 0, glassTopSpecular(dt))
-		_, dragHover := ui.DataDragOver(composerBox, dropOpts)
+		_, dragHover := ui.DataDragOver(composerBox, transcriptDropOptions)
 		if dragHover {
 			composerBox.Border(2, toColor(dt.Accent))
 		}
-		if dropped, ok := ui.DropData(composerBox, dropOpts); ok {
+		if dropped, ok := ui.DropData(composerBox, transcriptDropOptions); ok {
 			cp := dropped
 			droppedPayload = &cp
 		}
@@ -473,18 +484,18 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			}
 			// Interactive Model & Reasoning Effort picker popover, OR inline `/` Slash / `@` Mention popups.
 			if modelPickerOpen && compState != nil {
-				RenderModelPickerPopup(c, dt, compSnap, &modelPickerQuery, compState.MatchModels(modelPickerQuery),
+				RenderModelPickerPopup(c, dt, compSnap, &tc.frameAct.modelPickerQuery, compState.MatchModels(tc.frameAct.modelPickerQuery),
 					func(m composer.ModelOption) { pickedModelID = m.ID },
 					func(eff composer.ReasoningEffort) { pickedEffort = eff },
 					func() { closeModelPicker = true },
 				)
 			} else if compState != nil {
-				if slashMatches := compState.MatchSlashCommands(draft); len(slashMatches) > 0 {
+				if slashMatches := compState.MatchSlashCommands(tc.frameAct.draft); len(slashMatches) > 0 {
 					RenderSlashCommandPopup(c, dt, slashMatches, func(cmd composer.SlashCommand) {
 						cp := cmd
 						pickedSlash = &cp
 					})
-				} else if mq, hasMention := composer.ActiveMentionQuery(draft); hasMention && mentionFn != nil {
+				} else if mq, hasMention := composer.ActiveMentionQuery(tc.frameAct.draft); hasMention && mentionFn != nil {
 					if cands := mentionFn(mq); len(cands) > 0 {
 						RenderMentionPopup(c, dt, cands, func(m composer.ContextMention) {
 							cp := m
@@ -525,7 +536,7 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			}
 
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.TextInputBase(c.Key(fmt.Sprintf("transcript-composer-%d", composerRev)), &draft).
+				ui.TextInputBase(c.Key(composerKey), &tc.frameAct.draft).
 					Placeholder("Message Marlin agent... (/ commands · @ context · attach image/PDF/code)").
 					FontSize(13.5).TextColor(toColor(dt.Ink)).Grow(1).Padding(4, 2)
 			})
@@ -580,16 +591,16 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 				}
 				if AppleCircleIconButton(c, "transcript-send", "Send", svgIconArrowUp, 30, dt).Clicked() {
 					if compState != nil {
-						if sub, ok := compState.BuildAndResetSubmission(draft); ok {
+						if sub, ok := compState.BuildAndResetSubmission(tc.frameAct.draft); ok {
 							submittedTurn = &sub
 							submitPrompt = sub.Prompt
-							draft = ""
+							tc.frameAct.draft = ""
 						}
 					} else {
-						trimmed := strings.TrimSpace(draft)
+						trimmed := strings.TrimSpace(tc.frameAct.draft)
 						if trimmed != "" {
 							submitPrompt = trimmed
-							draft = ""
+							tc.frameAct.draft = ""
 						}
 					}
 				}
@@ -605,6 +616,10 @@ func (tc *TranscriptController) Render(c *ui.Context, t *ui.Theme, onSend func(s
 			closePreviewNow = true
 		})
 	}
+
+	draft := tc.frameAct.draft
+	searchQuery := tc.frameAct.searchQuery
+	modelPickerQuery := tc.frameAct.modelPickerQuery
 
 	tc.mu.Lock()
 	tc.composerText = draft

@@ -57,10 +57,10 @@ model-gate:
 init-plugin id runtime="react" slot="workbench.main" out="":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool init-plugin -id {{id}} -runtime {{runtime}} -slot {{slot}} -out "{{out}}"
 
-# Run Pure-Go zero-cgo test suite across all 5 engine planes, plus race detector.
+# Run Pure-Go zero-cgo test suite across all 5 engine planes + optional features, plus race detector.
 test-go:
-    CGO_ENABLED=0 go test ./pkg/... ./engine/... ./runtime/... ./control/... ./sdk/... ./cmd/...
-    go test -race ./pkg/... ./engine/... ./control/... ./runtime/pluginhost ./runtime/device/...
+    CGO_ENABLED=0 go test ./pkg/... ./engine/... ./features/... ./runtime/... ./control/... ./sdk/... ./cmd/...
+    go test -race ./pkg/... ./engine/... ./features/... ./control/... ./runtime/pluginhost ./runtime/device/...
 
 # Run iOS SDK Swift typecheck & native macOS swift test (no Simulator runtime needed).
 test-swift:
