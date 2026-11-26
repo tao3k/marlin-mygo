@@ -10,6 +10,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/egoist/mygo"
 
@@ -127,16 +130,47 @@ func wireFeaturesAndGovernance(
 
 	govUI := mygoshell.NewGovernanceController(reg, ledger, host)
 	var stopGovernance func()
-	if provider != nil {
+	onGovSnap := func(mygoshell.BackendGovernanceSnapshot) {
+		if win != nil {
+			win.Invalidate()
+		}
+	}
+
+	schemeHostDisabled := strings.EqualFold(strings.TrimSpace(cfg.schemeHostBin), "off")
+	var schemeHandle *grpcwire.GovernanceSidecarHandle
+	if !cfg.standalone && !schemeHostDisabled {
+		govDB := strings.TrimSpace(cfg.schemeGovDB)
+		if govDB == "" {
+			if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+				govDB = filepath.Join(cacheDir, "marlin", "governance-authority.db")
+			}
+		}
+		if h, err := grpcwire.LaunchGovernanceSidecar(ctx, grpcwire.GovernanceSidecarConfig{
+			ExplicitPath: cfg.schemeHostBin,
+			Mode:         cfg.schemeGovMode,
+			TursoPath:    govDB,
+			ProjectID:    "default",
+			SessionID:    cfg.sessionID,
+			OnSnapshot:   onGovSnap,
+		}); err == nil {
+			schemeHandle = h
+			log.Printf("governance authority connected to %s (%s)", h.BinaryPath, h.DiscoverySource)
+		} else if cfg.schemeHostBin != "" {
+			log.Printf("explicit -scheme-host %q failed (%v); falling back", cfg.schemeHostBin, err)
+		}
+	}
+
+	if schemeHandle != nil {
+		govUI.AttachBackendAuthority(schemeHandle.Authority)
+		stopGovernance = func() {
+			_ = schemeHandle.Close()
+		}
+	} else if provider != nil {
 		rustGovAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
-			Provider:  provider,
-			ProjectID: "default",
-			SessionID: cfg.sessionID,
-			OnSnapshot: func(mygoshell.BackendGovernanceSnapshot) {
-				if win != nil {
-					win.Invalidate()
-				}
-			},
+			Provider:   provider,
+			ProjectID:  "default",
+			SessionID:  cfg.sessionID,
+			OnSnapshot: onGovSnap,
 		})
 		govUI.AttachBackendAuthority(rustGovAuth)
 		_ = rustGovAuth.Start(ctx)
@@ -147,7 +181,7 @@ func wireFeaturesAndGovernance(
 			RevocationEpoch:  1,
 			PolicyRevision:   1,
 			BreakerTripEpoch: 1,
-			LastEventNote:    "standalone preview (connect -host or marlin-scheme-host for live Rust+Scheme authority)",
+			LastEventNote:    "standalone preview (build marlin-scheme-host-aot or connect -host for live Rust+Scheme authority)",
 		}))
 	}
 	govUI.OnFeatureChanged = func(id features.FeatureID, enabled bool) {

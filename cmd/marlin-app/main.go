@@ -44,6 +44,9 @@ type appConfig struct {
 	showcase         bool
 	showcasePlugin   string
 	featuresSpec     string
+	schemeHostBin    string
+	schemeGovMode    string
+	schemeGovDB      string
 }
 
 func parseFlags() appConfig {
@@ -74,6 +77,9 @@ func parseFlags() appConfig {
 	flag.BoolVar(&cfg.showcase, "showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 UI + Go WASI GPU Focus Clock")
 	flag.StringVar(&cfg.showcasePlugin, "showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow | git | github")
 	flag.StringVar(&cfg.featuresSpec, "features", "default", "opt-in UI feature profile: default | all | none | chatroom,compare,canvas | +chatroom,-canvas")
+	flag.StringVar(&cfg.schemeHostBin, "scheme-host", "", "local Rust+Scheme governance daemon binary (`marlin-scheme-host-aot` auto-discovered if omitted, or `off` to disable)")
+	flag.StringVar(&cfg.schemeGovMode, "scheme-gov-mode", "clean", "initial Scheme governance boot mode for auto-launched sidecar: clean | incident | armed")
+	flag.StringVar(&cfg.schemeGovDB, "scheme-gov-db", "", "optional Turso SQLite WAL path for durable MGV1+MGF1 governance persistence (defaults to user cache dir)")
 	flag.Parse()
 	return cfg
 }
