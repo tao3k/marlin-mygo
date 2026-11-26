@@ -178,3 +178,41 @@ func TestDiscoverSchemeHostBinaryPrefersLinkedAOT(t *testing.T) {
 		t.Fatalf("expected DiscoverSchemeHostBinary to prefer marlin-scheme-host-aot %q, got path=%q src=%q ok=%v", aotBin, got, src, ok)
 	}
 }
+
+func TestDiscoverSchemeHostBinaryMacOSAppAndReleaseBundleSibling(t *testing.T) {
+	root := t.TempDir()
+	workSubDir := filepath.Join(root, "repo", ".data", "marlin-mygo")
+	wsReleaseAOT := filepath.Join(root, "repo", "target", "release", "marlin-scheme-host-aot")
+	writeFakeExec(t, wsReleaseAOT, true)
+
+	noEnv := func(string) string { return "" }
+	noPath := func(string) (string, error) { return "", errors.New("not in path") }
+
+	// 1. macOS Marlin.app/Contents/MacOS sibling beats workspace target/release.
+	macOSBundleDir := filepath.Join(root, "dist", "Marlin.app", "Contents", "MacOS")
+	macOSBundleAOT := filepath.Join(macOSBundleDir, "marlin-scheme-host-aot")
+	writeFakeExec(t, macOSBundleAOT, true)
+	got, src, ok := DiscoverSchemeHostBinary(SidecarDiscoverOptions{
+		ExeDir:     macOSBundleDir,
+		WorkDir:    workSubDir,
+		EnvLookup:  noEnv,
+		PathLookup: noPath,
+	})
+	if !ok || got != macOSBundleAOT || src != "bundle-sibling" {
+		t.Fatalf("expected macOS .app sibling %q (bundle-sibling), got path=%q src=%q ok=%v", macOSBundleAOT, got, src, ok)
+	}
+
+	// 2. Desktop release archive sibling (`marlin-mygo-darwin-arm64/marlin-scheme-host-aot`) beats workspace target/release.
+	archiveDir := filepath.Join(root, "dist", "marlin-mygo-darwin-arm64")
+	archiveAOT := filepath.Join(archiveDir, "marlin-scheme-host-aot")
+	writeFakeExec(t, archiveAOT, true)
+	got, src, ok = DiscoverSchemeHostBinary(SidecarDiscoverOptions{
+		ExeDir:     archiveDir,
+		WorkDir:    workSubDir,
+		EnvLookup:  noEnv,
+		PathLookup: noPath,
+	})
+	if !ok || got != archiveAOT || src != "bundle-sibling" {
+		t.Fatalf("expected release archive sibling %q (bundle-sibling), got path=%q src=%q ok=%v", archiveAOT, got, src, ok)
+	}
+}
