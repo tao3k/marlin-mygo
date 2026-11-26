@@ -5,8 +5,8 @@
     "": {
       "name": "@tao3k/marlin-mygo-workspace",
       "devDependencies": {
-        "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#e15f0c45bf1a6925bd4edd5abc5cbeac41cdcc04",
-        "@deterministic-engineering/quint-modules-resolver": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-modules-resolver.git#bbe7a7fa5b02c7ab2f1e38cd03bcc0c05c488548",
+        "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#496f3de7cdd6b67c8670af5c3c0b37d86e48c45f",
+        "@deterministic-engineering/quint-modules-resolver": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-modules-resolver.git#fb6127399566e5574da8fba417ee98c34c743007",
         "@informalsystems/quint": "0.33.0",
         "@types/react": "^19.1.0",
         "@types/react-dom": "^19.1.0",
@@ -27,9 +27,9 @@
     },
   },
   "packages": {
-    "@deterministic-engineering/quint-models": ["@deterministic-engineering/quint-models@github:hardenedlinux/deterministic-engineering-quint-models#e15f0c4", {}, "hardenedlinux-deterministic-engineering-quint-models-e15f0c4", "sha512-7MwZu2OlwjMuZnyK0wpGYgKLVXmTbTvyOobYq+t5PCakTQYXFCZoySXMf2taTzEfLzcpl7zMVsJuA4kiSKc2OA=="],
+    "@deterministic-engineering/quint-models": ["@deterministic-engineering/quint-models@github:hardenedlinux/deterministic-engineering-quint-models#496f3de", {}, "hardenedlinux-deterministic-engineering-quint-models-496f3de", "sha512-2HBOFGoNgZnuAq5pFz9z0nTSiJDlclYMHH6zR13QXN3RZGr/QGSqeAoTsu20LyhikVhuBiOz2lHQhoFbUNzAnw=="],
 
-    "@deterministic-engineering/quint-modules-resolver": ["@deterministic-engineering/quint-modules-resolver@github:hardenedlinux/deterministic-engineering-quint-modules-resolver#bbe7a7f", { "peerDependencies": { "@informalsystems/quint": "0.33.0" }, "bin": { "quint-modules-resolver": "./src/cli.ts" } }, "hardenedlinux-deterministic-engineering-quint-modules-resolver-bbe7a7f", "sha512-zREmXlZEBCASbaGl4Y8KPQl3zFDPyj9hKaZeEIrhRTPEmf8yVI++8YRLZt7/4d2NcNtvAzBRnyAvDNaH0KPHZg=="],
+    "@deterministic-engineering/quint-modules-resolver": ["@deterministic-engineering/quint-modules-resolver@github:hardenedlinux/deterministic-engineering-quint-modules-resolver#fb61273", { "peerDependencies": { "@informalsystems/quint": "0.33.0" }, "bin": { "quint-modules-resolver": "./src/cli.ts" } }, "hardenedlinux-deterministic-engineering-quint-modules-resolver-fb61273", "sha512-gxoqPp4sUlJvepcEbLSnV8kGUHYG/PLAGZ2kM4kOT5y0gt4GzCv8vbjThKcicB6gVjEhCHXt72An4Ls5APk0wQ=="],
 
     "@grpc/grpc-js": ["@grpc/grpc-js@1.14.7", "", { "dependencies": { "@grpc/proto-loader": "^0.8.0", "@js-sdsl/ordered-map": "^4.4.2" } }, "sha512-W4W/fcBMGRVtG6dW2c7cw2mnpS3hvbBd+oQXjh2iYFTZDk1JJmcNqkM5KSaPubQpamlUUurrlb7G1s9NJeERmQ=="],
 

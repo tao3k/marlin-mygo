@@ -6,15 +6,15 @@
 // Maps directly to control/auth/{manager.go,oidc.go,oidc_discovery.go,pkce.go,loopback_native.go,vault.go,keychain.go,authorizer.go}.
 module marlin_auth_threat {
   import oauth_token_lifecycle.*
-    from "@deterministic-engineering/quint-models/threat/oauth-token-lifecycle/OAuthTokenLifecycle"
+    from "@deterministic-engineering/quint-models/threat/identity/oauth-token-lifecycle/OAuthTokenLifecycle"
 }
 
 module marlin_oidc_threat {
   import oidc_federation.*
-    from "@deterministic-engineering/quint-models/threat/oidc-federation/OidcFederation"
+    from "@deterministic-engineering/quint-models/threat/identity/oidc-federation/OidcFederation"
 }
 
 module marlin_device_threat {
   import device_authorization.*
-    from "@deterministic-engineering/quint-models/threat/device-authorization/DeviceAuthorization"
+    from "@deterministic-engineering/quint-models/threat/identity/device-authorization/DeviceAuthorization"
 }

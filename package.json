@@ -7,11 +7,11 @@
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
-    "check:auth-threat": "quint-modules-resolver verify-deps && quint-modules-resolver typecheck spec/auth/MarlinAuthThreat.qnt && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_auth_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_oidc_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_device_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver compose @deterministic-engineering/quint-models/threat/oauth-token-lifecycle/OAuthTokenLifecycle spec/auth/MarlinAuthOverlay.qnt --out .tmp/MarlinAuthComposed.qnt && quint-modules-resolver typecheck .tmp/MarlinAuthComposed.qnt && quint-modules-resolver test .tmp/MarlinAuthComposed.qnt --main=marlin_auth_composed --max-samples=1 --seed=7 --backend=typescript"
+    "check:auth-threat": "quint-modules-resolver verify-deps && quint-modules-resolver typecheck spec/auth/MarlinAuthThreat.qnt && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_auth_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_oidc_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver test spec/auth/MarlinAuthThreat.qnt --main=marlin_device_threat --max-samples=1 --seed=7 --backend=typescript && quint-modules-resolver compose @deterministic-engineering/quint-models/threat/identity/oauth-token-lifecycle/OAuthTokenLifecycle spec/auth/MarlinAuthOverlay.qnt --out .tmp/MarlinAuthComposed.qnt && quint-modules-resolver typecheck .tmp/MarlinAuthComposed.qnt && quint-modules-resolver test .tmp/MarlinAuthComposed.qnt --main=marlin_auth_composed --max-samples=1 --seed=7 --backend=typescript"
   },
   "devDependencies": {
-    "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#e15f0c45bf1a6925bd4edd5abc5cbeac41cdcc04",
-    "@deterministic-engineering/quint-modules-resolver": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-modules-resolver.git#bbe7a7fa5b02c7ab2f1e38cd03bcc0c05c488548",
+    "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#496f3de7cdd6b67c8670af5c3c0b37d86e48c45f",
+    "@deterministic-engineering/quint-modules-resolver": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-modules-resolver.git#fb6127399566e5574da8fba417ee98c34c743007",
     "@informalsystems/quint": "0.33.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

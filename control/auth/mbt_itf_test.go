@@ -230,7 +230,7 @@ func (e *mbtExchanger) RevokeToken(_ context.Context, _ ProviderConfig, _ string
 }
 
 func TestMBTReplayOAuthTokenLifecycleITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/oauth-token-lifecycle/OAuthTokenLifecycle.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/identity/oauth-token-lifecycle/OAuthTokenLifecycle.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "oauth_token_lifecycle", 20, 5)
 
 	totalSteps := 0
@@ -392,7 +392,7 @@ type dpopMbtTrace struct {
 }
 
 func TestMBTReplayDpopSenderConstrainITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/dpop-sender-constrain/DpopSenderConstrain.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/protocol/dpop-sender-constrain/DpopSenderConstrain.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "dpop_sender_constrain", 16, 5)
 
 	totalSteps := 0
@@ -526,7 +526,7 @@ type zeroTrustMbtTrace struct {
 }
 
 func TestMBTReplayZeroTrustPepPdpITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/zero-trust-pep-pdp/ZeroTrustPepPdp.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/zero-trust/zero-trust-pep-pdp/ZeroTrustPepPdp.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "zero_trust_pep_pdp", 16, 5)
 
 	totalSteps := 0
@@ -725,7 +725,7 @@ func (b *mbtDeviceBackend) PollDeviceToken(ctx context.Context, _ ProviderConfig
 }
 
 func TestMBTReplayDeviceAuthorizationITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/device-authorization/DeviceAuthorization.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/identity/device-authorization/DeviceAuthorization.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "device_authorization", 18, 5)
 
 	totalSteps := 0
@@ -983,7 +983,7 @@ func signTestES256IDToken(t *testing.T, priv *ecdsa.PrivateKey, sub int64, multi
 }
 
 func TestMBTReplayOidcFederationITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/oidc-federation/OidcFederation.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/identity/oidc-federation/OidcFederation.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "oidc_federation", 16, 5)
 
 	totalSteps := 0
@@ -1194,7 +1194,7 @@ func (e *mbtCrashRevokeExchanger) RevokeToken(ctx context.Context, _ ProviderCon
 }
 
 func TestMBTReplayOAuthRevocationRecoveryITF(t *testing.T) {
-	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/oauth-revocation-recovery/OAuthRevocationRecovery.qnt")
+	bunBin, cliPath, qntModel := resolveDEModelAndCLI(t, "threat/identity/oauth-revocation-recovery/OAuthRevocationRecovery.qnt")
 	matches := generateMBTTraces(t, bunBin, cliPath, qntModel, "oauth_revocation_recovery", 16, 5)
 
 	totalSteps := 0
