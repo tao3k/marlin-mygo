@@ -197,10 +197,20 @@ func (a *Authorizer) EvaluateForTenant(
 }
 
 // EvaluateDelegated evaluates an RFC 8693 On-Behalf-Of (OBO) delegated agent
+func isHumanOnlyAction(action string) bool {
+	switch action {
+	case "approve_gate", "rearm_breaker", "promote_context_scope":
+		return true
+	default:
+		return false
+	}
+}
+
+// EvaluateDelegated evaluates an RFC 8693 OBO delegated AI agent
 // authorization request: enforces monotonic scope attenuation against the
 // delegating human's active scopes, preserves actor provenance, blocks
-// delegated agents from human-only gates, and enforces tenant isolation when
-// resourceTenantID is non-empty.
+// delegated agents from human-only gates/breaker re-arm/context scope promotion,
+// and enforces tenant isolation when resourceTenantID is non-empty.
 func (a *Authorizer) EvaluateDelegated(
 	delegatorID AccountID,
 	agentID string,
@@ -219,7 +229,7 @@ func (a *Authorizer) EvaluateDelegated(
 	if agentID == "" {
 		return AuthzTicket{}, ErrPolicyDenied
 	}
-	if action == "approve_gate" {
+	if isHumanOnlyAction(action) {
 		return AuthzTicket{}, ErrDelegatedHumanGateForbidden
 	}
 	profile, accEpoch, ok := a.mgr.accountStanding(delegatorID)
@@ -351,7 +361,7 @@ func (a *Authorizer) Enforce(ticket AuthzTicket) error {
 	if a.mgr != nil && a.mgr.isVaultLocked() {
 		return ErrVaultLocked
 	}
-	if ticket.DelegatedAgentID != "" && ticket.Action == "approve_gate" {
+	if ticket.DelegatedAgentID != "" && isHumanOnlyAction(ticket.Action) {
 		return ErrDelegatedHumanGateForbidden
 	}
 	if ticket.ResourceTenantID != "" && ticket.TenantID != ticket.ResourceTenantID {

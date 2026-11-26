@@ -72,3 +72,25 @@ when {
     context has delegated &&
     context.delegated
 };
+
+@id("forbid-delegated-agent-breaker-rearm")
+forbid (
+    principal is Marlin::Account,
+    action == Marlin::Action::"rearm_breaker",
+    resource is Marlin::Resource
+)
+when {
+    context has delegated &&
+    context.delegated
+};
+
+@id("forbid-delegated-agent-scope-promote")
+forbid (
+    principal is Marlin::Account,
+    action == Marlin::Action::"promote_context_scope",
+    resource is Marlin::Resource
+)
+when {
+    context has delegated &&
+    context.delegated
+};

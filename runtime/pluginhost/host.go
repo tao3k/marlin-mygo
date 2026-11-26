@@ -243,6 +243,25 @@ func (h *Host) Deactivate(id schema.PluginID) error {
 	return entry.inst.Close()
 }
 
+// TripEmergencyStop atomically revokes every active plugin's ScopedProxy,
+// unmounts all untrusted slots back to their trusted host fallbacks, and closes
+// every running sandbox instance (global AI/plugin kill-switch).
+func (h *Host) TripEmergencyStop() int {
+	h.mu.Lock()
+	entries := make([]activeEntry, 0, len(h.active))
+	for id, entry := range h.active {
+		entries = append(entries, entry)
+		delete(h.active, id)
+	}
+	h.mu.Unlock()
+	for _, entry := range entries {
+		entry.proxy.Revoke()
+		entry.unmount()
+		_ = entry.inst.Close()
+	}
+	return len(entries)
+}
+
 // ActiveScope returns the currently mounted ScopedScope for one active plugin.
 func (h *Host) ActiveScope(id schema.PluginID) (ScopedScope, bool) {
 	h.mu.RLock()

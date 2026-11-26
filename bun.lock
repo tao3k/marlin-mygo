@@ -5,7 +5,7 @@
     "": {
       "name": "@tao3k/marlin-mygo-workspace",
       "devDependencies": {
-        "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#5f0f7b98d97b478515c577db75199128d07eb221",
+        "@deterministic-engineering/quint-models": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-models.git#c16e28226f2274da9b6103994a2fe158b4b4d616",
         "@deterministic-engineering/quint-modules-resolver": "git+https://github.com/hardenedlinux/deterministic-engineering-quint-modules-resolver.git#87c0d47d163b0ec0c9a4c13bdcb0a972fb46cdd1",
         "@informalsystems/quint": "0.33.0",
         "@types/react": "^19.1.0",
@@ -27,7 +27,7 @@
     },
   },
   "packages": {
-    "@deterministic-engineering/quint-models": ["@deterministic-engineering/quint-models@github:hardenedlinux/deterministic-engineering-quint-models#5f0f7b9", {}, "hardenedlinux-deterministic-engineering-quint-models-5f0f7b9", "sha512-nD1cWeThvxx0p8Fd0Y4Sy3HSdVhJbuQR2G/j5yfB7txY1c4lUdS7COgrZnLteCkwG8S9DkIN+4q/Rsk4Oze7lA=="],
+    "@deterministic-engineering/quint-models": ["@deterministic-engineering/quint-models@github:hardenedlinux/deterministic-engineering-quint-models#c16e282", {}, "hardenedlinux-deterministic-engineering-quint-models-c16e282", "sha512-28Ceg0C1HxsqJ7542hF8xPPGuMUp5PhYjlNBeVRfqRGKhakdy2851dlDGztTgwedtLp8McI8xQgzCdupdlUikw=="],
 
     "@deterministic-engineering/quint-modules-resolver": ["@deterministic-engineering/quint-modules-resolver@github:hardenedlinux/deterministic-engineering-quint-modules-resolver#87c0d47", { "peerDependencies": { "@informalsystems/quint": "0.33.0" }, "bin": { "quint-modules-resolver": "./src/cli.ts" } }, "hardenedlinux-deterministic-engineering-quint-modules-resolver-87c0d47", "sha512-6r2Z8uJDg0AshAgV52TSlfCzkMoXRWbrmAaqCvo8D67WdV4FDbxWnPa15MK+xOX8Dhto6ltIm2jY8BL86M7B6w=="],
 
