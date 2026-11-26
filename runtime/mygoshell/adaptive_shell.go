@@ -93,6 +93,9 @@ func (a *AdaptiveShell) SetFeatureHost(host *features.Host, govUI *GovernanceCon
 	}
 	if a.Mobile != nil {
 		a.Mobile.FeatureHost = host
+		if govUI != nil {
+			a.Mobile.GovernanceUI = govUI
+		}
 	}
 }
 

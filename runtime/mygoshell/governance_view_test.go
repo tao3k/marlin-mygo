@@ -654,3 +654,63 @@ func TestWorkbenchChromeGovernanceAmbientStatusPillTransitions(t *testing.T) {
 		t.Fatalf("expected clicking Gov · FAIL-CLOSED pill to jump directly to Governance Console Step-Up Re-Arm, open=%v texts=%q", app.IsGovernanceOpen(), strings.Join(tt.Texts(), " | "))
 	}
 }
+
+func TestMobileCompanionGovernanceAmbientPillAndStepUpRearm(t *testing.T) {
+	as := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{BrandTitle: "Marlin"})
+	bridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         false,
+		RevocationEpoch:  2,
+		PolicyRevision:   2,
+		BreakerTripped:   true,
+		BreakerTripEpoch: 1,
+		RejectionReasons: []string{"ascent-scope-exfiltration-alert"},
+	})
+	govUI := mygoshell.NewGovernanceController(nil, nil, features.NewHost())
+	govUI.AttachBackendAuthority(bridge)
+	as.SetFeatureHost(features.NewHost(), govUI)
+
+	// Render at authentic iPhone 16 Pro viewport (393x852) -> Gov · FAIL-CLOSED pill visible immediately!
+	mtt := ui.NewTester(as.Mobile.View, 393, 852)
+	mtt.Frame()
+	if !mtt.HasText("Gov · FAIL-CLOSED") {
+		t.Fatalf("expected Mobile header to show Gov · FAIL-CLOSED pill, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+
+	// Tap Gov · FAIL-CLOSED -> opens Mobile Tier-0 Governance overlay!
+	if err := mtt.Click("Gov · FAIL-CLOSED"); err != nil {
+		t.Fatalf("tap Mobile Gov · FAIL-CLOSED: %v", err)
+	}
+	mtt.Frame()
+	if !mtt.HasText("BACKEND FAIL-CLOSED") || !mtt.HasText("Step-Up Backend Re-Arm") {
+		t.Fatalf("expected Mobile Governance overlay with Step-Up Re-Arm, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+
+	// Tap Step-Up Backend Re-Arm BEFORE Verify Step-Up -> fails closed!
+	if err := mtt.Click("Step-Up Backend Re-Arm"); err != nil {
+		t.Fatalf("tap Step-Up Backend Re-Arm without step-up: %v", err)
+	}
+	mtt.Frame()
+	if !bridge.Snapshot().BreakerTripped || !mtt.HasText("RFC 9470") {
+		t.Fatalf("expected Mobile re-arm without RFC 9470 step-up to fail closed, texts=%q", strings.Join(mtt.Texts(), " | "))
+	}
+
+	// Verify Step-Up -> Step-Up Backend Re-Arm -> Back -> Mobile header immediately flips to Gov · LIVE!
+	if err := mtt.Click("Verify Step-Up"); err != nil {
+		t.Fatalf("tap Mobile Verify Step-Up: %v", err)
+	}
+	mtt.Frame()
+	if err := mtt.Click("Step-Up Backend Re-Arm"); err != nil {
+		t.Fatalf("tap Mobile Step-Up Backend Re-Arm: %v", err)
+	}
+	mtt.Frame()
+	if !mtt.HasText("BACKEND ADMITTED") {
+		t.Fatalf("expected Mobile overlay to show BACKEND ADMITTED after step-up re-arm, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+	if err := mtt.Click("Back"); err != nil {
+		t.Fatalf("tap Mobile Governance Back: %v", err)
+	}
+	mtt.Frame()
+	if !mtt.HasText("Gov · LIVE") {
+		t.Fatalf("expected Mobile header pill to update to Gov · LIVE, got %q", strings.Join(mtt.Texts(), " | "))
+	}
+}

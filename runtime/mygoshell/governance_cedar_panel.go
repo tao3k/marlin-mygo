@@ -98,6 +98,142 @@ func (g *GovernanceController) StatusPillAppearance() (label string, variant App
 	return "Gov", BtnGlass, false
 }
 
+// RenderMobileOverlay paints a phone-first (375-412px) Tier-0 Governance Authority
+// overlay enabling on-call operators to inspect Rust+Scheme ASCENT/TM/Cedar posture,
+// trip E-Stop, and complete RFC 9470 Step-Up Re-Arm directly from Mobile Companion.
+func (g *GovernanceController) RenderMobileOverlay(c *ui.Context, _ *ui.Theme, dt DerivedTheme, onClose func()) {
+	if g == nil {
+		return
+	}
+	g.mu.RLock()
+	breaker := g.Breaker
+	pluginHost := g.PluginHost
+	backendAuth := g.BackendAuthority
+	stepUpOK := g.stepUpVerified
+	lastErr := g.lastErr
+	onEStop := g.OnEmergencyStop
+	g.mu.RUnlock()
+
+	var (
+		closeNow     bool
+		verifyStepUp bool
+		backendTrip  bool
+		backendRearm bool
+	)
+
+	ui.Column(c.Key("mob-governance-overlay")).Absolute().Top(0).Right(0).Bottom(0).Left(0).ZIndex(930).
+		Background(toColor(dt.Canvas)).Padding(14, 14, 16, 14).Gap(10).AlignItems(ui.Stretch).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			if ApplePillButton(c, "mob-gov-back", "Back", BtnGlass, dt, nil, true).Clicked() {
+				closeNow = true
+			}
+			AppleBadgePill(c, "TIER-0 GOVERNANCE", dt.Accent, dt)
+		})
+
+		if lastErr != "" {
+			ui.Text(c, lastErr).FontSize(11).FontWeight(600).TextColor(toColor(dt.Danger))
+		}
+
+		if backendAuth != nil {
+			bsnap := backendAuth.Snapshot()
+			AppleGlassCard(c, "mob-gov-backend-card", dt, 12, 10, 8, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					if bsnap.Admitted && !bsnap.BreakerTripped {
+						AppleBadgePill(c, "BACKEND ADMITTED", dt.Success, dt)
+					} else {
+						AppleBadgePill(c, "BACKEND FAIL-CLOSED", dt.Danger, dt)
+					}
+					AppleBadgePill(c, fmt.Sprintf("Epoch: %d", bsnap.RevocationEpoch), dt.Info, dt)
+				})
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					AppleBadgePill(c, fmt.Sprintf("Fenced: %d", len(bsnap.FencedActors)), dt.Warning, dt)
+					AppleBadgePill(c, fmt.Sprintf("Retracted: %d", len(bsnap.RetractedConclusions)), dt.Warning, dt)
+					AppleBadgePill(c, fmt.Sprintf("Cedar: %d", len(bsnap.SynthesizedCedarRules)), dt.Accent, dt)
+				})
+				if len(bsnap.RejectionReasons) > 0 {
+					ui.Text(c, strings.Join(bsnap.RejectionReasons, " · ")).
+						FontSize(11).FontWeight(600).TextColor(toColor(dt.Danger))
+				}
+				if digests := formatProofDigestSummary(bsnap); digests != "" {
+					ui.Text(c, digests).FontSize(10).TextColor(toColor(dt.InkMuted))
+				}
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					if bsnap.BreakerTripped {
+						if !stepUpOK {
+							if ApplePillButton(c, "mob-gov-stepup", "Verify Step-Up", BtnGlass, dt, nil, true).Clicked() {
+								verifyStepUp = true
+							}
+						} else {
+							AppleBadgePill(c, "RFC 9470 READY", dt.Success, dt)
+						}
+						if ApplePillButton(c, "mob-gov-rearm", "Step-Up Backend Re-Arm", BtnTinted, dt, nil, true).Clicked() {
+							backendRearm = true
+						}
+					} else {
+						if ApplePillButton(c, "mob-gov-trip", "Trip Backend E-Stop", BtnDestructive, dt, nil, true).Clicked() {
+							backendTrip = true
+						}
+					}
+				})
+			})
+		} else {
+			AppleGlassCard(c, "mob-gov-local-card", dt, 12, 10, 6, func() {
+				ui.Text(c, "Local Tier-0 Governance active (no remote Scheme Authority bound).").
+					FontSize(11.5).TextColor(toColor(dt.InkSecondary))
+			})
+		}
+	})
+
+	if verifyStepUp {
+		g.mu.Lock()
+		g.stepUpVerified = true
+		g.lastErr = ""
+		g.mu.Unlock()
+	}
+	if backendTrip && backendAuth != nil {
+		snap, err := backendAuth.TripBackendBreaker("mobile-operator", "mobile E-Stop")
+		if breaker != nil {
+			breaker.Trip("mobile-operator", "synced mobile E-Stop")
+		}
+		if pluginHost != nil {
+			pluginHost.TripEmergencyStop()
+		}
+		g.mu.Lock()
+		if err != nil {
+			g.lastErr = err.Error()
+		} else {
+			g.stepUpVerified = false
+			g.lastErr = ""
+		}
+		g.mu.Unlock()
+		if err == nil && onEStop != nil {
+			onEStop(true, snap.BreakerTripEpoch)
+		}
+	}
+	if backendRearm && backendAuth != nil {
+		snap, err := backendAuth.RearmBackendBreakerWithStepUp("mobile-operator", stepUpOK)
+		g.mu.Lock()
+		if err != nil {
+			g.lastErr = err.Error()
+		} else {
+			g.stepUpVerified = false
+			g.lastErr = ""
+		}
+		g.mu.Unlock()
+		if err == nil {
+			if breaker != nil {
+				_, _ = breaker.Rearm("mobile-operator", false, true)
+			}
+			if onEStop != nil {
+				onEStop(false, snap.BreakerTripEpoch)
+			}
+		}
+	}
+	if closeNow && onClose != nil {
+		onClose()
+	}
+}
+
 // SetShowCedarInspector toggles the expandable Cedar Policy Source Inspector &
 // Interactive Fact-Graph Builder drawer inside the Tier-0 Governance Console.
 func (g *GovernanceController) SetShowCedarInspector(show bool) {

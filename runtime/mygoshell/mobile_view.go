@@ -132,6 +132,7 @@ type MobileCompanionApp struct {
 	Transcript        *TranscriptController
 	PromptGate        *PromptGateController
 	FeatureHost       *features.Host
+	GovernanceUI      *GovernanceController
 	HelmSearch        *HelmMinibufferController
 	Windows           *shell.WindowTree
 	Auth              *AuthController
@@ -151,6 +152,7 @@ type MobileCompanionApp struct {
 	mu                sync.Mutex
 	authOpen          bool
 	settingsOpen      bool
+	governanceOpen    bool
 	helmOpen          bool
 	activeFeatureID   string
 	bridgeDescriptors []device.CapabilityDescriptor
@@ -546,6 +548,11 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 			})
 		})
 	}
+	if m.governanceOpen && m.GovernanceUI != nil {
+		m.GovernanceUI.RenderMobileOverlay(c, t, dt, func() {
+			m.governanceOpen = false
+		})
+	}
 	m.renderMobileSettingsModal(c, t, dt)
 	if m.Transcript != nil {
 		if att, open := m.Transcript.PreviewedAttachment(); open {
@@ -793,6 +800,12 @@ func (m *MobileCompanionApp) renderNavigationBar(
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, heading).FontSize(titleSize).FontWeight(700).LetterSpacing(-0.4).TextColor(toColor(dt.Ink))
 				ui.Spacer(c)
+				if m.GovernanceUI != nil {
+					govLbl, govVar, _ := m.GovernanceUI.StatusPillAppearance()
+					if ApplePillButton(c, "mob-open-governance", govLbl, govVar, dt, svgIconShield, true).Clicked() {
+						m.governanceOpen = true
+					}
+				}
 				if m.HelmSearch != nil {
 					if ApplePillButton(c, "mob-open-helm", "Search", BtnGlass, dt, svgIconSearch, true).Clicked() {
 						m.OpenHelmSearch()
