@@ -59,7 +59,8 @@ func EdgeRail(c *ui.Context, cfg EdgeRailConfig) {
 		sensor.Width(16)
 	}
 
-	// Smooth 120Hz spring slide and opacity interpolation.
+	// Smooth critically-damped glide & opacity transition (no long-tail spring
+	// ringing that would keep 120Hz CVDisplayLink alive after the rail hides).
 	targetX := -(panelW + 18)
 	targetOpacity := float32(0)
 	handleOpacity := float32(0.75)
@@ -71,8 +72,10 @@ func EdgeRail(c *ui.Context, cfg EdgeRailConfig) {
 	slideX := targetX
 	panelAlpha := targetOpacity
 	if cfg.Surface.Motion {
-		slideX = sensor.Spring("rail-x", targetX)
-		panelAlpha = sensor.Spring("rail-a", targetOpacity)
+		panelAlpha = sensor.AnimateTo("rail-a", targetOpacity, ui.Smooth)
+		if revealed || panelAlpha > 0.01 {
+			slideX = sensor.AnimateTo("rail-x", targetX, ui.Smooth)
+		}
 	}
 
 	sensor.Children(func() {

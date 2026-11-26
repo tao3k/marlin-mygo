@@ -15,14 +15,15 @@ import (
 // (8.33ms budget), and demand-driven idle tick gating to prevent macOS
 // transparent-window GPU power drain when unfocused or on static buffers.
 type FramePacer struct {
-	pending    atomic.Bool
-	focused    atomic.Bool
-	clockLive  atomic.Bool
-	triggerFn  func()
-	slowCount  atomic.Uint64
-	frameCount atomic.Uint64
-	maxNanos   atomic.Int64
-	budget     time.Duration
+	pending      atomic.Bool
+	pendingSince atomic.Int64
+	focused      atomic.Bool
+	clockLive    atomic.Bool
+	triggerFn    func()
+	slowCount    atomic.Uint64
+	frameCount   atomic.Uint64
+	maxNanos     atomic.Int64
+	budget       time.Duration
 }
 
 // NewFramePacer constructs a FramePacer with default 120Hz frame budget.
@@ -36,9 +37,25 @@ func NewFramePacer(trigger func(), budget time.Duration) *FramePacer {
 }
 
 // RequestFrame coalesces bursts into a single pending invalidation until consumed.
+// If an earlier invalidation fired before the native window was attached (or was
+// dropped during startup) and no frame started within 4x budget (~33ms), it
+// self-heals and re-triggers so redraws can never stall permanently.
 func (p *FramePacer) RequestFrame() bool {
+	now := time.Now().UnixNano()
 	if !p.pending.CompareAndSwap(false, true) {
-		return false
+		since := p.pendingSince.Load()
+		staleAfter := (4 * p.budget).Nanoseconds()
+		if staleAfter < int64(32*time.Millisecond) {
+			staleAfter = int64(32 * time.Millisecond)
+		}
+		if since == 0 || now-since < staleAfter {
+			return false
+		}
+		if !p.pendingSince.CompareAndSwap(since, now) {
+			return false
+		}
+	} else {
+		p.pendingSince.Store(now)
 	}
 	if p.triggerFn != nil {
 		p.triggerFn()
@@ -48,6 +65,7 @@ func (p *FramePacer) RequestFrame() bool {
 
 // MarkFrameStart clears the coalesced pending flag when a render frame begins.
 func (p *FramePacer) MarkFrameStart() time.Time {
+	p.pendingSince.Store(0)
 	p.pending.Store(false)
 	return time.Now()
 }

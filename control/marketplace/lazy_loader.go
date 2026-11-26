@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/async"
 	"github.com/tao3k/marlin-mygo/runtime/pluginhost"
 )
 
@@ -158,6 +159,7 @@ type LazyLoader struct {
 	totalReaped      uint64
 	totalEvicted     uint64
 	lastReconcileDur time.Duration
+	reaperScope      *async.StructuredScope
 }
 
 func NewLazyLoader(cfg LazyLoaderConfig) (*LazyLoader, error) {
@@ -625,18 +627,31 @@ func (l *LazyLoader) Stats() LazyLoaderStats {
 	return st
 }
 
-// StartIdleReaper runs a low-overhead periodic O(1) idle reclamation loop until
-// ctx cancels, invoking onReaped whenever one or more idle plugins are put to sleep.
+// StartIdleReaper runs a low-overhead periodic O(1) idle reclamation loop inside
+// a StructuredScope until ctx cancels or CloseIdleReaper is called, invoking
+// onReaped whenever one or more idle plugins are put to sleep.
 func (l *LazyLoader) StartIdleReaper(ctx context.Context, interval time.Duration, onReaped func([]schema.PluginID)) {
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
-	go func() {
+	l.mu.Lock()
+	if l.reaperScope != nil {
+		prev := l.reaperScope
+		l.reaperScope = nil
+		l.mu.Unlock()
+		prev.CloseAndDrain()
+		l.mu.Lock()
+	}
+	scope := async.NewStructuredScope(ctx)
+	l.reaperScope = scope
+	l.mu.Unlock()
+
+	scope.Go(func(loopCtx context.Context) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-loopCtx.Done():
 				return
 			case <-ticker.C:
 				if reaped := l.ReapIdle(l.cfg.Now()); len(reaped) > 0 && onReaped != nil {
@@ -644,7 +659,18 @@ func (l *LazyLoader) StartIdleReaper(ctx context.Context, interval time.Duration
 				}
 			}
 		}
-	}()
+	})
+}
+
+// CloseIdleReaper cancels and drains any running idle reaper loop (quiescence barrier).
+func (l *LazyLoader) CloseIdleReaper() {
+	l.mu.Lock()
+	scope := l.reaperScope
+	l.reaperScope = nil
+	l.mu.Unlock()
+	if scope != nil {
+		scope.CloseAndDrain()
+	}
 }
 
 func isEvictable(sp PluginSpec) bool {

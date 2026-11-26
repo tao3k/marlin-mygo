@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tao3k/marlin-mygo/engine/contextgov"
@@ -149,10 +150,34 @@ type RoomSnapshot struct {
 	Continuity      resilience.ResilienceSnapshot
 }
 
+// versionedRWMutex tracks every write-lock transition via a seqlock-style
+// atomic counter so Snapshot() can serve wait-free immutable cached snapshots
+// on every 120Hz frame without locking or deep-cloning unchanged room state.
+type versionedRWMutex struct {
+	sync.RWMutex
+	seq atomic.Uint64
+}
+
+func (m *versionedRWMutex) Lock() {
+	m.RWMutex.Lock()
+	m.seq.Add(1)
+}
+
+func (m *versionedRWMutex) Unlock() {
+	m.seq.Add(1)
+	m.RWMutex.Unlock()
+}
+
+type cachedRoomSnapshot struct {
+	seq  uint64
+	snap RoomSnapshot
+}
+
 // Controller manages thread-safe room projections, role-based permission checks,
 // shared matters, and human-like agent messaging/thread interactions.
 type Controller struct {
-	mu              sync.RWMutex
+	mu              versionedRWMutex
+	snapCache       atomic.Pointer[cachedRoomSnapshot]
 	ledger          *features.GovernanceLedger
 	promptGates     *promptgate.Queue
 	contextGov      *contextgov.GovernanceStore
@@ -783,9 +808,21 @@ func (c *Controller) UpdateRolePermissions(targetID, actorID string, next RolePe
 }
 
 // Snapshot returns a thread-safe immutable view for 120Hz GPU rendering.
+// Unchanged state is served wait-free from an atomic RCU cache with zero
+// mutex acquisitions and zero slice/map deep clones.
 func (c *Controller) Snapshot() RoomSnapshot {
+	if seq := c.mu.seq.Load(); seq&1 == 0 {
+		if cached := c.snapCache.Load(); cached != nil && cached.seq == seq {
+			snap := cached.snap
+			if c.Resilience != nil {
+				snap.Continuity = c.Resilience.Snapshot("room:" + snap.ActiveChannelID)
+			}
+			return snap
+		}
+	}
+
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	seq := c.mu.seq.Load()
 	snap := RoomSnapshot{
 		Channels:        append([]Channel(nil), c.channels...),
 		ActiveChannelID: c.activeChannelID,
@@ -820,10 +857,18 @@ func (c *Controller) Snapshot() RoomSnapshot {
 			snap.Items = append(snap.Items, it)
 		}
 	}
-	if c.Resilience != nil {
-		snap.Continuity = c.Resilience.Snapshot("room:" + c.activeChannelID)
+	res := c.Resilience
+	c.mu.RUnlock()
+
+	baseSnap := snap
+	baseSnap.Continuity = resilience.ResilienceSnapshot{State: resilience.ConnOnline}
+	if seq&1 == 0 {
+		c.snapCache.Store(&cachedRoomSnapshot{seq: seq, snap: baseSnap})
+	}
+	if res != nil {
+		snap.Continuity = res.Snapshot("room:" + snap.ActiveChannelID)
 	} else {
-		snap.Continuity = resilience.ResilienceSnapshot{State: resilience.ConnOnline}
+		snap.Continuity = baseSnap.Continuity
 	}
 	return snap
 }

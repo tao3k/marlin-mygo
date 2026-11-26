@@ -10,6 +10,7 @@ import (
 
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	"github.com/tao3k/marlin-mygo/pkg/schema"
+	"github.com/tao3k/marlin-mygo/runtime/async"
 )
 
 // QuickSwitcherStats records coalescing and warm-cache hit telemetry for
@@ -43,6 +44,7 @@ type QuickPluginSwitcher struct {
 	desiredID string
 	running   bool
 	stats     QuickSwitcherStats
+	scope     *async.StructuredScope
 	wg        sync.WaitGroup
 }
 
@@ -76,6 +78,7 @@ func NewQuickPluginSwitcher(cfg QuickPluginSwitcherConfig) *QuickPluginSwitcher 
 		onSync:       cfg.OnSync,
 		onInvalidate: cfg.OnInvalidate,
 		onError:      cfg.OnError,
+		scope:        async.NewStructuredScope(ctx),
 	}
 }
 
@@ -147,7 +150,13 @@ func (q *QuickPluginSwitcher) Select(pluginID string) {
 	if inv != nil {
 		inv()
 	}
-	go q.drain()
+	if !q.scope.Go(func(_ context.Context) { q.drain() }) {
+		q.mu.Lock()
+		q.running = false
+		q.desiredID = ""
+		q.mu.Unlock()
+		q.wg.Done()
+	}
 }
 
 func (q *QuickPluginSwitcher) drain() {
@@ -209,4 +218,11 @@ func (q *QuickPluginSwitcher) drain() {
 // WaitIdle blocks until any in-flight cold activation drains (used by tests).
 func (q *QuickPluginSwitcher) WaitIdle() {
 	q.wg.Wait()
+}
+
+// Close cancels and drains any active cold-activation worker (quiescence barrier).
+func (q *QuickPluginSwitcher) Close() {
+	if q.scope != nil {
+		q.scope.CloseAndDrain()
+	}
 }

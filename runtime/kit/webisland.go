@@ -153,6 +153,13 @@ func WebIslandActionScript(event, payloadJSON string) string {
 	return fmt.Sprintf(`(function(){window.dispatchEvent(new CustomEvent("marlin:action",{detail:{event:%q,payload:%s}}));})();`, event, payloadJSON)
 }
 
+// WebIslandVisibilityScript builds a minimal JS snippet pausing/resuming
+// continuous CSS/SVG animations whenever a WebView tab is hidden or revealed,
+// preventing hidden WebContent processes from contending with native GPU tabs.
+func WebIslandVisibilityScript(visible bool) string {
+	return fmt.Sprintf(`(function(){window.dispatchEvent(new CustomEvent("marlin:visibility",{detail:{visible:%t}}));})();`, visible)
+}
+
 // WorkflowStudioHTML returns a zero-CDN, strict-CSP, full-bleed transparent
 // interactive BPMN / Agent DAG Flowchart canvas themed dynamically to pal and
 // live-listening for `marlin:theme` updates when the user switches themes or
@@ -219,6 +226,7 @@ func WorkflowStudioHTML(pal Palette) string {
     fill: none; stroke: var(--info); stroke-width: 2.6;
     stroke-dasharray: 6 10; animation: flow 1.5s linear infinite;
   }
+  .stage.paused .edge-flow { animation-play-state: paused; }
   @keyframes flow { to { stroke-dashoffset: -32; } }
   .node { cursor: grab; }
   .node:active { cursor: grabbing; }
@@ -385,6 +393,12 @@ window.addEventListener("marlin:action", (ev) => {
   else if (act === "step") document.getElementById("btn-step").click();
   else if (act === "save") syncGraphToHost();
   else if (act === "reset") document.getElementById("btn-reset").click();
+});
+const stageEl = document.querySelector(".stage");
+window.addEventListener("marlin:visibility", (ev) => {
+  if (!stageEl) return;
+  const vis = !ev.detail || ev.detail.visible !== false;
+  stageEl.classList.toggle("paused", !vis);
 });
 render();
 </script>

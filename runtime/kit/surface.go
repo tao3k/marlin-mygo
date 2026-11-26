@@ -166,9 +166,10 @@ func ApplyCardSurface(
 			Oklab: true,
 		})
 
-		// Directional VisionOS / macOS crystal specular rim: crisp top-left catchlight fading diagonally.
-		rimTop := WithAlpha(ui.RGB(255, 255, 255), 0.28)
-		rimBot := WithAlpha(ui.RGB(255, 255, 255), 0.05)
+		// Directional VisionOS / macOS crystal hairline rim + single crisp drop shadow
+		// (keeping GPU shadow batches lean for sub-8ms 120Hz tab/dashboard switching).
+		rimTop := WithAlpha(ui.RGB(255, 255, 255), 0.24)
+		rimBot := WithAlpha(ui.RGB(255, 255, 255), 0.06)
 		if hovered {
 			rimTop = WithAlpha(pal.Info, 0.65)
 			rimBot = WithAlpha(pal.Accent, 0.24)
@@ -179,16 +180,10 @@ func ApplyCardSurface(
 			Angle: 145,
 			Oklab: true,
 		})
-		// Machined dual-edge inner lighting: crisp 1px top specular catchlight + subtle bottom depth edge.
-		el.InsetShadow(0, 1, 0, 0, WithAlpha(ui.RGB(255, 255, 255), 0.28)).
-			InsetShadow(0, -1, 0, 0, WithAlpha(ui.RGB(0, 0, 0), 0.24))
-
-		// Multi-layered physical shadows: tight contact occlusion + soft wide ambient diffusion.
-		el.Shadow(0, 1, 3, 0, WithAlpha(ui.RGB(0, 0, 0), 0.34))
 		if hovered && opts.Motion {
-			el.Shadow(0, 20, 44, -8, WithAlpha(ui.RGB(0, 0, 0), 0.56))
+			el.Shadow(0, 16, 36, -8, WithAlpha(ui.RGB(0, 0, 0), 0.50))
 		} else {
-			el.Shadow(0, 14, 34, -8, WithAlpha(ui.RGB(0, 0, 0), 0.42))
+			el.Shadow(0, 10, 26, -8, WithAlpha(ui.RGB(0, 0, 0), 0.36))
 		}
 
 		// Cursor-reactive VisionOS / Linear specular spotlight sheen on GPU hover.
@@ -218,15 +213,8 @@ func ApplyCardSurface(
 		}
 		el.Background(bg)
 		cs.ApplyToElement(el)
-		el.BorderWidth(1).BorderLinearGradient(ui.LinearGradient{
-			From:  WithAlpha(ui.RGB(255, 255, 255), 0.12),
-			To:    WithAlpha(ui.RGB(255, 255, 255), 0.02),
-			Angle: 180,
-		})
-		el.InsetShadow(0, 1, 0, 0, WithAlpha(ui.RGB(255, 255, 255), 0.11)).
-			InsetShadow(0, -1, 0, 0, WithAlpha(ui.RGB(0, 0, 0), 0.20))
-		el.Shadow(0, 1, 3, 0, WithAlpha(ui.RGB(0, 0, 0), 0.30)).
-			Shadow(0, 12, 28, -8, WithAlpha(ui.RGB(0, 0, 0), 0.36))
+		el.BorderWidth(1).BorderColor(WithAlpha(ui.RGB(255, 255, 255), 0.10))
+		el.Shadow(0, 8, 22, -8, WithAlpha(ui.RGB(0, 0, 0), 0.32))
 	}
 
 	if opts.Motion {

@@ -10,24 +10,42 @@ import (
 )
 
 // ConsultQuery splits a modern Consult/Orderless prompt on '#' into an async
-// Rust backend query and instant local Orderless refinement tokens (including
-// '!negation' exclusions), matching marlin-agent-core MAR-HELM-R02.
+// Rust backend query (supporting Rust's full multi-axis playbook qualifiers
+// `@lang:`, `@doc:`, `@prefix:`, `@ext:`, `@sym:`, `@graph:`, and `(...)`
+// `:gerbil-ascent` / Dusa DSL S-expressions) plus instant local Orderless
+// refinement tokens (including '!negation'), matching marlin-agent-core MAR-HELM-R02.
 type ConsultQuery struct {
 	Raw          string
 	BackendQuery string
+	Pattern      string
+	IsDSL        bool
+	Languages    []string
+	Documents    []string
+	PathPrefix   string
+	Extension    string
+	Symbol       string
+	GraphTarget  string
 	Positive     []string
 	Negative     []string
 	HasStageSep  bool
 }
 
-// ParseConsultQuery parses raw input into two-stage Consult + Orderless tokens.
+// ParseConsultQuery parses raw input into two-stage Consult + Rust multi-axis
+// playbook qualifiers + Orderless tokens.
 // Examples:
-//   - "auth # !test session" -> BackendQuery="auth", Positive=["session"], Negative=["test"]
-//   - "sw th !debug"         -> BackendQuery="sw th", Positive=["sw","th"], Negative=["debug"]
+//   - "auth # !test session"            -> BackendQuery="auth", Positive=["session"], Negative=["test"]
+//   - "@lang:rust @prefix:crates/ helm" -> Languages=["rust"], PathPrefix="crates/", Pattern="helm"
+//   - "(query (symbol ?s))"             -> IsDSL=true, BackendQuery="(query (symbol ?s))"
 func ParseConsultQuery(raw string) ConsultQuery {
 	trimmed := strings.TrimSpace(raw)
 	cq := ConsultQuery{Raw: trimmed}
 	if trimmed == "" {
+		return cq
+	}
+	if strings.HasPrefix(trimmed, "(") {
+		cq.IsDSL = true
+		cq.BackendQuery = trimmed
+		cq.Pattern = trimmed
 		return cq
 	}
 
@@ -35,15 +53,54 @@ func ParseConsultQuery(raw string) ConsultQuery {
 	cq.HasStageSep = hasSep
 	if hasSep {
 		cq.BackendQuery = strings.TrimSpace(left)
+		cq.parseRustAxes(cq.BackendQuery)
 		cq.Positive, cq.Negative = splitOrderlessTokens(right)
 		return cq
 	}
 
 	pos, neg := splitOrderlessTokens(trimmed)
-	cq.Positive = pos
 	cq.Negative = neg
 	cq.BackendQuery = strings.Join(pos, " ")
+	cq.parseRustAxes(cq.BackendQuery)
+	if cq.Pattern != "" {
+		cq.Positive = strings.Fields(cq.Pattern)
+	}
 	return cq
+}
+
+func (q *ConsultQuery) parseRustAxes(asyncRaw string) {
+	var pat []string
+	for _, tok := range strings.Fields(asyncRaw) {
+		switch {
+		case strings.HasPrefix(tok, "@lang:"):
+			if v := strings.TrimPrefix(tok, "@lang:"); v != "" {
+				q.Languages = append(q.Languages, v)
+			}
+		case strings.HasPrefix(tok, "@doc:"):
+			if v := strings.TrimPrefix(tok, "@doc:"); v != "" {
+				q.Documents = append(q.Documents, v)
+			}
+		case strings.HasPrefix(tok, "@prefix:"):
+			if v := strings.TrimPrefix(tok, "@prefix:"); v != "" {
+				q.PathPrefix = v
+			}
+		case strings.HasPrefix(tok, "@ext:"):
+			if v := strings.TrimPrefix(tok, "@ext:"); v != "" {
+				q.Extension = v
+			}
+		case strings.HasPrefix(tok, "@sym:"):
+			if v := strings.TrimPrefix(tok, "@sym:"); v != "" {
+				q.Symbol = v
+			}
+		case strings.HasPrefix(tok, "@graph:"):
+			if v := strings.TrimPrefix(tok, "@graph:"); v != "" {
+				q.GraphTarget = v
+			}
+		default:
+			pat = append(pat, tok)
+		}
+	}
+	q.Pattern = strings.Join(pat, " ")
 }
 
 // LocalFilterText returns the normalized positive Orderless tokens used for
