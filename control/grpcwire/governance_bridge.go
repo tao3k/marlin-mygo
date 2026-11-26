@@ -22,13 +22,13 @@ import (
 )
 
 const (
-	// HigherOrderGovernanceRecordID matches `marlin-scheme-host`'s authoritative
-	// ProjectionQueryService evidence record for Rust+Scheme Higher-Order Governance.
-	HigherOrderGovernanceRecordID = "scheme:higher-order:governance-snapshot"
-	// HigherOrderGovernanceNodeKind matches the live WatchGraphTrajectory event kind.
-	HigherOrderGovernanceNodeKind = "scheme_higher_order_governance"
-	// HigherOrderRearmGatePrefix identifies one-shot ApprovalGateService re-arm gates.
-	HigherOrderRearmGatePrefix = "gov-rearm-epoch-"
+	// GovernanceAuthorityRecordID matches `marlin-scheme-host`'s authoritative
+	// ProjectionQueryService evidence record for Rust+Scheme Governance Authority.
+	GovernanceAuthorityRecordID = "scheme:governance:authority-snapshot"
+	// GovernanceAuthorityNodeKind matches the live WatchGraphTrajectory event kind.
+	GovernanceAuthorityNodeKind = "scheme_governance_authority"
+	// GovernanceRearmGatePrefix identifies one-shot ApprovalGateService re-arm gates.
+	GovernanceRearmGatePrefix = "gov-rearm-epoch-"
 )
 
 // RustGovernanceAuthorityConfig wires a live HTTP/2 gRPC Target (or hot-swappable
@@ -41,7 +41,7 @@ type RustGovernanceAuthorityConfig struct {
 	Timeout                 time.Duration
 	ReconnectInitialBackoff time.Duration
 	ReconnectMaxBackoff     time.Duration
-	OnSnapshot              func(mygoshell.BackendHigherOrderSnapshot)
+	OnSnapshot              func(mygoshell.BackendGovernanceSnapshot)
 	OnStreamState           func(connected bool, err error)
 }
 
@@ -56,14 +56,17 @@ type RustGovernanceAuthority struct {
 	cfg RustGovernanceAuthorityConfig
 
 	mu          sync.RWMutex
-	snap        mygoshell.BackendHigherOrderSnapshot
+	snap        mygoshell.BackendGovernanceSnapshot
 	hasSnapshot bool
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 	idempSeq    atomic.Uint64
 }
 
-var _ mygoshell.BackendGovernanceAuthority = (*RustGovernanceAuthority)(nil)
+var (
+	_ mygoshell.BackendGovernanceAuthority = (*RustGovernanceAuthority)(nil)
+	_ mygoshell.BackendGovernanceMutator   = (*RustGovernanceAuthority)(nil)
+)
 
 // NewRustGovernanceAuthority constructs a live gRPC-backed governance authority client.
 func NewRustGovernanceAuthority(cfg RustGovernanceAuthorityConfig) *RustGovernanceAuthority {
@@ -84,7 +87,7 @@ func NewRustGovernanceAuthority(cfg RustGovernanceAuthorityConfig) *RustGovernan
 	}
 	return &RustGovernanceAuthority{
 		cfg: cfg,
-		snap: mygoshell.BackendHigherOrderSnapshot{
+		snap: mygoshell.BackendGovernanceSnapshot{
 			Admitted:         true,
 			RevocationEpoch:  1,
 			BreakerTripEpoch: 1,
@@ -96,9 +99,9 @@ func (a *RustGovernanceAuthority) activeTarget() (*Target, uint64) {
 	return resolveProviderTarget(a.cfg.Provider, a.cfg.Target)
 }
 
-// Hydrate fetches the latest authoritative Rust+Scheme Higher-Order Governance snapshot
+// Hydrate fetches the latest authoritative Rust+Scheme Governance Authority snapshot
 // via secret-denied `ProjectionQueryService.QueryProjectGraph`.
-func (a *RustGovernanceAuthority) Hydrate(ctx context.Context) (mygoshell.BackendHigherOrderSnapshot, error) {
+func (a *RustGovernanceAuthority) Hydrate(ctx context.Context) (mygoshell.BackendGovernanceSnapshot, error) {
 	target, _ := a.activeTarget()
 	if target == nil {
 		return a.Snapshot(), errors.New("grpcwire: RustGovernanceAuthority has no active Target")
@@ -117,13 +120,13 @@ func (a *RustGovernanceAuthority) Hydrate(ctx context.Context) (mygoshell.Backen
 		return a.Snapshot(), fmt.Errorf("grpcwire: QueryProjectGraph governance hydrate: %w", err)
 	}
 	for _, rec := range resp.GetRecords() {
-		if rec.GetRecordId() == HigherOrderGovernanceRecordID || rec.GetKind() == "scheme.higher_order.governance_snapshot" {
-			snap := DecodeHigherOrderSnapshotFromFacets(rec.GetFacets())
+		if rec.GetRecordId() == GovernanceAuthorityRecordID || rec.GetKind() == "scheme.governance.authority_snapshot" {
+			snap := DecodeGovernanceSnapshotFromFacets(rec.GetFacets())
 			a.storeSnapshot(snap)
 			return snap, nil
 		}
 	}
-	return a.Snapshot(), fmt.Errorf("grpcwire: governance record %q not published by backend", HigherOrderGovernanceRecordID)
+	return a.Snapshot(), fmt.Errorf("grpcwire: governance record %q not published by backend", GovernanceAuthorityRecordID)
 }
 
 // Start performs an initial best-effort hydrate and spawns an auto-reconnecting
@@ -159,15 +162,15 @@ func (a *RustGovernanceAuthority) Stop() {
 }
 
 // Snapshot returns an immutable copy of the latest authoritative backend governance state.
-func (a *RustGovernanceAuthority) Snapshot() mygoshell.BackendHigherOrderSnapshot {
+func (a *RustGovernanceAuthority) Snapshot() mygoshell.BackendGovernanceSnapshot {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return cloneHigherOrderSnapshot(a.snap)
+	return cloneGovernanceSnapshot(a.snap)
 }
 
 // TripBackendBreaker dispatches an immediate operator E-Stop (`scheme:governance-estop`)
 // over `UiWorkbenchService.DispatchUiEvent` and awaits backend confirmation.
-func (a *RustGovernanceAuthority) TripBackendBreaker(actor, reason string) (mygoshell.BackendHigherOrderSnapshot, error) {
+func (a *RustGovernanceAuthority) TripBackendBreaker(actor, reason string) (mygoshell.BackendGovernanceSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
 	defer cancel()
 
@@ -187,7 +190,7 @@ func (a *RustGovernanceAuthority) TripBackendBreaker(actor, reason string) (mygo
 	if err := a.dispatchUiCommand(ctx, target, cmd); err != nil {
 		return a.Snapshot(), err
 	}
-	return a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendHigherOrderSnapshot) bool {
+	return a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendGovernanceSnapshot) bool {
 		return s.BreakerTripped && strings.TrimSpace(s.RearmGateID) != ""
 	})
 }
@@ -197,7 +200,7 @@ func (a *RustGovernanceAuthority) TripBackendBreaker(actor, reason string) (mygo
 func (a *RustGovernanceAuthority) RearmBackendBreakerWithStepUp(
 	actor string,
 	stepUpFresh bool,
-) (mygoshell.BackendHigherOrderSnapshot, error) {
+) (mygoshell.BackendGovernanceSnapshot, error) {
 	actorClean := strings.TrimSpace(actor)
 	if actorClean == "" || !stepUpFresh {
 		return a.Snapshot(), errors.New("backend governance: verified human RFC 9470 step-up required to re-arm")
@@ -251,7 +254,7 @@ func (a *RustGovernanceAuthority) RearmBackendBreakerWithStepUp(
 
 	// Await authoritative backend transition: either armed with advanced trip epoch, or
 	// fail-closed denial with a rotated gate ID (e.g. agent impersonation rejected by Rust).
-	snap, waitErr := a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendHigherOrderSnapshot) bool {
+	snap, waitErr := a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendGovernanceSnapshot) bool {
 		if !s.BreakerTripped && s.BreakerTripEpoch > prevEpoch {
 			return true
 		}
@@ -274,22 +277,82 @@ func (a *RustGovernanceAuthority) RearmBackendBreakerWithStepUp(
 }
 
 // TriggerSchemeIncidentEval asks `marlin-scheme-host` to run the live embedded Gambit
-// Scheme Higher-Order Governance incident evaluation (ASCENT + Bi-Temporal TM + Cedar)
+// Scheme Governance Authority incident evaluation (ASCENT + Bi-Temporal TM + Cedar)
 // and awaits the resulting authoritative proof snapshot.
-func (a *RustGovernanceAuthority) TriggerSchemeIncidentEval(ctx context.Context) (mygoshell.BackendHigherOrderSnapshot, error) {
+func (a *RustGovernanceAuthority) TriggerSchemeIncidentEval(ctx context.Context) (mygoshell.BackendGovernanceSnapshot, error) {
 	return a.triggerSchemeEval(ctx, "scheme:governance-eval-incident")
 }
 
 // TriggerSchemeCleanEval asks `marlin-scheme-host` to run a live embedded Gambit Scheme
 // clean sanitized baseline evaluation and awaits the resulting authoritative proof snapshot.
-func (a *RustGovernanceAuthority) TriggerSchemeCleanEval(ctx context.Context) (mygoshell.BackendHigherOrderSnapshot, error) {
+func (a *RustGovernanceAuthority) TriggerSchemeCleanEval(ctx context.Context) (mygoshell.BackendGovernanceSnapshot, error) {
 	return a.triggerSchemeEval(ctx, "scheme:governance-eval-clean")
+}
+
+// RunIncidentEval implements mygoshell.BackendGovernanceMutator using the configured RPC timeout.
+func (a *RustGovernanceAuthority) RunIncidentEval() (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.TriggerSchemeIncidentEval(ctx)
+}
+
+// RunCleanEval implements mygoshell.BackendGovernanceMutator using the configured RPC timeout.
+func (a *RustGovernanceAuthority) RunCleanEval() (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.TriggerSchemeCleanEval(ctx)
+}
+
+// DelegateActor records a live parent->child AI delegation edge and triggers immediate
+// Linked-AOT/VM Scheme ASCENT governance fixpoint re-evaluation.
+func (a *RustGovernanceAuthority) DelegateActor(parent, child string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-delegate %s %s", strings.TrimSpace(parent), strings.TrimSpace(child)))
+}
+
+// RevokeActor revokes a principal in the live runtime fact graph and triggers immediate
+// ASCENT transitive closure fencing & dynamic Cedar `forbid` synthesis.
+func (a *RustGovernanceAuthority) RevokeActor(actor string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-revoke %s", strings.TrimSpace(actor)))
+}
+
+// RecordContextFlow records a live 5-scope shared-context flow (`entry` from `srcScope`
+// toward `target` at `dstScope`) and triggers immediate ASCENT exfiltration analysis.
+func (a *RustGovernanceAuthority) RecordContextFlow(entry, srcScope, target, dstScope string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	cmd := fmt.Sprintf(
+		"scheme:governance-context-flow %s %s %s %s",
+		strings.TrimSpace(entry),
+		strings.TrimSpace(srcScope),
+		strings.TrimSpace(target),
+		strings.TrimSpace(dstScope),
+	)
+	return a.triggerSchemeEval(ctx, cmd)
+}
+
+// DeclassifyContext marks a shared-context entry as explicitly declassified and re-evaluates ASCENT.
+func (a *RustGovernanceAuthority) DeclassifyContext(entry string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-declassify %s", strings.TrimSpace(entry)))
+}
+
+// RetractPremise retracts a Bi-Temporal Truth Maintenance premise in the live Scheme VM
+// and computes reverse-dependency blast radius invalidation.
+func (a *RustGovernanceAuthority) RetractPremise(subject string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-retract %s", strings.TrimSpace(subject)))
 }
 
 func (a *RustGovernanceAuthority) triggerSchemeEval(
 	ctx context.Context,
 	cmd string,
-) (mygoshell.BackendHigherOrderSnapshot, error) {
+) (mygoshell.BackendGovernanceSnapshot, error) {
 	target, _ := a.activeTarget()
 	if target == nil {
 		return a.Snapshot(), errors.New("grpcwire: no active Rust backend target")
@@ -298,7 +361,7 @@ func (a *RustGovernanceAuthority) triggerSchemeEval(
 	if err := a.dispatchUiCommand(ctx, target, cmd); err != nil {
 		return before, err
 	}
-	return a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendHigherOrderSnapshot) bool {
+	return a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendGovernanceSnapshot) bool {
 		return s.PolicyRevision > before.PolicyRevision || s.RevocationEpoch > before.RevocationEpoch
 	})
 }
@@ -338,7 +401,7 @@ func (a *RustGovernanceAuthority) discoverPendingRearmGate(ctx context.Context, 
 		return "", fmt.Errorf("grpcwire: ListPendingGates for re-arm: %w", err)
 	}
 	for _, g := range list.GetGates() {
-		if strings.HasPrefix(g.GetGateId(), HigherOrderRearmGatePrefix) {
+		if strings.HasPrefix(g.GetGateId(), GovernanceRearmGatePrefix) {
 			return g.GetGateId(), nil
 		}
 	}
@@ -347,8 +410,8 @@ func (a *RustGovernanceAuthority) discoverPendingRearmGate(ctx context.Context, 
 
 func (a *RustGovernanceAuthority) awaitSnapshotCondition(
 	ctx context.Context,
-	pred func(mygoshell.BackendHigherOrderSnapshot) bool,
-) (mygoshell.BackendHigherOrderSnapshot, error) {
+	pred func(mygoshell.BackendGovernanceSnapshot) bool,
+) (mygoshell.BackendGovernanceSnapshot, error) {
 	ticker := time.NewTicker(15 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -410,10 +473,10 @@ func (a *RustGovernanceAuthority) pumpGovernanceTrajectory(ctx context.Context) 
 				break
 			}
 			ev := resp.GetEvent()
-			if ev == nil || ev.GetNodeKind() != HigherOrderGovernanceNodeKind {
+			if ev == nil || ev.GetNodeKind() != GovernanceAuthorityNodeKind {
 				continue
 			}
-			snap := DecodeHigherOrderSnapshotFromFacets(ev.GetMetadata())
+			snap := DecodeGovernanceSnapshotFromFacets(ev.GetMetadata())
 			a.storeSnapshot(snap)
 		}
 		if !waitReconnectOrSwap(ctx, a.cfg.Provider, seenGen, backoff) {
@@ -429,21 +492,21 @@ func (a *RustGovernanceAuthority) notifyStream(connected bool, err error) {
 	}
 }
 
-func (a *RustGovernanceAuthority) storeSnapshot(next mygoshell.BackendHigherOrderSnapshot) {
+func (a *RustGovernanceAuthority) storeSnapshot(next mygoshell.BackendGovernanceSnapshot) {
 	a.mu.Lock()
-	a.snap = cloneHigherOrderSnapshot(next)
+	a.snap = cloneGovernanceSnapshot(next)
 	a.hasSnapshot = true
 	cb := a.cfg.OnSnapshot
 	a.mu.Unlock()
 	if cb != nil {
-		cb(cloneHigherOrderSnapshot(next))
+		cb(cloneGovernanceSnapshot(next))
 	}
 }
 
-// DecodeHigherOrderSnapshotFromFacets translates the authoritative Rust+Scheme
+// DecodeGovernanceSnapshotFromFacets translates the authoritative Rust+Scheme
 // `GraphRecordView.facets` / `GraphTrajectoryEvent.metadata` map into a typed
-// `mygoshell.BackendHigherOrderSnapshot`.
-func DecodeHigherOrderSnapshotFromFacets(facets map[string]string) mygoshell.BackendHigherOrderSnapshot {
+// `mygoshell.BackendGovernanceSnapshot`.
+func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.BackendGovernanceSnapshot {
 	type wireCedarRule struct {
 		PolicyID string `json:"policy_id"`
 		Source   string `json:"source"`
@@ -481,7 +544,7 @@ func DecodeHigherOrderSnapshotFromFacets(facets map[string]string) mygoshell.Bac
 		}
 	}
 
-	return mygoshell.BackendHigherOrderSnapshot{
+	return mygoshell.BackendGovernanceSnapshot{
 		Admitted:              parseBool("admitted"),
 		RevocationEpoch:       parseU64("revocation_epoch"),
 		PolicyRevision:        parseU64("policy_revision"),
@@ -504,7 +567,7 @@ func DecodeHigherOrderSnapshotFromFacets(facets map[string]string) mygoshell.Bac
 	}
 }
 
-func cloneHigherOrderSnapshot(in mygoshell.BackendHigherOrderSnapshot) mygoshell.BackendHigherOrderSnapshot {
+func cloneGovernanceSnapshot(in mygoshell.BackendGovernanceSnapshot) mygoshell.BackendGovernanceSnapshot {
 	out := in
 	out.RejectionReasons = append([]string(nil), in.RejectionReasons...)
 	out.FencedActors = append([]string(nil), in.FencedActors...)

@@ -13,10 +13,12 @@ import (
 )
 
 // DefaultAppServerBinaryNames lists the Rust App Server sidecar executable names
-// in long-term preference order: client-neutral `marlin-app-server` first, with
+// in long-term preference order: client-neutral `marlin-app-server` first, then
+// the standalone Linked-AOT `marlin-scheme-host-aot` authority daemon, with
 // automatic fallback to the legacy `marlin-mygo-host` binary name.
 var DefaultAppServerBinaryNames = []string{
 	"marlin-app-server",
+	"marlin-scheme-host-aot",
 	"marlin-mygo-host",
 }
 

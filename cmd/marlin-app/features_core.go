@@ -132,7 +132,7 @@ func wireFeaturesAndGovernance(
 			Provider:  provider,
 			ProjectID: "default",
 			SessionID: cfg.sessionID,
-			OnSnapshot: func(mygoshell.BackendHigherOrderSnapshot) {
+			OnSnapshot: func(mygoshell.BackendGovernanceSnapshot) {
 				if win != nil {
 					win.Invalidate()
 				}
@@ -142,7 +142,7 @@ func wireFeaturesAndGovernance(
 		_ = rustGovAuth.Start(ctx)
 		stopGovernance = rustGovAuth.Stop
 	} else {
-		govUI.AttachBackendAuthority(mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendHigherOrderSnapshot{
+		govUI.AttachBackendAuthority(mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
 			Admitted:         true,
 			RevocationEpoch:  1,
 			PolicyRevision:   1,

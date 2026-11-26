@@ -90,9 +90,9 @@ func (m *mockGovernanceBackend) emitTrajectoryLocked(nodeID string) {
 	select {
 	case m.trajNotify <- &projectionv1.GraphTrajectoryEvent{
 		EventId:  fmt.Sprintf("ev-%d", time.Now().UnixNano()),
-		RunId:    "scheme-higher-order-governance",
+		RunId:    "scheme-governance-authority",
 		NodeId:   nodeID,
-		NodeKind: grpcwire.HigherOrderGovernanceNodeKind,
+		NodeKind: grpcwire.GovernanceAuthorityNodeKind,
 		Status:   status,
 		Metadata: m.facetsLocked(),
 	}:
@@ -112,10 +112,10 @@ func (m *mockGovernanceBackend) QueryProjectGraph(
 	m.mu.Unlock()
 	return &projectionv1.QueryProjectGraphResponse{
 		Records: []*projectionv1.GraphRecordView{{
-			RecordId: grpcwire.HigherOrderGovernanceRecordID,
+			RecordId: grpcwire.GovernanceAuthorityRecordID,
 			Surface:  projectionv1.GraphVisibleSurface_GRAPH_VISIBLE_SURFACE_EVIDENCE,
-			Kind:     "scheme.higher_order.governance_snapshot",
-			Title:    "Mock Scheme Higher-Order Governance",
+			Kind:     "scheme.governance.authority_snapshot",
+			Title:    "Mock Scheme Governance Authority",
 			Facets:   facets,
 		}},
 	}, nil
@@ -229,12 +229,12 @@ func TestRustGovernanceAuthorityMockGRPCFlow(t *testing.T) {
 	}
 	defer target.Close()
 
-	streamUpdates := make(chan mygoshell.BackendHigherOrderSnapshot, 8)
+	streamUpdates := make(chan mygoshell.BackendGovernanceSnapshot, 8)
 	auth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
 		Target:    target,
 		ProjectID: "default",
 		SessionID: "test-gov",
-		OnSnapshot: func(s mygoshell.BackendHigherOrderSnapshot) {
+		OnSnapshot: func(s mygoshell.BackendGovernanceSnapshot) {
 			select {
 			case streamUpdates <- s:
 			default:
@@ -281,12 +281,12 @@ func TestRustGovernanceAuthorityMockGRPCFlow(t *testing.T) {
 	}
 }
 
-// TestLiveCrossProcessSchemeHigherOrderGovernanceE2E connects Go `marlin-mygo`
+// TestLiveCrossProcessSchemeGovernanceE2E connects Go `marlin-mygo`
 // directly over real HTTP/2 gRPC to a live running Rust `marlin-scheme-host`
 // embedding the live Gambit/Gerbil Scheme VM (`MARLIN_SCHEME_GOVERNANCE_MODE=incident`),
 // proving end-to-end:
 //  1. Live Gerbil Scheme VM (Atomic POO × ASCENT × Bi-Temporal TM × Cedar) -> zero-JSON
-//     14-slot rooted vector -> Rust HigherOrderGovernanceAdmissionGate -> HTTP/2 gRPC -> Go UI;
+//     14-slot rooted vector -> Rust GovernanceAdmissionGate -> HTTP/2 gRPC -> Go UI;
 //  2. Anti-forgery: `DispatchUiEvent(RecordCommand("scheme:governance-rearm ..."))` CANNOT re-arm;
 //  3. Human-only RFC 9470 Step-Up: agent impersonation on `ApprovalGateService` is REJECTED fail-closed;
 //  4. Verified human RFC 9470 Step-Up re-arms the Rust breaker & advances `BreakerTripEpoch`;
@@ -294,10 +294,10 @@ func TestRustGovernanceAuthorityMockGRPCFlow(t *testing.T) {
 //  6. Live on-demand Gambit VM clean evaluation clears ASCENT fences at advancing Proof Epoch.
 //
 // Skipped unless MARLIN_SCHEME_HOST_ADDR is set.
-func TestLiveCrossProcessSchemeHigherOrderGovernanceE2E(t *testing.T) {
+func TestLiveCrossProcessSchemeGovernanceE2E(t *testing.T) {
 	addr := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_ADDR"))
 	if addr == "" {
-		t.Skip("set MARLIN_SCHEME_HOST_ADDR to run live Go <-> Rust+Scheme Higher-Order Governance E2E")
+		t.Skip("set MARLIN_SCHEME_HOST_ADDR to run live Go <-> Rust+Scheme Governance Authority E2E")
 	}
 	token := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_TOKEN"))
 	authHeader := ""
@@ -322,14 +322,14 @@ func TestLiveCrossProcessSchemeHigherOrderGovernanceE2E(t *testing.T) {
 
 	var (
 		mu       sync.Mutex
-		streamed []mygoshell.BackendHigherOrderSnapshot
+		streamed []mygoshell.BackendGovernanceSnapshot
 	)
 	govAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
 		Target:    target,
 		ProjectID: "default",
-		SessionID: "e2e-higher-order-gov",
+		SessionID: "e2e-governance",
 		Timeout:   10 * time.Second,
-		OnSnapshot: func(s mygoshell.BackendHigherOrderSnapshot) {
+		OnSnapshot: func(s mygoshell.BackendGovernanceSnapshot) {
 			mu.Lock()
 			streamed = append(streamed, s)
 			mu.Unlock()
@@ -379,17 +379,17 @@ func TestLiveCrossProcessSchemeHigherOrderGovernanceE2E(t *testing.T) {
 	if len(initial.SynthesizedCedarRules) == 0 {
 		t.Fatalf("expected dynamically synthesized Cedar forbid policies from live Scheme VM")
 	}
-	if !strings.HasPrefix(initial.RearmGateID, grpcwire.HigherOrderRearmGatePrefix) {
+	if !strings.HasPrefix(initial.RearmGateID, grpcwire.GovernanceRearmGatePrefix) {
 		t.Fatalf("expected one-shot ApprovalGateService re-arm gate ID, got %q", initial.RearmGateID)
 	}
 
 	// 2. Anti-forgery check: DispatchUiEvent("scheme:governance-rearm ...") MUST NOT re-arm!
-	wb, err := target.UI().OpenWorkbench(ctx, &uiv1.OpenWorkbenchRequest{SessionId: "e2e-higher-order-gov"})
+	wb, err := target.UI().OpenWorkbench(ctx, &uiv1.OpenWorkbenchRequest{SessionId: "e2e-governance"})
 	if err != nil {
 		t.Fatalf("OpenWorkbench: %v", err)
 	}
 	_, err = target.UI().DispatchUiEvent(ctx, &uiv1.DispatchUiEventRequest{
-		SessionId:          "e2e-higher-order-gov",
+		SessionId:          "e2e-governance",
 		ExpectedGeneration: wb.GetWorkbench().GetGeneration(),
 		Event:              &uiv1.DispatchUiEventRequest_RecordCommand{RecordCommand: "scheme:governance-rearm ops-alice"},
 	})
@@ -418,7 +418,7 @@ func TestLiveCrossProcessSchemeHigherOrderGovernanceE2E(t *testing.T) {
 	}
 	// Wait for Rust host to reject agent impersonation and rotate the one-shot gate ID.
 	deadline := time.Now().Add(3 * time.Second)
-	var afterAgent mygoshell.BackendHigherOrderSnapshot
+	var afterAgent mygoshell.BackendGovernanceSnapshot
 	for time.Now().Before(deadline) {
 		afterAgent, err = govAuth.Hydrate(ctx)
 		if err == nil && afterAgent.RearmGateID != "" && afterAgent.RearmGateID != afterForgery.RearmGateID {
@@ -569,6 +569,132 @@ func TestLiveCrossProcessGovernanceSurvivesOSRestartE2E(t *testing.T) {
 		}
 	default:
 		t.Fatalf("unknown MARLIN_SCHEME_HOST_RESTART_PHASE=%q", phase)
+	}
+}
+
+// TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E proves live dynamic runtime
+// governance fact mutations against a running `marlin-scheme-host-aot` (or
+// `marlin-scheme-host`) booted in `clean` mode:
+//  1. Live multi-hop AI delegation chain (`ops-lead -> agent-planner -> agent-coder -> agent-shell`);
+//  2. Live revocation of `ops-lead` -> real Linked-AOT Scheme ASCENT transitive closure
+//     fences all 3 downstream agents & synthesizes 3 Cedar `forbid` policies;
+//  3. Live 5-scope shared-context exfiltration (`payroll-csv` private -> `public-webhook` external)
+//     -> real ASCENT scope-escalation rejects admission & auto-trips breaker fail-closed;
+//  4. Explicit declassification (`payroll-csv`) + verified human RFC 9470 Step-Up Re-Arm
+//     advances `BreakerTripEpoch` while keeping revoked downstream agents fenced;
+//  5. Live Bi-Temporal premise retraction (`human-session-alice`) -> Truth Maintenance
+//     computes blast radius (`D-OBO-TICKET`, `D-TOOL-EXEC`) and auto-trips breaker again.
+func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
+	addr := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_DYNAMIC_ADDR"))
+	if addr == "" {
+		t.Skip("set MARLIN_SCHEME_HOST_DYNAMIC_ADDR to run live dynamic runtime governance E2E")
+	}
+	token := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_TOKEN"))
+	authHeader := ""
+	if token != "" {
+		authHeader = "Bearer " + token
+	}
+	target, err := grpcwire.Dial(grpcwire.DialConfig{
+		ID:          "live-scheme-host-dynamic",
+		DisplayName: "Live Linked-AOT Dynamic Governance Host",
+		Mode:        transport.ModeLocalSidecar,
+		Address:     addr,
+		AuthToken:   authHeader,
+	})
+	if err != nil {
+		t.Fatalf("Dial dynamic governance host %s: %v", addr, err)
+	}
+	defer target.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	govAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
+		Target:    target,
+		ProjectID: "default",
+		SessionID: "e2e-dynamic-events",
+		Timeout:   10 * time.Second,
+	})
+
+	// 0. Boot clean -> armed & zero fences.
+	s0, err := govAuth.Hydrate(ctx)
+	if err != nil {
+		t.Fatalf("Hydrate clean boot: %v", err)
+	}
+	if !s0.Admitted || s0.BreakerTripped || len(s0.FencedActors) != 0 {
+		t.Fatalf("expected clean armed boot, got %+v", s0)
+	}
+
+	// 1. Live 3-hop delegation chain: ops-lead -> agent-planner -> agent-coder -> agent-shell.
+	for _, edge := range [][2]string{
+		{"ops-lead", "agent-planner"},
+		{"agent-planner", "agent-coder"},
+		{"agent-coder", "agent-shell"},
+	} {
+		s, err := govAuth.DelegateActor(edge[0], edge[1])
+		if err != nil {
+			t.Fatalf("DelegateActor(%s -> %s): %v", edge[0], edge[1], err)
+		}
+		if !s.Admitted || s.BreakerTripped {
+			t.Fatalf("clean delegation should remain admitted, got %+v", s)
+		}
+	}
+
+	// 2. Live revocation of ops-lead -> ASCENT transitive closure fences ALL 3 downstream agents + Cedar forbids!
+	revSnap, err := govAuth.RevokeActor("ops-lead")
+	if err != nil {
+		t.Fatalf("RevokeActor(ops-lead): %v", err)
+	}
+	for _, expected := range []string{"agent-planner", "agent-coder", "agent-shell"} {
+		if !containsString(revSnap.FencedActors, expected) {
+			t.Fatalf("expected ASCENT transitive closure to fence %q, got %v", expected, revSnap.FencedActors)
+		}
+	}
+	if len(revSnap.SynthesizedCedarRules) < 3 {
+		t.Fatalf("expected >= 3 synthesized Cedar forbid rules for fenced chain, got %+v", revSnap.SynthesizedCedarRules)
+	}
+
+	// 3. Live 5-scope shared-context exfiltration: private -> external auto-trips breaker!
+	exfilSnap, err := govAuth.RecordContextFlow("payroll-csv", "private", "public-webhook", "external")
+	if err != nil {
+		t.Fatalf("RecordContextFlow: %v", err)
+	}
+	if exfilSnap.Admitted || !exfilSnap.BreakerTripped {
+		t.Fatalf("expected private->external flow without declassification to trip breaker fail-closed, got %+v", exfilSnap)
+	}
+	if !strings.HasPrefix(exfilSnap.RearmGateID, grpcwire.GovernanceRearmGatePrefix) {
+		t.Fatalf("expected one-shot re-arm gate after scope-escalation trip, got %q", exfilSnap.RearmGateID)
+	}
+
+	// 4. Live explicit declassification + verified human RFC 9470 Step-Up Re-Arm!
+	declSnap, err := govAuth.DeclassifyContext("payroll-csv")
+	if err != nil {
+		t.Fatalf("DeclassifyContext: %v", err)
+	}
+	if !declSnap.BreakerTripped {
+		t.Fatalf("expected breaker to stay latched until human step-up re-arm, got %+v", declSnap)
+	}
+	rearmed, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true)
+	if err != nil {
+		t.Fatalf("RearmBackendBreakerWithStepUp: %v", err)
+	}
+	if rearmed.BreakerTripped || rearmed.BreakerTripEpoch != 2 {
+		t.Fatalf("expected re-armed breaker at epoch 2, got %+v", rearmed)
+	}
+	if !containsString(rearmed.FencedActors, "agent-shell") {
+		t.Fatalf("expected revoked agent-shell to remain fenced after breaker re-arm, got %v", rearmed.FencedActors)
+	}
+
+	// 5. Live Bi-Temporal premise retraction -> Truth Maintenance invalidates D-OBO-TICKET & D-TOOL-EXEC!
+	tmSnap, err := govAuth.RetractPremise("human-session-alice")
+	if err != nil {
+		t.Fatalf("RetractPremise: %v", err)
+	}
+	if tmSnap.Admitted || !tmSnap.BreakerTripped {
+		t.Fatalf("expected bi-temporal premise retraction to auto-trip breaker, got %+v", tmSnap)
+	}
+	if !containsString(tmSnap.RetractedConclusions, "D-OBO-TICKET") || !containsString(tmSnap.RetractedConclusions, "D-TOOL-EXEC") {
+		t.Fatalf("expected Truth Maintenance reverse-dependency blast radius, got %v", tmSnap.RetractedConclusions)
 	}
 }
 

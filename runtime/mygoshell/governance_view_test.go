@@ -236,13 +236,13 @@ func TestTier0GovernanceConsoleEStopBreakerAndSharedContextScopes(t *testing.T) 
 	}
 }
 
-func TestTier0GovernanceConsoleBackendHigherOrderAuthorityAndStepUpRearm(t *testing.T) {
+func TestTier0GovernanceConsoleBackendAuthorityAndStepUpRearm(t *testing.T) {
 	targets := transport.NewTargetRegistry()
 	slots := shell.NewSlotRegistry()
 	wb := shell.NewWorkbenchController(slots)
 	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
 
-	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendHigherOrderSnapshot{
+	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
 		Admitted:             false,
 		RevocationEpoch:      2,
 		PolicyRevision:       1,
@@ -265,7 +265,7 @@ func TestTier0GovernanceConsoleBackendHigherOrderAuthorityAndStepUpRearm(t *test
 	tt := ui.NewTester(app.View, 1280, 860)
 	tt.Frame()
 	for _, want := range []string{
-		"RUST + SCHEME HIGHER-ORDER GOVERNANCE AUTHORITY",
+		"RUST + SCHEME GOVERNANCE AUTHORITY",
 		"BACKEND FAIL-CLOSED",
 		"Proof Epoch: 2",
 		"ASCENT Fenced: agent-sub",

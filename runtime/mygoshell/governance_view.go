@@ -53,7 +53,7 @@ func (g *GovernanceController) AttachSecurityControls(
 	g.mu.Unlock()
 }
 
-// AttachBackendAuthority binds the authoritative Rust+Scheme Higher-Order Governance
+// AttachBackendAuthority binds the authoritative Rust+Scheme Governance Authority
 // control plane (`marlin-agent-core`) so this UI console surfaces live ASCENT fenced
 // actors, Bi-Temporal Truth Maintenance retractions, synthesized Cedar forbid rules,
 // and RFC 9470 step-up E-Stop re-arm.
@@ -122,6 +122,8 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 		verifyStepUp  bool
 		backendTrip   bool
 		backendRearm  bool
+		evalIncident  bool
+		evalClean     bool
 		nextFilter    = filter
 	)
 
@@ -157,12 +159,12 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 			ui.Text(c, lastErr).FontSize(11.5).FontWeight(600).TextColor(toColor(dt.Danger))
 		}
 
-		// Authoritative Rust + Gerbil Scheme Higher-Order Governance Control Plane.
+		// Authoritative Rust + Gerbil Scheme Governance Authority Control Plane.
 		if backendAuth != nil {
 			bsnap := backendAuth.Snapshot()
 			AppleGlassCard(c, "gov-backend-ho-card", dt, 12, 10, 6, func() {
 				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Text(c, "RUST + SCHEME HIGHER-ORDER GOVERNANCE AUTHORITY").
+					ui.Text(c, "RUST + SCHEME GOVERNANCE AUTHORITY").
 						FontSize(10.5).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
 					if bsnap.Admitted && !bsnap.BreakerTripped {
 						AppleBadgePill(c, "BACKEND ADMITTED", dt.Success, dt)
@@ -226,6 +228,20 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 					}
 					ui.Text(c, strings.Join(metaParts, " · ")).
 						FontSize(10.5).TextColor(toColor(dt.InkMuted))
+				}
+				if digests := formatProofDigestSummary(bsnap); digests != "" {
+					ui.Text(c, "Proof Digests: "+digests).
+						FontSize(10.5).TextColor(toColor(dt.InkMuted))
+				}
+				if _, ok := backendAuth.(BackendGovernanceMutator); ok {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						if ApplePillButton(c, "gov-scheme-eval-incident", "Eval Incident", BtnGlass, dt, nil, true).Clicked() {
+							evalIncident = true
+						}
+						if ApplePillButton(c, "gov-scheme-eval-clean", "Eval Clean", BtnGlass, dt, nil, true).Clicked() {
+							evalClean = true
+						}
+					})
 				}
 			})
 		}
@@ -421,6 +437,34 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 			}
 		}
 	}
+	if mut, ok := backendAuth.(BackendGovernanceMutator); ok {
+		if evalIncident {
+			snap, err := mut.RunIncidentEval()
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", "scheme.governance", "eval-incident", features.AuditAdmitted, fmt.Sprintf("rev-%d", snap.PolicyRevision))
+			}
+		}
+		if evalClean {
+			snap, err := mut.RunCleanEval()
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", "scheme.governance", "eval-clean", features.AuditAdmitted, fmt.Sprintf("rev-%d", snap.PolicyRevision))
+			}
+		}
+	}
 
 	if tripEStop && breaker != nil {
 		breaker.Trip("human-console", "manual Tier-0 Governance Console E-Stop")
@@ -483,4 +527,30 @@ func matchesAuditFilter(outcome features.AuditOutcome, filter string) bool {
 	default:
 		return true
 	}
+}
+
+func formatProofDigestSummary(snap BackendGovernanceSnapshot) string {
+	short := func(label, digest string) string {
+		d := strings.TrimSpace(digest)
+		if d == "" {
+			return ""
+		}
+		if len(d) > 15 {
+			d = d[:15] + "…"
+		}
+		return label + "=" + d
+	}
+	parts := make([]string, 0, 5)
+	for _, entry := range []struct{ label, val string }{
+		{"assess", snap.AssessmentDigest},
+		{"ascent", snap.FixpointProofDigest},
+		{"taint", snap.TaintProofDigest},
+		{"temporal", snap.TemporalProofDigest},
+		{"tm", snap.InvalidationDigest},
+	} {
+		if s := short(entry.label, entry.val); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, " · ")
 }
