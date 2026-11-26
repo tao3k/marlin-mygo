@@ -68,6 +68,36 @@ type governanceInspectorActions struct {
 	runAddTaintEdge bool
 }
 
+// StatusPillAppearance computes the ambient Studio status-bar and sidebar-dock
+// governance pill label, visual severity, and fail-closed flag directly from the
+// authoritative Rust+Scheme backend snapshot and local ExecutionBreaker.
+func (g *GovernanceController) StatusPillAppearance() (label string, variant AppleButtonVariant, failClosed bool) {
+	if g == nil {
+		return "Gov", BtnGlass, false
+	}
+	g.mu.RLock()
+	breaker := g.Breaker
+	auth := g.BackendAuthority
+	g.mu.RUnlock()
+
+	if breaker != nil {
+		if tripped, _, _, _ := breaker.State(); tripped {
+			return "Gov · FAIL-CLOSED", BtnDestructive, true
+		}
+	}
+	if auth != nil {
+		snap := auth.Snapshot()
+		if snap.BreakerTripped || !snap.Admitted || len(snap.RetractedConclusions) > 0 {
+			return "Gov · FAIL-CLOSED", BtnDestructive, true
+		}
+		if len(snap.FencedActors) > 0 {
+			return "Gov · FENCED", BtnTinted, false
+		}
+		return "Gov · LIVE", BtnSuccess, false
+	}
+	return "Gov", BtnGlass, false
+}
+
 // SetShowCedarInspector toggles the expandable Cedar Policy Source Inspector &
 // Interactive Fact-Graph Builder drawer inside the Tier-0 Governance Console.
 func (g *GovernanceController) SetShowCedarInspector(show bool) {

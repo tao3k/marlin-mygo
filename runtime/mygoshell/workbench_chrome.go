@@ -70,7 +70,8 @@ func (a *WorkbenchApp) renderStatusBar(c *ui.Context, t *ui.Theme, dt DerivedThe
 			}
 		}
 		if a.GovernanceUI != nil {
-			if ApplePillButton(c, "status-governance", "Gov", BtnGlass, dt, svgIconShield, true).Clicked() {
+			govLbl, govVar, _ := a.GovernanceUI.StatusPillAppearance()
+			if ApplePillButton(c, "status-governance", govLbl, govVar, dt, svgIconShield, true).Clicked() {
 				a.OpenGovernance()
 			}
 		}

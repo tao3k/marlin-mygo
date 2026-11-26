@@ -601,3 +601,56 @@ func TestTier0GovernanceConsoleInteractiveContextFlowDerivationAndTaintBuilders(
 		t.Fatalf("expected immutable audit trail receipts for all interactive builders, got %d", len(ledger.AuditTrail()))
 	}
 }
+
+func TestWorkbenchChromeGovernanceAmbientStatusPillTransitions(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), features.NewGovernanceLedger(features.DefaultGovernancePolicy()), features.NewHost())
+	app.GovernanceUI = govUI
+
+	tt := ui.NewTester(app.View, 1280, 820)
+
+	// 1. Minimal local mode without backend authority -> neutral "Gov" pill.
+	tt.Frame()
+	if lbl, variant, failClosed := govUI.StatusPillAppearance(); lbl != "Gov" || variant != mygoshell.BtnGlass || failClosed {
+		t.Fatalf("expected neutral Gov pill, got lbl=%q variant=%v failClosed=%v", lbl, variant, failClosed)
+	}
+
+	// 2. Armed Rust+Scheme backend attached -> ambient "Gov · LIVE" status pill.
+	bridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendGovernanceSnapshot{
+		Admitted:         true,
+		RevocationEpoch:  1,
+		PolicyRevision:   1,
+		BreakerTripEpoch: 1,
+	})
+	govUI.AttachBackendAuthority(bridge)
+	tt.Frame()
+	if !tt.HasText("Gov · LIVE") {
+		t.Fatalf("expected Studio chrome to render Gov · LIVE, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 3. Active ASCENT fence while breaker armed -> "Gov · FENCED" pill.
+	_, _ = bridge.DelegateActor("ops-root", "agent-worker")
+	_, _ = bridge.RevokeActor("ops-root")
+	tt.Frame()
+	if !tt.HasText("Gov · FENCED") {
+		t.Fatalf("expected Studio chrome to render Gov · FENCED, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// 4. Backend E-Stop trip -> destructive "Gov · FAIL-CLOSED" pill; clicking opens Governance Console directly!
+	_, _ = bridge.TripBackendBreaker("ops-alice", "exfil detected")
+	tt.Frame()
+	if !tt.HasText("Gov · FAIL-CLOSED") {
+		t.Fatalf("expected Studio chrome to render Gov · FAIL-CLOSED, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Gov · FAIL-CLOSED"); err != nil {
+		t.Fatalf("click Gov · FAIL-CLOSED pill: %v", err)
+	}
+	tt.Frame()
+	if !app.IsGovernanceOpen() || !tt.HasText("Step-Up Backend Re-Arm") {
+		t.Fatalf("expected clicking Gov · FAIL-CLOSED pill to jump directly to Governance Console Step-Up Re-Arm, open=%v texts=%q", app.IsGovernanceOpen(), strings.Join(tt.Texts(), " | "))
+	}
+}

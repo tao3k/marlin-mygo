@@ -73,6 +73,7 @@ func TestLiveGPUConsoleDrivesRealSchemeHostAOTProcessE2E(t *testing.T) {
 	tt := ui.NewTester(app.View, 1280, 1280)
 	tt.Frame()
 	for _, want := range []string{
+		"Gov · LIVE",
 		"RUST + SCHEME GOVERNANCE AUTHORITY",
 		"BACKEND ADMITTED",
 		"Proof Digests: assess=sha256:",
@@ -142,7 +143,7 @@ func TestLiveGPUConsoleDrivesRealSchemeHostAOTProcessE2E(t *testing.T) {
 		t.Fatalf("click Record Flow: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("Flows: 1") || !tt.HasText("BACKEND FAIL-CLOSED") ||
+	if !tt.HasText("Flows: 1") || !tt.HasText("BACKEND FAIL-CLOSED") || !tt.HasText("Gov · FAIL-CLOSED") ||
 		!tt.HasText("marlin.ascent.forbid.exfil.gpu-secret.ext-gpu-hook") ||
 		!tt.HasText("marlin.ascent.forbid.scope.external-unless-declassified") {
 		t.Fatalf("expected real Scheme ASCENT exfil + external-scope unless Cedar forbids + fail-closed state, got %q", strings.Join(tt.Texts(), " | "))
@@ -234,8 +235,8 @@ func TestLiveGPUConsoleDrivesRealSchemeHostAOTProcessE2E(t *testing.T) {
 	if finalSnap.BreakerTripped || !finalSnap.Admitted || finalSnap.BreakerTripEpoch < 2 {
 		t.Fatalf("expected real AOT breaker disarmed and epoch >= 2 after verified step-up, got %+v", finalSnap)
 	}
-	if !tt.HasText("BACKEND ADMITTED") {
-		t.Fatalf("expected BACKEND ADMITTED restored in GPU UI after step-up re-arm, got %q", strings.Join(tt.Texts(), " | "))
+	if !tt.HasText("BACKEND ADMITTED") || !tt.HasText("Gov · LIVE") {
+		t.Fatalf("expected BACKEND ADMITTED and Gov · LIVE restored in GPU UI after step-up re-arm, got %q", strings.Join(tt.Texts(), " | "))
 	}
 	if len(ledger.AuditTrail()) < 9 {
 		t.Fatalf("expected >= 9 immutable GPU governance audit receipts, got %d", len(ledger.AuditTrail()))

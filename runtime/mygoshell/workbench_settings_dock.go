@@ -150,8 +150,13 @@ func (a *WorkbenchApp) renderSidebarFooterDock(c *ui.Context, dt DerivedTheme) {
 				a.OpenSettings()
 			}
 			if a.GovernanceUI != nil {
-				if ApplePillButton(c, "sidebar-open-governance", "Gov", BtnGlass, dt, svgIconShield, true).Clicked() {
-					a.OpenSettingsTab(SettingsTabGovernance)
+				govLbl, govVar, govFailClosed := a.GovernanceUI.StatusPillAppearance()
+				if ApplePillButton(c, "sidebar-open-governance", govLbl, govVar, dt, svgIconShield, true).Clicked() {
+					if govFailClosed {
+						a.OpenGovernance()
+					} else {
+						a.OpenSettingsTab(SettingsTabGovernance)
+					}
 				}
 			}
 		})
