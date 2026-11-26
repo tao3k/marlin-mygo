@@ -141,6 +141,7 @@ func main() {
 	adaptive.Desktop.Transcript.AppendUser("Inspect unified layout, stacked tabs, multimodal composer, and theme tokens on Web deploy.")
 	webContinuity := initWebDurableContinuity(adaptive)
 	wireWebFeaturesAndGovernance(adaptive, webContinuity.onDraftChanged)
+	mygoshell.BindDefaultHelmSources(adaptive.Desktop, nil)
 	adaptive.Desktop.Transcript.SetContextUsage(0, 200_000)
 	_, _ = adaptive.Desktop.Transcript.AttachFile(composer.AttachmentInput{
 		Filename: "adaptive_shell.go",

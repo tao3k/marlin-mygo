@@ -160,6 +160,10 @@ func attachWebBrowserContinuityEvents(
 			ev.Call("preventDefault")
 			adaptive.Desktop.OpenCommandPalette()
 			invalidate()
+		case key == "p":
+			ev.Call("preventDefault")
+			adaptive.Desktop.OpenHelmSearch()
+			invalidate()
 		case key == "f":
 			ev.Call("preventDefault")
 			if adaptive.Desktop.Transcript != nil {

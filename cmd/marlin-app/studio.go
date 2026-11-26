@@ -184,6 +184,7 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 		stopVoiceCapture = wireNativeVoiceCapture(ctx, transcript, notifyCenter, win)
 		stopContinuity = wireDurableContinuity(ctx, cfg.sessionID, app, transcript, switcher, notifyCenter, win)
 		wireFeaturesAndGovernance(cfg, app, notifyCenter, win)
+		mygoshell.BindDefaultHelmSources(app, nil)
 		transcript.OnSlashCommand = func(cmd composer.SlashCommand) {
 			switch cmd.ActionID {
 			case "studio.open-auth":

@@ -30,6 +30,7 @@ type HelmMinibufferController struct {
 	rowScratch  []search.VisibleRow
 	srcScratch  []search.SourceSummary
 	actScratch  []search.Candidate
+	spanScratch []search.HighlightSpan
 
 	// Thin backend/host hooks (Rust search engine streams batches into Engine.IngestBatch).
 	OnQueryChanged   func(gen uint64, query string)
@@ -118,6 +119,21 @@ func (h *HelmMinibufferController) Render(
 		runAction      search.TargetAction
 		closeNow       bool
 	)
+
+	// Direct Emacs / Helm keyboard shortcuts (C-n/C-p/Arrows, C-o next source, TAB mark, Enter/Cmd+Enter).
+	if c.Shortcut(ui.Ctrl, ui.KeyN) || c.Shortcut(0, ui.KeyDown) {
+		moveDelta = +1
+	} else if c.Shortcut(ui.Ctrl, ui.KeyP) || c.Shortcut(0, ui.KeyUp) {
+		moveDelta = -1
+	} else if c.Shortcut(ui.Ctrl, ui.KeyO) {
+		jumpSrcDelta = +1
+	} else if c.Shortcut(0, ui.KeyTab) {
+		toggleMarkNow = true
+	} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
+		runAction = search.ActionOpenSplitRight
+	} else if c.Shortcut(0, ui.KeyEnter) {
+		runAction = search.ActionOpenInFocused
+	}
 
 	showSplitPreview := previewOpen && (viewportW == 0 || viewportW >= 820)
 	deckW := float32(780)
@@ -226,7 +242,20 @@ func (h *HelmMinibufferController) Render(
 							if r.Marked {
 								AppleBadgePill(c, "[x]", dt.Warning, dt)
 							}
-							ui.Text(c, r.Candidate.Title).FontSize(12.5).FontWeight(600).TextColor(toColor(dt.Ink)).MaxLines(1)
+							if r.Candidate.MatchMask != 0 {
+								h.spanScratch = search.SplitHighlightSpans(r.Candidate.Title, r.Candidate.MatchMask, h.spanScratch)
+								ui.Row(c).AlignItems(ui.Center).Children(func() {
+									for _, sp := range h.spanScratch {
+										if sp.Matched {
+											ui.Text(c, sp.Text).FontSize(12.5).FontWeight(800).TextColor(toColor(dt.Accent))
+										} else {
+											ui.Text(c, sp.Text).FontSize(12.5).FontWeight(600).TextColor(toColor(dt.Ink))
+										}
+									}
+								})
+							} else {
+								ui.Text(c, r.Candidate.Title).FontSize(12.5).FontWeight(600).TextColor(toColor(dt.Ink)).MaxLines(1)
+							}
 							ui.Spacer(c)
 							if r.Candidate.Location != "" {
 								ui.Text(c, r.Candidate.Location).FontSize(10.5).TextColor(toColor(dt.InkMuted)).MaxLines(1)

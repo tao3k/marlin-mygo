@@ -113,3 +113,31 @@ func TestHelmMinibuffer100kHitsSPCSSDockModeMarkAndNonDestructiveSplit(t *testin
 		t.Fatalf("expected Split Right to add 1 pane, before=%d after=%d", beforeLeaves, app.Windows.Snapshot().LeafCount)
 	}
 }
+
+func TestHelmLiveDefaultSourcesMatchMaskAndFollowPreview(t *testing.T) {
+	proj := mygoshell.NewProjectionController(mygoshell.ProjectionSnapshot{
+		DiffFiles: []mygoshell.WorkspaceDiffFileView{
+			{Path: "engine/search/helm_stream.go", Status: "added", Additions: 772, HunkLines: []string{"+func (e *HelmEngine) VisibleWindow()"}},
+		},
+		GraphNodes: []mygoshell.GraphNodeReceiptView{
+			{NodeID: "node-helm-admit", Kind: "readiness-gate", Phase: "succeeded", DurationMS: 2, ReceiptID: "rcpt-helm", Summary: "Helm live source ready"},
+		},
+	})
+	as := mygoshell.NewAdaptiveShell(mygoshell.AdaptiveShellConfig{
+		BrandTitle: "Marlin",
+		Projection: proj,
+	})
+	app := as.Desktop
+	app.Transcript.AppendUser("Inspect helm_stream.go performance budget")
+	mygoshell.BindDefaultHelmSources(app, nil)
+	app.OpenHelmSearch()
+	app.HelmSearch.SetQuery("helm")
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	tt.Frame()
+	for _, want := range []string{"WORKSPACE FILES", "GRAPH & PROCS", "TRANSCRIPT", "LIVE PREVIEW"} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected live multi-source Helm view to render %q, got %q", want, strings.Join(tt.Texts(), " | "))
+		}
+	}
+}
