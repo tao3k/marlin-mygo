@@ -5,6 +5,9 @@
   "license": "Apache-2.0 OR LGPL-2.1-or-later",
   "type": "module",
   "main": "./src/index.ts",
+  "bin": {
+    "marlin-ui-kit": "./bin/marlin-ui-kit.mjs"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./jsx-runtime": "./src/jsx-runtime.ts",

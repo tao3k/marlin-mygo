@@ -245,6 +245,7 @@ func WorkflowStudioHTML(pal Palette) string {
   <div class="hud">
     <button class="pill" id="btn-add">+ Node</button>
     <button class="pill" id="btn-step">Step</button>
+    <button class="pill" id="btn-save">Sync</button>
     <button class="pill" id="btn-reset">Reset</button>
   </div>
   <svg id="canvas" viewBox="0 0 920 460" preserveAspectRatio="xMidYMid meet">
@@ -362,10 +363,27 @@ document.getElementById("btn-step").addEventListener("click", () => {
   activeEdgeIdx = (activeEdgeIdx + 1) %% Math.max(1, edges.length);
   render();
 });
+async function syncGraphToHost() {
+  const payload = JSON.stringify({ schemaVersion: "marlin.workflow.graph.v1", nodes, edges });
+  const rpc = window.mygo && window.mygo.call;
+  if (typeof rpc === "function") {
+    try {
+      const ack = await rpc("WorkflowBridge.SaveGraph", payload);
+      inspector.innerHTML = "<h4>Synced to Marlin Host</h4><p>" + String(ack || "Graph saved") + "</p>";
+      return;
+    } catch (e) {
+      inspector.innerHTML = "<h4>Sync Warning</h4><p>" + String(e) + "</p>";
+      return;
+    }
+  }
+  inspector.innerHTML = "<h4>Graph Snapshot Ready</h4><p>" + nodes.length + " nodes · " + edges.length + " edges (local sandbox)</p>";
+}
+document.getElementById("btn-save").addEventListener("click", () => { syncGraphToHost(); });
 window.addEventListener("marlin:action", (ev) => {
   const act = ev.detail && ev.detail.event;
   if (act === "add-node") document.getElementById("btn-add").click();
   else if (act === "step") document.getElementById("btn-step").click();
+  else if (act === "save") syncGraphToHost();
   else if (act === "reset") document.getElementById("btn-reset").click();
 });
 render();
