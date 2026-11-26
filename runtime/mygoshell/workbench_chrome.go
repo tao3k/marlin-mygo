@@ -381,12 +381,9 @@ func (a *WorkbenchApp) renderTopBar(c *ui.Context, t *ui.Theme, snap *schema.UIW
 				a.gateOpen = false
 			}
 		}
-		if a.SettingsSchema != nil && a.SettingsState != nil && a.OnCycleTheme == nil {
+		if a.SettingsSchema != nil && a.SettingsState != nil && (a.IsSidebarCollapsed() || a.OnCycleTheme == nil) {
 			if ApplePillButton(c, "open-settings", "Settings", BtnGlass, a.cachedDerivedTheme, nil, true).Clicked() {
-				a.settingsOpen = true
-				a.paletteOpen = false
-				a.marketplaceOpen = false
-				a.gateOpen = false
+				a.OpenSettings()
 			}
 		}
 		if a.Marketplace != nil {

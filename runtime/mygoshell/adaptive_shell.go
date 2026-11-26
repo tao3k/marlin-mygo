@@ -94,6 +94,37 @@ func (a *AdaptiveShell) SetFeatureHost(host *features.Host, govUI *GovernanceCon
 	}
 }
 
+// SetAuth attaches a Tier-0 AuthController simultaneously to Desktop and Mobile.
+func (a *AdaptiveShell) SetAuth(auth *AuthController) {
+	if a == nil {
+		return
+	}
+	if a.Desktop != nil {
+		a.Desktop.Auth = auth
+	}
+	if a.Mobile != nil {
+		a.Mobile.Auth = auth
+	}
+}
+
+// SetSettings attaches a typed BoundedSchema settings form and save callback
+// simultaneously to Desktop (bottom-left dock + Cmd+,) and Mobile.
+func (a *AdaptiveShell) SetSettings(spec *schema.BoundedSchema, state *SchemaFormState, onSave func(values map[string]any)) {
+	if a == nil {
+		return
+	}
+	if a.Desktop != nil {
+		a.Desktop.SettingsSchema = spec
+		a.Desktop.SettingsState = state
+		a.Desktop.OnSaveSettings = onSave
+	}
+	if a.Mobile != nil {
+		a.Mobile.SettingsSchema = spec
+		a.Mobile.SettingsState = state
+		a.Mobile.OnSaveSettings = onSave
+	}
+}
+
 // NewAdaptiveShell constructs a complete 4-target Marlin shell sharing one
 // TranscriptController, ProjectionController, WindowTree, and 5-theme engine.
 func NewAdaptiveShell(cfg AdaptiveShellConfig) *AdaptiveShell {

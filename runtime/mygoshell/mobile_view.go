@@ -135,6 +135,9 @@ type MobileCompanionApp struct {
 	HelmSearch        *HelmMinibufferController
 	Windows           *shell.WindowTree
 	Auth              *AuthController
+	SettingsSchema    *schema.BoundedSchema
+	SettingsState     *SchemaFormState
+	OnSaveSettings    func(values map[string]any)
 	OnSendPrompt      func(prompt string)
 	OnCancelTurn      func()
 	OnGateDecision    func(gateID string, approve bool)
@@ -147,6 +150,7 @@ type MobileCompanionApp struct {
 	LastStatusLine    string
 	mu                sync.Mutex
 	authOpen          bool
+	settingsOpen      bool
 	helmOpen          bool
 	activeFeatureID   string
 	bridgeDescriptors []device.CapabilityDescriptor
@@ -542,6 +546,7 @@ func (m *MobileCompanionApp) View(c *ui.Context) {
 			})
 		})
 	}
+	m.renderMobileSettingsModal(c, t, dt)
 	if m.Transcript != nil {
 		if att, open := m.Transcript.PreviewedAttachment(); open {
 			RenderMobileAttachmentSheet(c, dt, att, m.Transcript.CachedThumbnail(att.SHA256Hex), m.Transcript.OnCopyCode, func() {

@@ -134,6 +134,7 @@ type WorkbenchApp struct {
 	activityOpen       bool
 	keymapOpen         bool
 	settingsOpen       bool
+	settingsTab        SettingsTab
 	projectionOpen     bool
 	federationOpen     bool
 	governanceOpen     bool
@@ -486,14 +487,11 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 			a.gateOpen = false
 		}
 	}
-	if a.SettingsSchema != nil && a.SettingsState != nil && c.Shortcut(ui.Cmd, ui.KeyComma) {
-		a.settingsOpen = !a.settingsOpen
+	if a.hasAnySettingsSection() && c.Shortcut(ui.Cmd, ui.KeyComma) {
 		if a.settingsOpen {
-			a.paletteOpen = false
-			a.marketplaceOpen = false
-			a.projectionOpen = false
-			a.addRemoteOpen = false
-			a.gateOpen = false
+			a.settingsOpen = false
+		} else {
+			a.OpenSettings()
 		}
 	}
 	if a.Projection != nil && c.Shortcut(ui.Cmd, ui.KeyI) {
@@ -632,6 +630,7 @@ func (a *WorkbenchApp) View(c *ui.Context) {
 						a.OnTogglePlugin()
 					}
 				}
+				a.renderSidebarFooterDock(c, dt)
 			})
 		}
 

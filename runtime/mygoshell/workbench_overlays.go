@@ -179,21 +179,7 @@ func (a *WorkbenchApp) renderOverlays(c *ui.Context, t *ui.Theme) {
 		})
 	}
 
-	if a.SettingsSchema != nil && a.SettingsState != nil {
-		ui.Modal(c, &a.settingsOpen, func() {
-			RenderBoundedForm(c, *a.SettingsSchema, a.SettingsState, func(vals map[string]any) {
-				if a.OnSaveSettings != nil {
-					a.OnSaveSettings(vals)
-				}
-				a.settingsOpen = false
-			})
-			ui.Row(c).Justify(ui.End).Children(func() {
-				if ApplePillButton(c, "close-settings", "Close", BtnGlass, dt, svgIconXMark, true).Clicked() {
-					a.settingsOpen = false
-				}
-			})
-		})
-	}
+	a.renderSettingsModal(c, t, dt)
 
 	if a.Projection != nil {
 		ui.Modal(c, &a.projectionOpen, func() {
