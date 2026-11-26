@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -643,14 +644,19 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 		}
 	}
 
+	budgetRaw := parseU64("breaker_budget_used")
+	budgetClamped := uint32(min(budgetRaw, uint64(math.MaxUint32)))
+	leasesRaw := parseU64("breaker_active_leases")
+	leasesClamped := int(min(leasesRaw, uint64(math.MaxInt32)))
+
 	return mygoshell.BackendGovernanceSnapshot{
 		Admitted:                parseBool("admitted"),
 		RevocationEpoch:         parseU64("revocation_epoch"),
 		PolicyRevision:          parseU64("policy_revision"),
 		BreakerTripped:          parseBool("breaker_tripped"),
 		BreakerTripEpoch:        parseU64("breaker_trip_epoch"),
-		BreakerBudgetUsed:       uint32(parseU64("breaker_budget_used")),
-		BreakerActiveLeases:     int(parseU64("breaker_active_leases")),
+		BreakerBudgetUsed:       budgetClamped,
+		BreakerActiveLeases:     leasesClamped,
 		RearmGateID:             strings.TrimSpace(facets["rearm_gate_id"]),
 		LastEventNote:           strings.TrimSpace(facets["last_event_note"]),
 		AssessmentDigest:        strings.TrimSpace(facets["assessment_digest"]),

@@ -176,6 +176,7 @@ fuzz-smoke time="2s":
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeIRJSON -fuzztime={{time}} ./engine/richtext
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeRecoverySnapshot -fuzztime={{time}} ./engine/resilience
     CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzHelmIngestAndNavigate -fuzztime={{time}} ./engine/search
+    CGO_ENABLED=0 go test -run='^$' -fuzz=FuzzDecodeGovernanceSnapshotFromFacets -fuzztime={{time}} ./control/grpcwire
 
 # Run TypeScript panel SDK checks and tests via Bun.
 test-ts:
