@@ -80,57 +80,91 @@ func (o itfOptionInt) Int64() (int64, bool) {
 	return bi.Int64(), true
 }
 
-func resolveDEModelAndCLI(t *testing.T, relModelPath string) (bunBin, cliPath, modelPath string) {
+func resolveResolverCLI(t *testing.T) (bunBin, cliPath, repoRoot string) {
 	t.Helper()
 	var err error
 	bunBin, err = exec.LookPath("bun")
 	if err != nil {
 		t.Skip("bun not on PATH; skipping live Quint MBT trace generation")
 	}
-	repoRoot, _ := filepath.Abs("../..")
-	deRoot := "/Users/guangtao/ghq/github.com/hardenedlinux/deterministic-engineering-qnt"
-
-	cliPath = filepath.Join(deRoot, "packages/quint-modules-resolver/src/cli.ts")
+	repoRoot, err = filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	if localDE := strings.TrimSpace(os.Getenv("DE_LOCAL_ROOT")); localDE != "" {
+		candidate := filepath.Join(localDE, "packages/quint-modules-resolver/src/cli.ts")
+		if _, err := os.Stat(candidate); err == nil {
+			return bunBin, candidate, repoRoot
+		}
+	}
+	cliPath = filepath.Join(repoRoot, "node_modules/@deterministic-engineering/quint-modules-resolver/src/cli.ts")
 	if _, err := os.Stat(cliPath); err != nil {
-		cliPath = filepath.Join(repoRoot, "node_modules/@deterministic-engineering/quint-modules-resolver/src/cli.ts")
+		t.Skipf("quint-modules-resolver cli not found at %s (run bun install)", cliPath)
 	}
-	if _, err := os.Stat(cliPath); err != nil {
-		t.Skipf("quint-modules-resolver cli not found at %s", cliPath)
-	}
+	return bunBin, cliPath, repoRoot
+}
 
-	modelPath = filepath.Join(deRoot, "packages/quint-models", relModelPath)
-	if _, err := os.Stat(modelPath); err != nil {
-		modelPath = filepath.Join(repoRoot, "node_modules/@deterministic-engineering/quint-models", relModelPath)
+func resolveDEModelAndCLI(t *testing.T, relModelPath string) (bunBin, cliPath, modelPath string) {
+	t.Helper()
+	var repoRoot string
+	bunBin, cliPath, repoRoot = resolveResolverCLI(t)
+
+	if localDE := strings.TrimSpace(os.Getenv("DE_LOCAL_ROOT")); localDE != "" {
+		candidate := filepath.Join(localDE, "packages/quint-models", relModelPath)
+		if _, err := os.Stat(candidate); err == nil {
+			return bunBin, cliPath, candidate
+		}
 	}
+	modelPath = filepath.Join(repoRoot, "node_modules/@deterministic-engineering/quint-models", relModelPath)
 	if _, err := os.Stat(modelPath); err != nil {
-		t.Skipf("Quint model not found at %s", modelPath)
+		t.Skipf("Quint model not found at %s (run bun install)", modelPath)
 	}
 	return bunBin, cliPath, modelPath
+}
+
+type mbtAuditManifest struct {
+	Module              string   `json:"module"`
+	TracesGenerated     int      `json:"tracesGenerated"`
+	DeclaredStepActions []string `json:"declaredStepActions"`
+	CoveredActions      []string `json:"coveredActions"`
+	UncoveredActions    []string `json:"uncoveredActions"`
+	ActionCoverage      float64  `json:"actionCoverage"`
+	Passed              bool     `json:"passed"`
+	TraceFiles          []string `json:"traceFiles"`
 }
 
 func generateMBTTraces(t *testing.T, bunBin, cliPath, modelPath, mainMod string, maxSteps, nTraces int) []string {
 	t.Helper()
 	tmpDir := t.TempDir()
-	itfBase := filepath.Join(tmpDir, mainMod+".itf.json")
+	repoRoot, _ := filepath.Abs("../..")
 	cmd := exec.Command(
-		bunBin, cliPath, "run", modelPath,
+		bunBin, cliPath, "mbt-audit", modelPath,
 		"--main="+mainMod,
 		"--invariant=safety",
 		"--max-steps="+strconv.Itoa(maxSteps),
 		"--max-samples=40",
 		"--n-traces="+strconv.Itoa(nTraces),
 		"--seed=7",
-		"--mbt",
-		"--out-itf="+itfBase,
+		"--min-coverage=0.8",
+		"--out-dir="+tmpDir,
+		"--json",
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("quint-modules-resolver run --mbt (%s) failed: %v\n%s", mainMod, err, string(out))
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("quint-modules-resolver mbt-audit (%s) failed: %v\n%s", mainMod, err, string(out))
 	}
-	matches, err := filepath.Glob(filepath.Join(tmpDir, "*.itf.json"))
-	if err != nil || len(matches) == 0 {
-		t.Fatalf("expected generated MBT .itf.json traces for %s in %s, got %v (err=%v)", mainMod, tmpDir, matches, err)
+	var manifest mbtAuditManifest
+	if err := json.Unmarshal(out, &manifest); err != nil {
+		t.Fatalf("parse mbt-audit JSON manifest for %s: %v\nraw:\n%s", mainMod, err, string(out))
 	}
-	return matches
+	if !manifest.Passed || len(manifest.TraceFiles) == 0 {
+		t.Fatalf("mbt-audit (%s) did not pass or produced zero traces: %+v", mainMod, manifest)
+	}
+	t.Logf("MBT-AUDIT-OK [%s] coverage=%d/%d (%.1f%%) traces=%d",
+		manifest.Module, len(manifest.CoveredActions), len(manifest.DeclaredStepActions),
+		manifest.ActionCoverage*100, manifest.TracesGenerated)
+	return manifest.TraceFiles
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,6 +1375,327 @@ func replayOneRevRecoveryTrace(t *testing.T, name string, trace revRecoveryMbtTr
 			if goSessionActive != st.H.SessionActive {
 				t.Fatalf("[%s step %d after %s] CRASH-RECOVERY REFINEMENT VIOLATION sessionActive: Go=%v Quint=%v (revoked=%v)",
 					name, i, act, goSessionActive, st.H.SessionActive, st.H.RevokeRequested)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 7. MarlinAuthOverlay.qnt (@quint-extends OAuthTokenLifecycle) ->
+//    Go AuthManager + OSProtectedVault (AES-256-GCM lock/anti-rollback) + Cedar Authorizer
+// ---------------------------------------------------------------------------
+
+type marlinOverlayState struct {
+	oauthLifecycleState
+	VaultLocked      bool      `json:"vaultLocked"`
+	CedarPolicyEpoch itfBigInt `json:"cedarPolicyEpoch"`
+	VaultRevision    itfBigInt `json:"vaultRevision"`
+	MinVaultRevision itfBigInt `json:"minVaultRevision"`
+	OidcSubBound     bool      `json:"oidcSubBound"`
+}
+
+type marlinOverlayMbtTraceState struct {
+	H           marlinOverlayState `json:"h"`
+	ActionTaken string             `json:"mbt::actionTaken"`
+	NondetPicks oauthNondetPicks   `json:"mbt::nondetPicks"`
+}
+
+type marlinOverlayMbtTrace struct {
+	Vars   []string                     `json:"vars"`
+	States []marlinOverlayMbtTraceState `json:"states"`
+}
+
+type mbtKeychainStore struct {
+	mu      sync.Mutex
+	secrets map[string][]byte
+}
+
+func (s *mbtKeychainStore) Name() string    { return "MBT In-Memory Keychain" }
+func (s *mbtKeychainStore) Available() bool { return true }
+
+func (s *mbtKeychainStore) GetSecret(_ context.Context, service, account string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.secrets[service+"/"+account]
+	if !ok {
+		return nil, ErrKeychainNotFound
+	}
+	return append([]byte(nil), v...), nil
+}
+
+func (s *mbtKeychainStore) SetSecret(_ context.Context, service, account string, secret []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.secrets == nil {
+		s.secrets = make(map[string][]byte)
+	}
+	s.secrets[service+"/"+account] = append([]byte(nil), secret...)
+	return nil
+}
+
+func (s *mbtKeychainStore) DeleteSecret(_ context.Context, service, account string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.secrets, service+"/"+account)
+	return nil
+}
+
+// lockAwareSessionVault pairs MemoryVault (for OAuth session token lifecycle)
+// with OSProtectedVault's LockableVault state so Tier-0 Cedar Authorizer fails
+// closed with ErrVaultLocked whenever OSProtectedVault is locked.
+type lockAwareSessionVault struct {
+	*MemoryVault
+	protected *OSProtectedVault
+}
+
+func (v *lockAwareSessionVault) IsLocked() bool {
+	return v.protected.IsLocked()
+}
+
+func TestMBTReplayMarlinAuthOverlayITF(t *testing.T) {
+	bunBin, cliPath, repoRoot := resolveResolverCLI(t)
+	overlayModel := filepath.Join(repoRoot, "spec/auth/MarlinAuthOverlay.qnt")
+	if _, err := os.Stat(overlayModel); err != nil {
+		t.Fatalf("MarlinAuthOverlay.qnt not found at %s: %v", overlayModel, err)
+	}
+	// Transparently expands @quint-extends without creating any .tmp/ file,
+	// enforces >= 80% action coverage across all 9 composed actions, and exports ITF traces.
+	matches := generateMBTTraces(t, bunBin, cliPath, overlayModel, "marlin_auth_composed", 20, 12)
+
+	totalSteps := 0
+	for _, tracePath := range matches {
+		raw, err := os.ReadFile(tracePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var trace marlinOverlayMbtTrace
+		if err := json.Unmarshal(raw, &trace); err != nil {
+			t.Fatalf("parse %s: %v", tracePath, err)
+		}
+		replayOneMarlinOverlayTrace(t, filepath.Base(tracePath), trace)
+		totalSteps += len(trace.States) - 1
+	}
+	t.Logf("MBT-REFINEMENT-OK [MarlinAuthOverlay] replayed %d Quint @quint-extends ITF traces (%d transitions) against Go AuthManager + OSProtectedVault + Cedar Authorizer", len(matches), totalSteps)
+}
+
+func replayOneMarlinOverlayTrace(t *testing.T, name string, trace marlinOverlayMbtTrace) {
+	t.Helper()
+	ctx := context.Background()
+	kcStore := &mbtKeychainStore{}
+	vaultPath := filepath.Join(t.TempDir(), "marlin-overlay-vault.enc")
+	rawVault, secInfo := OpenNativeVault(ctx, NativeVaultConfig{
+		Store:     kcStore,
+		Service:   "marlin-mbt-test",
+		Account:   DefaultKeychainAccount,
+		VaultPath: vaultPath,
+	})
+	osVault, ok := rawVault.(*OSProtectedVault)
+	if !ok || !secInfo.OSProtected || secInfo.Locked {
+		t.Fatalf("[%s] expected unlocked *OSProtectedVault, got %T info=%+v", name, rawVault, secInfo)
+	}
+	// Initial commit at revision 1 matches Quint init { vaultRevision: 1, minVaultRevision: 1 }.
+	if err := osVault.Store(ctx, "marlin:bootstrap", TokenSet{AccessToken: "rev-1"}); err != nil {
+		t.Fatalf("[%s] bootstrap vault Store failed: %v", name, err)
+	}
+	initialSnapshot, err := os.ReadFile(vaultPath)
+	if err != nil {
+		t.Fatalf("[%s] read initial encrypted vault snapshot: %v", name, err)
+	}
+
+	memVault := NewMemoryVault()
+	combinedVault := &lockAwareSessionVault{MemoryVault: memVault, protected: osVault}
+	ex := &mbtExchanger{
+		refreshStart:  make(chan struct{}, 4),
+		refreshResume: make(chan int64, 4),
+	}
+	mgr := NewManager(ManagerConfig{Vault: combinedVault, Exchanger: ex})
+	cfg := ProviderConfig{
+		ID: ProviderOIDC, DisplayName: "Marlin Overlay OIDC", Method: MethodOAuthPKCE,
+		AuthURL: "https://idp.example.com/auth", TokenURL: "https://idp.example.com/token",
+		ClientID: "marlin-overlay-mbt", Scopes: []string{"openid"}, SupportsRefresh: true,
+	}
+	if err := mgr.RegisterProvider(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	authz := NewAuthorizer(mgr)
+	// Initial policy load advances policyEpoch from 0 -> 1, matching Quint init { cedarPolicyEpoch: 1 }.
+	if _, err := authz.LoadPolicyBytes("init-permit", []byte(`permit(principal, action, resource);`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		pendingAttemptID string
+		pendingState     string
+		refreshDone      chan error
+		refreshRunning   bool
+		goVaultRev       int64 = 1
+		rollbackChecked  bool
+	)
+	defer func() {
+		if refreshRunning {
+			ex.refreshResume <- 1
+			<-refreshDone
+		}
+	}()
+
+	for i := 1; i < len(trace.States); i++ {
+		prev := trace.States[i-1].H
+		st := trace.States[i]
+		act := st.ActionTaken
+
+		switch act {
+		case "beginOAuth":
+			if !prev.CodeIssued && prev.AuthEpoch.Int64() < 3 {
+				flow, err := mgr.BeginOAuth(ProviderOIDC, "http://127.0.0.1:8080/cb")
+				if err != nil {
+					t.Fatalf("[%s step %d] BeginOAuth failed: %v", name, i, err)
+				}
+				pendingAttemptID = flow.AttemptID
+				mgr.mu.RLock()
+				pendingState = mgr.oauthAttempts[flow.AttemptID].state
+				mgr.mu.RUnlock()
+			}
+		case "completeCallback":
+			pkceOk, _ := st.NondetPicks.PkceOk.Bool()
+			nonceOk, _ := st.NondetPicks.NonceOk.Bool()
+			if prev.CodeIssued && !prev.CodeConsumed && pkceOk && nonceOk && prev.AuthEpoch.Int64() < 3 {
+				ex.mu.Lock()
+				ex.nextPkceOk = pkceOk
+				ex.nextNonceOk = nonceOk
+				ex.mu.Unlock()
+				if _, err := mgr.CompleteOAuthCallback(ctx, pendingAttemptID, LoopbackCallback{
+					Code: "overlay-code-1", State: pendingState,
+				}); err != nil {
+					t.Fatalf("[%s step %d] valid CompleteOAuthCallback failed: %v", name, i, err)
+				}
+			}
+		case "startRefresh":
+			if prev.SignedIn && prev.VaultHasToken && !prev.RefreshInFlight && !refreshRunning {
+				refreshRunning = true
+				refreshDone = make(chan error, 1)
+				go func() {
+					_, rErr := mgr.ValidAccessToken(ctx, "oidc:mbt-user")
+					refreshDone <- rErr
+				}()
+				<-ex.refreshStart
+			}
+		case "finishRefresh":
+			newScope, ok := st.NondetPicks.NewScope.Int64()
+			if !ok {
+				newScope = 1
+			}
+			if prev.RefreshInFlight && refreshRunning {
+				ex.refreshResume <- newScope
+				<-refreshDone
+				refreshRunning = false
+			}
+		case "signOut":
+			if prev.SignedIn && prev.AuthEpoch.Int64() < 3 {
+				if err := mgr.SignOut(ctx, "oidc:mbt-user"); err != nil {
+					t.Fatalf("[%s step %d] SignOut failed: %v", name, i, err)
+				}
+			}
+		case "lockVault":
+			osVault.Lock()
+		case "unlockVault":
+			if prev.VaultRevision.Int64() >= prev.MinVaultRevision.Int64() {
+				if err := osVault.Unlock(ctx); err != nil {
+					t.Fatalf("[%s step %d] OSProtectedVault.Unlock failed: %v", name, i, err)
+				}
+			}
+		case "bumpCedarPolicy":
+			if prev.CedarPolicyEpoch.Int64() < 3 {
+				if _, err := authz.LoadPolicyBytes(
+					fmt.Sprintf("epoch-%d", prev.CedarPolicyEpoch.Int64()+1),
+					[]byte(`permit(principal, action, resource);`),
+				); err != nil {
+					t.Fatalf("[%s step %d] LoadPolicyBytes failed: %v", name, i, err)
+				}
+			}
+		case "commitVault":
+			if !prev.VaultLocked && prev.VaultRevision.Int64() < 5 {
+				goVaultRev++
+				if err := osVault.Store(ctx, "marlin:bootstrap", TokenSet{
+					AccessToken: fmt.Sprintf("rev-%d", goVaultRev),
+				}); err != nil {
+					t.Fatalf("[%s step %d] OSProtectedVault.Store commitVault failed: %v", name, i, err)
+				}
+				// Verify anti-rollback fail-closed once disk revision advances past rev 1.
+				if !rollbackChecked && goVaultRev >= 2 {
+					rollbackPath := filepath.Join(t.TempDir(), "stale-rollback.enc")
+					if err := os.WriteFile(rollbackPath, initialSnapshot, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					staleRaw, _ := OpenNativeVault(ctx, NativeVaultConfig{
+						Store:     kcStore,
+						Service:   "marlin-mbt-test",
+						Account:   DefaultKeychainAccount,
+						VaultPath: rollbackPath,
+					})
+					staleVault, ok := staleRaw.(*OSProtectedVault)
+					if !ok {
+						t.Fatalf("[%s step %d] expected *OSProtectedVault for stale snapshot, got %T", name, i, staleRaw)
+					}
+					if _, _, lErr := staleVault.Load(ctx, "marlin:bootstrap"); !errors.Is(lErr, ErrVaultRollback) {
+						t.Fatalf("[%s step %d] ANTI-ROLLBACK VIOLATION: expected ErrVaultRollback on rev-1 snapshot when minRev=%d, got %v",
+							name, i, goVaultRev, lErr)
+					}
+					rollbackChecked = true
+				}
+			}
+		default:
+			t.Fatalf("[%s step %d] unknown MarlinAuthOverlay MBT action %q", name, i, act)
+		}
+
+		// 1. Base OAuthTokenLifecycle refinement assertions
+		snap := mgr.Snapshot()
+		goSignedIn := len(snap.Accounts) > 0
+		_, goVaultHasToken, _ := memVault.Load(ctx, "oidc:mbt-user")
+		var goScopeLevel int64
+		if goSignedIn {
+			goScopeLevel = 1
+			for _, sc := range snap.Accounts[0].Scopes {
+				if sc == "admin:escalated" {
+					goScopeLevel = 2
+				}
+			}
+		}
+		if goSignedIn != st.H.SignedIn {
+			t.Fatalf("[%s step %d after %s] refinement mismatch signedIn: Go=%v Quint=%v", name, i, act, goSignedIn, st.H.SignedIn)
+		}
+		if goVaultHasToken != st.H.VaultHasToken {
+			t.Fatalf("[%s step %d after %s] refinement mismatch vaultHasToken: Go=%v Quint=%v", name, i, act, goVaultHasToken, st.H.VaultHasToken)
+		}
+		if goScopeLevel != st.H.ActiveScopeLevel.Int64() {
+			t.Fatalf("[%s step %d after %s] refinement mismatch activeScopeLevel: Go=%d Quint=%d", name, i, act, goScopeLevel, st.H.ActiveScopeLevel.Int64())
+		}
+
+		// 2. Marlin overlay refinement assertions (Vault Lock, Cedar Policy Epoch, Anti-Rollback Revision)
+		if osVault.IsLocked() != st.H.VaultLocked {
+			t.Fatalf("[%s step %d after %s] refinement mismatch vaultLocked: Go=%v Quint=%v", name, i, act, osVault.IsLocked(), st.H.VaultLocked)
+		}
+		if int64(authz.PolicyEpoch()) != st.H.CedarPolicyEpoch.Int64() {
+			t.Fatalf("[%s step %d after %s] refinement mismatch cedarPolicyEpoch: Go=%d Quint=%d", name, i, act, authz.PolicyEpoch(), st.H.CedarPolicyEpoch.Int64())
+		}
+		if goVaultRev != st.H.VaultRevision.Int64() {
+			t.Fatalf("[%s step %d after %s] refinement mismatch vaultRevision: Go=%d Quint=%d", name, i, act, goVaultRev, st.H.VaultRevision.Int64())
+		}
+		if st.H.VaultLocked {
+			// Real AES-256-GCM vault AND Tier-0 Cedar Authorizer MUST both fail closed while locked.
+			if _, _, err := osVault.Load(ctx, "marlin:bootstrap"); !errors.Is(err, ErrVaultLocked) {
+				t.Fatalf("[%s step %d after %s] OSProtectedVault.Load must fail closed with ErrVaultLocked while locked, got %v", name, i, act, err)
+			}
+			if _, err := authz.Evaluate("oidc:mbt-user", "deploy", "prod", nil); !errors.Is(err, ErrVaultLocked) {
+				t.Fatalf("[%s step %d after %s] Cedar Authorizer.Evaluate must fail closed with ErrVaultLocked while locked, got %v", name, i, act, err)
+			}
+		} else if goSignedIn {
+			tk, err := authz.Evaluate("oidc:mbt-user", "deploy", "prod", nil)
+			if err != nil || !tk.Allowed || int64(tk.PolicyEpoch) != st.H.CedarPolicyEpoch.Int64() {
+				t.Fatalf("[%s step %d after %s] unlocked signed-in Evaluate mismatch: tk=%+v err=%v wantEpoch=%d", name, i, act, tk, err, st.H.CedarPolicyEpoch.Int64())
+			}
+			if err := authz.Enforce(tk); err != nil {
+				t.Fatalf("[%s step %d after %s] Enforce valid unlocked ticket failed: %v", name, i, act, err)
 			}
 		}
 	}
