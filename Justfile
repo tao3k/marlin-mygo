@@ -49,6 +49,87 @@ proto-sync-check:
 e2e-rust core="../..":
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core {{core}}
 
+# Run all 5 standalone Linked-AOT zero-.ss cross-process Rust+Scheme Governance Authority E2E suites.
+governance-aot-e2e bin="../../target/debug/marlin-scheme-host-aot":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    BIN={{quote(bin)}}
+    if [[ ! -x "$BIN" ]]; then
+      echo "ERROR: Linked-AOT binary not found at $BIN (run 'just scheme-host-aot-build' in marlin-agent-core)" >&2
+      exit 1
+    fi
+    TMPDIR_E2E="$(mktemp -d /tmp/marlin-gov-aot-e2e.XXXXXX)"
+    trap 'rm -rf "$TMPDIR_E2E"' EXIT
+
+    start_aot() {
+      local mode="$1" db="$2" log="$3"
+      MARLIN_SCHEME_DIR=/nonexistent-zero-scheme-dir \
+      MARLIN_BRIDGE_ADDR=127.0.0.1:0 \
+      MARLIN_BRIDGE_TOKEN=e2e-tok \
+      MARLIN_BRIDGE_TURSO_PATH="$db" \
+      MARLIN_SCHEME_GOVERNANCE_MODE="$mode" \
+      "$BIN" >"$log" 2>&1 &
+      local pid=$!
+      local addr=""
+      for _ in $(seq 1 100); do
+        if grep -q "^READY " "$log" 2>/dev/null; then
+          addr=$(grep "^READY " "$log" | head -n1 | awk '{print $2}')
+          break
+        fi
+        sleep 0.1
+      done
+      if [[ -z "$addr" ]]; then
+        echo "FAILED to start AOT daemon ($mode):" >&2
+        cat "$log" >&2
+        kill "$pid" 2>/dev/null || true
+        return 1
+      fi
+      echo "$pid $addr"
+    }
+
+    stop_aot() {
+      kill -TERM "$1" 2>/dev/null || true
+      wait "$1" 2>/dev/null || true
+    }
+
+    echo "=== [1/5] Incident + Anti-Forgery + RFC 9470 Step-Up Re-Arm ==="
+    read -r PID1 ADDR1 < <(start_aot incident "$TMPDIR_E2E/e2e1.db" "$TMPDIR_E2E/e2e1.log")
+    MARLIN_SCHEME_HOST_ADDR="$ADDR1" MARLIN_SCHEME_HOST_TOKEN=e2e-tok \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessSchemeGovernanceE2E$"
+    stop_aot "$PID1"
+
+    echo "=== [2/5] Dynamic Runtime Events + Live Cedar Probes + CaMeL Taint/Sanitizer ==="
+    read -r PID2 ADDR2 < <(start_aot clean "$TMPDIR_E2E/e2e2.db" "$TMPDIR_E2E/e2e2.log")
+    MARLIN_SCHEME_HOST_DYNAMIC_ADDR="$ADDR2" MARLIN_SCHEME_HOST_TOKEN=e2e-tok \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E$"
+    stop_aot "$PID2"
+
+    echo "=== [3/5] Cross-OS-Restart MGV1 Anti-Restart-Reset ==="
+    DB3="$TMPDIR_E2E/e2e3.db"
+    read -r PID3A ADDR3A < <(start_aot incident "$DB3" "$TMPDIR_E2E/e2e3a.log")
+    MARLIN_SCHEME_HOST_ADDR="$ADDR3A" MARLIN_SCHEME_HOST_TOKEN=e2e-tok MARLIN_SCHEME_HOST_RESTART_PHASE=1 \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessGovernanceSurvivesOSRestartE2E$"
+    stop_aot "$PID3A"
+    read -r PID3B ADDR3B < <(start_aot clean "$DB3" "$TMPDIR_E2E/e2e3b.log")
+    MARLIN_SCHEME_HOST_ADDR="$ADDR3B" MARLIN_SCHEME_HOST_TOKEN=e2e-tok MARLIN_SCHEME_HOST_RESTART_PHASE=2 \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessGovernanceSurvivesOSRestartE2E$"
+    stop_aot "$PID3B"
+
+    echo "=== [4/5] Cross-OS-Restart MGF1 v2 Fact Graph + Dynamic Bi-Temporal DAG Blast Radius ==="
+    DB4="$TMPDIR_E2E/e2e4.db"
+    read -r PID4A ADDR4A < <(start_aot clean "$DB4" "$TMPDIR_E2E/e2e4a.log")
+    MARLIN_SCHEME_HOST_ADDR="$ADDR4A" MARLIN_SCHEME_HOST_TOKEN=e2e-tok MARLIN_SCHEME_HOST_FACT_RESTART_PHASE=1 \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E$"
+    stop_aot "$PID4A"
+    read -r PID4B ADDR4B < <(start_aot clean "$DB4" "$TMPDIR_E2E/e2e4b.log")
+    MARLIN_SCHEME_HOST_ADDR="$ADDR4B" MARLIN_SCHEME_HOST_TOKEN=e2e-tok MARLIN_SCHEME_HOST_FACT_RESTART_PHASE=2 \
+      go test -v -count=1 ./control/grpcwire -run "^TestLiveCrossProcessDurableFactGraphAcrossOSRestartE2E$"
+    stop_aot "$PID4B"
+
+    echo "=== [5/5] Zero-Config Auto-Discover Linked-AOT Scheme Host ==="
+    go test -race -v -count=1 ./control/grpcwire -run "^TestAutoDiscoverAndHookRealSchemeHostAOT$"
+    echo "OK: ALL 5 LINKED-AOT ZERO-SCHEME-DIR GOVERNANCE E2E SUITES PASSED!"
+
 # Run Quint formal security model gate (typecheck + tests + 1000-sample run + 7 negative controls).
 model-gate:
     CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool model-gate
