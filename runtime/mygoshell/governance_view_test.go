@@ -235,3 +235,75 @@ func TestTier0GovernanceConsoleEStopBreakerAndSharedContextScopes(t *testing.T) 
 		t.Fatalf("expected Human Re-Arm to advance epoch=2 and disarm, tripped=%v ep=%d events=%v", tripped, ep, eStopEvents)
 	}
 }
+
+func TestTier0GovernanceConsoleBackendHigherOrderAuthorityAndStepUpRearm(t *testing.T) {
+	targets := transport.NewTargetRegistry()
+	slots := shell.NewSlotRegistry()
+	wb := shell.NewWorkbenchController(slots)
+	app := mygoshell.NewWorkbenchApp(targets, slots, wb)
+
+	authBridge := mygoshell.NewLocalBackendAuthorityBridge(mygoshell.BackendHigherOrderSnapshot{
+		Admitted:             false,
+		RevocationEpoch:      2,
+		PolicyRevision:       1,
+		BreakerTripped:       true,
+		BreakerTripEpoch:     1,
+		RejectionReasons:     []string{"ascent-camel-taint-alert", "bitemporal-premise-retracted"},
+		FencedActors:         []string{"agent-sub"},
+		BlockedTools:         []string{"os-shell"},
+		RetractedConclusions: []string{"D-OBO-TICKET", "D-TOOL-EXEC"},
+		SynthesizedCedarRules: []mygoshell.SynthesizedCedarRule{
+			{PolicyID: "marlin.ascent.forbid.fenced.agent-sub", Source: `forbid (principal == Marlin::Actor::"agent-sub", action, resource);`},
+		},
+	})
+
+	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), features.NewGovernanceLedger(features.DefaultGovernancePolicy()), features.NewHost())
+	govUI.AttachBackendAuthority(authBridge)
+	app.GovernanceUI = govUI
+	app.OpenGovernance()
+
+	tt := ui.NewTester(app.View, 1280, 860)
+	tt.Frame()
+	for _, want := range []string{
+		"RUST + SCHEME HIGHER-ORDER GOVERNANCE AUTHORITY",
+		"BACKEND FAIL-CLOSED",
+		"Proof Epoch: 2",
+		"ASCENT Fenced: agent-sub",
+		"TM Retracted: D-OBO-TICKET, D-TOOL-EXEC",
+		"Blocked Tools: os-shell",
+		"marlin.ascent.forbid.fenced.agent-sub",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected backend authority console to render %q, got %q", want, strings.Join(tt.Texts(), " | "))
+		}
+	}
+
+	// Clicking Step-Up Backend Re-Arm BEFORE verifying RFC 9470 Step-Up MUST fail closed!
+	if err := tt.Click("Step-Up Backend Re-Arm"); err != nil {
+		t.Fatalf("click Step-Up Backend Re-Arm without step-up: %v", err)
+	}
+	tt.Frame()
+	if !authBridge.Snapshot().BreakerTripped || !tt.HasText("RFC 9470 step-up required") {
+		t.Fatalf("expected backend re-arm without step-up to fail closed, texts=%q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Verify Step-Up -> Step-Up Backend Re-Arm -> backend advances epoch and admits!
+	if err := tt.Click("Verify Step-Up"); err != nil {
+		t.Fatalf("click Verify Step-Up: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("RFC 9470 STEP-UP READY") {
+		t.Fatalf("expected RFC 9470 STEP-UP READY pill, got %q", strings.Join(tt.Texts(), " | "))
+	}
+	if err := tt.Click("Step-Up Backend Re-Arm"); err != nil {
+		t.Fatalf("click Step-Up Backend Re-Arm after step-up: %v", err)
+	}
+	tt.Frame()
+	snap := authBridge.Snapshot()
+	if snap.BreakerTripped || !snap.Admitted || snap.BreakerTripEpoch != 2 || snap.RevocationEpoch != 3 {
+		t.Fatalf("expected backend re-arm to advance epoch=2 rev=3 and admit, got %+v", snap)
+	}
+	if !tt.HasText("BACKEND ADMITTED") {
+		t.Fatalf("expected BACKEND ADMITTED pill after step-up re-arm, got %q", strings.Join(tt.Texts(), " | "))
+	}
+}

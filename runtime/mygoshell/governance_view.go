@@ -23,15 +23,17 @@ import (
 // circuit-breaker controls, 5-scope Shared Context posture, and the immutable
 // newest-first audit receipt trail.
 type GovernanceController struct {
-	mu          sync.RWMutex
-	Registry    *features.Registry
-	Ledger      *features.GovernanceLedger
-	Host        *features.Host
-	Breaker     *pluginhost.ExecutionBreaker
-	PluginHost  *pluginhost.Host
-	ContextGov  *contextgov.GovernanceStore
-	auditFilter string // "all" | "admitted" | "denied" | "gate"
-	lastErr     string
+	mu               sync.RWMutex
+	Registry         *features.Registry
+	Ledger           *features.GovernanceLedger
+	Host             *features.Host
+	Breaker          *pluginhost.ExecutionBreaker
+	PluginHost       *pluginhost.Host
+	ContextGov       *contextgov.GovernanceStore
+	BackendAuthority BackendGovernanceAuthority
+	stepUpVerified   bool
+	auditFilter      string // "all" | "admitted" | "denied" | "gate"
+	lastErr          string
 
 	OnFeatureChanged func(id features.FeatureID, enabled bool)
 	OnEmergencyStop  func(tripped bool, epoch uint64)
@@ -48,6 +50,16 @@ func (g *GovernanceController) AttachSecurityControls(
 	g.Breaker = breaker
 	g.PluginHost = pluginHost
 	g.ContextGov = contextGov
+	g.mu.Unlock()
+}
+
+// AttachBackendAuthority binds the authoritative Rust+Scheme Higher-Order Governance
+// control plane (`marlin-agent-core`) so this UI console surfaces live ASCENT fenced
+// actors, Bi-Temporal Truth Maintenance retractions, synthesized Cedar forbid rules,
+// and RFC 9470 step-up E-Stop re-arm.
+func (g *GovernanceController) AttachBackendAuthority(auth BackendGovernanceAuthority) {
+	g.mu.Lock()
+	g.BackendAuthority = auth
 	g.mu.Unlock()
 }
 
@@ -79,6 +91,8 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	breaker := g.Breaker
 	pluginHost := g.PluginHost
 	ctxGov := g.ContextGov
+	backendAuth := g.BackendAuthority
+	stepUpOK := g.stepUpVerified
 	filter := g.auditFilter
 	lastErr := g.lastErr
 	onChanged := g.OnFeatureChanged
@@ -101,11 +115,14 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 	}
 
 	var (
-		toggleID     features.FeatureID
-		toggleEnable bool
-		tripEStop    bool
-		rearmEStop   bool
-		nextFilter   = filter
+		toggleID      features.FeatureID
+		toggleEnable  bool
+		tripEStop     bool
+		rearmEStop    bool
+		verifyStepUp  bool
+		backendTrip   bool
+		backendRearm  bool
+		nextFilter    = filter
 	)
 
 	ui.Column(c.Key("governance-console")).Width(720).Gap(12).AlignItems(ui.Stretch).Children(func() {
@@ -138,6 +155,68 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 
 		if lastErr != "" {
 			ui.Text(c, lastErr).FontSize(11.5).FontWeight(600).TextColor(toColor(dt.Danger))
+		}
+
+		// Authoritative Rust + Gerbil Scheme Higher-Order Governance Control Plane.
+		if backendAuth != nil {
+			bsnap := backendAuth.Snapshot()
+			AppleGlassCard(c, "gov-backend-ho-card", dt, 12, 10, 6, func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, "RUST + SCHEME HIGHER-ORDER GOVERNANCE AUTHORITY").
+						FontSize(10.5).FontWeight(700).LetterSpacing(0.5).TextColor(toColor(dt.InkMuted))
+					if bsnap.Admitted && !bsnap.BreakerTripped {
+						AppleBadgePill(c, "BACKEND ADMITTED", dt.Success, dt)
+					} else {
+						AppleBadgePill(c, "BACKEND FAIL-CLOSED", dt.Danger, dt)
+					}
+					AppleBadgePill(c, fmt.Sprintf("Proof Epoch: %d", bsnap.RevocationEpoch), dt.Info, dt)
+					AppleBadgePill(c, fmt.Sprintf("Cedar Rules: %d", len(bsnap.SynthesizedCedarRules)), dt.Accent, dt)
+					ui.Spacer(c)
+					if bsnap.BreakerTripped {
+						if !stepUpOK {
+							if ApplePillButton(c, "gov-stepup-verify", "Verify Step-Up", BtnGlass, dt, nil, true).Clicked() {
+								verifyStepUp = true
+							}
+						} else {
+							AppleBadgePill(c, "RFC 9470 STEP-UP READY", dt.Success, dt)
+						}
+						if ApplePillButton(c, "gov-backend-rearm", "Step-Up Backend Re-Arm", BtnTinted, dt, nil, true).Clicked() {
+							backendRearm = true
+						}
+					} else {
+						if ApplePillButton(c, "gov-backend-trip", "Trip Backend E-Stop", BtnDestructive, dt, nil, true).Clicked() {
+							backendTrip = true
+						}
+					}
+				})
+				ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+					if len(bsnap.FencedActors) > 0 {
+						AppleBadgePill(c, "ASCENT Fenced: "+strings.Join(bsnap.FencedActors, ", "), dt.Danger, dt)
+					} else {
+						AppleBadgePill(c, "ASCENT Fenced: 0", dt.Success, dt)
+					}
+					if len(bsnap.RetractedConclusions) > 0 {
+						AppleBadgePill(c, "TM Retracted: "+strings.Join(bsnap.RetractedConclusions, ", "), dt.Warning, dt)
+					} else {
+						AppleBadgePill(c, "TM Retracted: 0", dt.Success, dt)
+					}
+					if len(bsnap.BlockedTools) > 0 {
+						AppleBadgePill(c, "Blocked Tools: "+strings.Join(bsnap.BlockedTools, ", "), dt.Danger, dt)
+					}
+				})
+				if len(bsnap.RejectionReasons) > 0 {
+					ui.Textf(c, "Backend rejections: %s", strings.Join(bsnap.RejectionReasons, " · ")).
+						FontSize(11).FontWeight(600).TextColor(toColor(dt.Danger))
+				}
+				if len(bsnap.SynthesizedCedarRules) > 0 {
+					ids := make([]string, 0, len(bsnap.SynthesizedCedarRules))
+					for _, r := range bsnap.SynthesizedCedarRules {
+						ids = append(ids, r.PolicyID)
+					}
+					ui.Textf(c, "Synthesized Cedar: %s", strings.Join(ids, " · ")).
+						FontSize(11).TextColor(toColor(dt.InkSecondary))
+				}
+			})
 		}
 
 		// AI & Tool Execution Circuit Breaker (E-Stop / 脱扣) Control Plane.
@@ -286,7 +365,51 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 
 	g.mu.Lock()
 	g.auditFilter = nextFilter
+	if verifyStepUp {
+		g.stepUpVerified = true
+		g.lastErr = ""
+	}
 	g.mu.Unlock()
+
+	if backendTrip && backendAuth != nil {
+		snap, err := backendAuth.TripBackendBreaker("human-console", "manual backend E-Stop")
+		if breaker != nil {
+			breaker.Trip("human-console", "synced backend E-Stop")
+		}
+		if pluginHost != nil {
+			pluginHost.TripEmergencyStop()
+		}
+		g.mu.Lock()
+		if err != nil {
+			g.lastErr = err.Error()
+		} else {
+			g.stepUpVerified = false
+			g.lastErr = ""
+		}
+		g.mu.Unlock()
+		if err == nil && onEStop != nil {
+			onEStop(true, snap.BreakerTripEpoch)
+		}
+	}
+	if backendRearm && backendAuth != nil {
+		snap, err := backendAuth.RearmBackendBreakerWithStepUp("human-console", stepUpOK)
+		g.mu.Lock()
+		if err != nil {
+			g.lastErr = err.Error()
+		} else {
+			g.stepUpVerified = false
+			g.lastErr = ""
+		}
+		g.mu.Unlock()
+		if err == nil {
+			if breaker != nil {
+				_, _ = breaker.Rearm("human-console", false, true)
+			}
+			if onEStop != nil {
+				onEStop(false, snap.BreakerTripEpoch)
+			}
+		}
+	}
 
 	if tripEStop && breaker != nil {
 		breaker.Trip("human-console", "manual Tier-0 Governance Console E-Stop")
