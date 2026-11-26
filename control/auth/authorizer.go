@@ -12,17 +12,23 @@ import (
 	"github.com/cedar-policy/cedar-go"
 )
 
-// AuthzTicket binds a Cedar PDP decision to the exact accountEpoch and
-// policyEpoch observed at evaluation time (Zero Trust PEP/PDP separation).
+// AuthzTicket binds a Cedar PDP decision to the exact accountEpoch, policyEpoch,
+// tenant boundary, and optional RFC 8693 OBO delegated agent provenance observed
+// at evaluation time (Zero Trust PEP/PDP separation).
 type AuthzTicket struct {
-	Allowed      bool
-	AccountID    AccountID
-	Action       string
-	Resource     string
-	AccountEpoch uint64
-	PolicyEpoch  uint64
-	Reasons      []string
-	Errors       []string
+	Allowed          bool
+	AccountID        AccountID
+	TenantID         string
+	ResourceTenantID string
+	Action           string
+	Resource         string
+	AccountEpoch     uint64
+	PolicyEpoch      uint64
+	TenantEpoch      uint64
+	DelegatedAgentID string
+	DelegatedScopes  []string
+	Reasons          []string
+	Errors           []string
 }
 
 // Authorizer is Marlin's Tier-0 local Cedar PDP + Zero Trust PEP bridge.
@@ -106,7 +112,8 @@ func (a *Authorizer) Evaluate(
 	for k, v := range extraContext {
 		// Prevent callers from overwriting host-owned security attributes.
 		switch k {
-		case "provider", "method", "email_verified", "scopes", "account_epoch", "policy_epoch":
+		case "provider", "method", "email_verified", "scopes", "account_epoch", "policy_epoch",
+			"tenant_id", "resource_tenant_id", "delegated", "actor_agent":
 			continue
 		default:
 			ctxMap[k] = v
@@ -155,14 +162,200 @@ func (a *Authorizer) Evaluate(
 	}, nil
 }
 
+// EvaluateForTenant evaluates a tenant-scoped Cedar PDP decision, failing
+// closed on unbound/foreign tenants or revoked tenant membership before
+// emitting an AuthzTicket pinned to (TenantID, ResourceTenantID, TenantEpoch).
+func (a *Authorizer) EvaluateForTenant(
+	accountID AccountID,
+	resourceTenantID string,
+	action string,
+	resource string,
+	extraContext map[cedar.String]cedar.Value,
+) (AuthzTicket, error) {
+	if a.mgr == nil {
+		return AuthzTicket{}, ErrAccountNotFound
+	}
+	if a.mgr.isVaultLocked() {
+		return AuthzTicket{}, ErrVaultLocked
+	}
+	profile, accEpoch, ok := a.mgr.accountStanding(accountID)
+	if !ok {
+		return AuthzTicket{}, ErrAccountNotFound
+	}
+	if profile.TenantID == "" || resourceTenantID == "" {
+		return AuthzTicket{}, ErrCrossTenantAccess
+	}
+	if profile.TenantID != resourceTenantID {
+		return AuthzTicket{}, ErrCrossTenantAccess
+	}
+	tenEpoch, tenOK := a.mgr.tenantStanding(profile.TenantID)
+	if !tenOK {
+		return AuthzTicket{}, ErrTenantRevoked
+	}
+
+	return a.evaluateCore(profile, accEpoch, profile.TenantID, resourceTenantID, tenEpoch, "", profile.Scopes, action, resource, extraContext)
+}
+
+// EvaluateDelegated evaluates an RFC 8693 On-Behalf-Of (OBO) delegated agent
+// authorization request: enforces monotonic scope attenuation against the
+// delegating human's active scopes, preserves actor provenance, blocks
+// delegated agents from human-only gates, and enforces tenant isolation when
+// resourceTenantID is non-empty.
+func (a *Authorizer) EvaluateDelegated(
+	delegatorID AccountID,
+	agentID string,
+	resourceTenantID string,
+	action string,
+	resource string,
+	requestedScopes []string,
+	extraContext map[cedar.String]cedar.Value,
+) (AuthzTicket, error) {
+	if a.mgr == nil {
+		return AuthzTicket{}, ErrAccountNotFound
+	}
+	if a.mgr.isVaultLocked() {
+		return AuthzTicket{}, ErrVaultLocked
+	}
+	if agentID == "" {
+		return AuthzTicket{}, ErrPolicyDenied
+	}
+	if action == "approve_gate" {
+		return AuthzTicket{}, ErrDelegatedHumanGateForbidden
+	}
+	profile, accEpoch, ok := a.mgr.accountStanding(delegatorID)
+	if !ok {
+		return AuthzTicket{}, ErrAccountNotFound
+	}
+	granted := make(map[string]struct{}, len(profile.Scopes))
+	for _, sc := range profile.Scopes {
+		granted[sc] = struct{}{}
+	}
+	for _, reqSc := range requestedScopes {
+		if _, allowed := granted[reqSc]; !allowed {
+			return AuthzTicket{}, ErrDelegationScopeAmplified
+		}
+	}
+	var tenEpoch uint64
+	if resourceTenantID != "" {
+		if profile.TenantID == "" || profile.TenantID != resourceTenantID {
+			return AuthzTicket{}, ErrCrossTenantAccess
+		}
+		var tenOK bool
+		tenEpoch, tenOK = a.mgr.tenantStanding(profile.TenantID)
+		if !tenOK {
+			return AuthzTicket{}, ErrTenantRevoked
+		}
+	}
+	return a.evaluateCore(profile, accEpoch, profile.TenantID, resourceTenantID, tenEpoch, agentID, requestedScopes, action, resource, extraContext)
+}
+
+func (a *Authorizer) evaluateCore(
+	profile AccountProfile,
+	accEpoch uint64,
+	tenantID string,
+	resourceTenantID string,
+	tenEpoch uint64,
+	agentID string,
+	effectiveScopes []string,
+	action string,
+	resource string,
+	extraContext map[cedar.String]cedar.Value,
+) (AuthzTicket, error) {
+	a.mu.RLock()
+	ps := a.policies
+	polEpoch := a.policyEpoch
+	a.mu.RUnlock()
+
+	scopeVals := make([]cedar.Value, 0, len(effectiveScopes))
+	for _, s := range effectiveScopes {
+		scopeVals = append(scopeVals, cedar.String(s))
+	}
+
+	ctxMap := cedar.RecordMap{
+		"provider":           cedar.String(profile.ProviderID),
+		"method":             cedar.String(profile.Method),
+		"email_verified":     cedar.Boolean(profile.EmailVerified),
+		"scopes":             cedar.NewSet(scopeVals...),
+		"account_epoch":      cedar.Long(accEpoch),
+		"policy_epoch":       cedar.Long(polEpoch),
+		"tenant_id":          cedar.String(tenantID),
+		"resource_tenant_id": cedar.String(resourceTenantID),
+		"delegated":          cedar.Boolean(agentID != ""),
+		"actor_agent":        cedar.String(agentID),
+	}
+	for k, v := range extraContext {
+		switch k {
+		case "provider", "method", "email_verified", "scopes", "account_epoch", "policy_epoch",
+			"tenant_id", "resource_tenant_id", "delegated", "actor_agent":
+			continue
+		default:
+			ctxMap[k] = v
+		}
+	}
+
+	principalUID := cedar.NewEntityUID("Marlin::Account", cedar.String(profile.ID))
+	actionUID := cedar.NewEntityUID("Marlin::Action", cedar.String(action))
+	resourceUID := cedar.NewEntityUID("Marlin::Resource", cedar.String(resource))
+
+	entities := cedar.EntityMap{
+		principalUID: cedar.Entity{
+			UID: principalUID,
+			Attributes: cedar.NewRecord(cedar.RecordMap{
+				"provider":       cedar.String(profile.ProviderID),
+				"email_verified": cedar.Boolean(profile.EmailVerified),
+				"tenant_id":      cedar.String(tenantID),
+			}),
+		},
+	}
+	req := cedar.Request{
+		Principal: principalUID,
+		Action:    actionUID,
+		Resource:  resourceUID,
+		Context:   cedar.NewRecord(ctxMap),
+	}
+
+	decision, diag := cedar.Authorize(ps, entities, req)
+	reasons := make([]string, 0, len(diag.Reasons))
+	for _, r := range diag.Reasons {
+		reasons = append(reasons, string(r.PolicyID))
+	}
+	diagErrs := make([]string, 0, len(diag.Errors))
+	for _, e := range diag.Errors {
+		diagErrs = append(diagErrs, fmt.Sprintf("%s: %s", e.PolicyID, e.Message))
+	}
+
+	return AuthzTicket{
+		Allowed:          decision == cedar.Allow && len(diag.Errors) == 0,
+		AccountID:        profile.ID,
+		TenantID:         tenantID,
+		ResourceTenantID: resourceTenantID,
+		Action:           action,
+		Resource:         resource,
+		AccountEpoch:     accEpoch,
+		PolicyEpoch:      polEpoch,
+		TenantEpoch:      tenEpoch,
+		DelegatedAgentID: agentID,
+		DelegatedScopes:  append([]string(nil), effectiveScopes...),
+		Reasons:          reasons,
+		Errors:           diagErrs,
+	}, nil
+}
+
 // Enforce performs the Zero Trust PEP final-use gate before executing an effect:
-// verifies the ticket was allowed AND neither policyEpoch nor accountEpoch drifted.
+// verifies the ticket was allowed AND neither policyEpoch, accountEpoch, tenant
+// boundary/revocation epoch, nor delegated actor restrictions were violated.
 func (a *Authorizer) Enforce(ticket AuthzTicket) error {
 	if !ticket.Allowed {
 		return ErrPolicyDenied
 	}
 	if a.mgr != nil && a.mgr.isVaultLocked() {
 		return ErrVaultLocked
+	}
+	if ticket.DelegatedAgentID != "" && ticket.Action == "approve_gate" {
+		return ErrDelegatedHumanGateForbidden
+	}
+	if ticket.ResourceTenantID != "" && ticket.TenantID != ticket.ResourceTenantID {
+		return ErrCrossTenantAccess
 	}
 	a.mu.RLock()
 	curPolEpoch := a.policyEpoch
@@ -173,7 +366,25 @@ func (a *Authorizer) Enforce(ticket AuthzTicket) error {
 	if a.mgr == nil || !a.mgr.isAccountEpochCurrent(ticket.AccountID, ticket.AccountEpoch) {
 		return ErrSessionRevoked
 	}
+	if ticket.TenantID != "" && ticket.TenantEpoch > 0 && !a.mgr.isTenantEpochCurrent(ticket.TenantID, ticket.TenantEpoch) {
+		return ErrTenantRevoked
+	}
 	return nil
+}
+
+// EnforceStepUp enforces ticket PLUS one-shot RFC 9470 fresh human step-up
+// verification with verified email (never satisfiable by a delegated agent).
+func (a *Authorizer) EnforceStepUp(ticket AuthzTicket) error {
+	if ticket.DelegatedAgentID != "" {
+		return ErrDelegatedHumanGateForbidden
+	}
+	if err := a.Enforce(ticket); err != nil {
+		return err
+	}
+	if a.mgr == nil {
+		return ErrAccountNotFound
+	}
+	return a.mgr.ConsumeStepUp(ticket.AccountID)
 }
 
 // Authorize evaluates the Cedar PDP and immediately enforces the PEP gate.

@@ -21,14 +21,28 @@ import (
 )
 
 var (
-	ErrParticipantNotFound    = errors.New("chatroom: participant not found")
-	ErrChannelNotFound        = errors.New("chatroom: channel not found")
-	ErrMessageNotFound        = errors.New("chatroom: message not found")
-	ErrItemNotFound           = errors.New("chatroom: matter item not found")
-	ErrPermissionDenied       = errors.New("chatroom: action denied by room role governance")
-	ErrAgentCannotApproveGate = errors.New("chatroom: governance invariant forbids granting CanApproveGates to an AI agent")
-	ErrEmptyContent           = errors.New("chatroom: content cannot be empty")
+	ErrParticipantNotFound      = errors.New("chatroom: participant not found")
+	ErrChannelNotFound          = errors.New("chatroom: channel not found")
+	ErrMessageNotFound          = errors.New("chatroom: message not found")
+	ErrItemNotFound             = errors.New("chatroom: matter item not found")
+	ErrPermissionDenied         = errors.New("chatroom: action denied by room role governance")
+	ErrAgentCannotApproveGate   = errors.New("chatroom: governance invariant forbids granting CanApproveGates to an AI agent")
+	ErrEmptyContent             = errors.New("chatroom: content cannot be empty")
+	ErrGateAlreadyResolved      = errors.New("chatroom: gate receipt already resolved (one-shot replay forbidden)")
+	ErrCrossChannelReference    = errors.New("chatroom: thread root or matter does not belong to target channel")
+	ErrMatterGateBlocked        = errors.New("chatroom: matter is blocked by a pending or rejected gate and cannot be unblocked by an AI agent")
+	ErrUntrustedExternalIngress = errors.New("chatroom: external room ingress failed origin verification")
+	ErrSpoofedGateReceipt       = errors.New("chatroom: external ingress cannot claim gate receipt authority or impersonate a human approver")
+	ErrCrossTenantRoom          = errors.New("chatroom: cross-tenant room operation denied")
 )
+
+// ExternalIngressProof carries verified connector provenance for messages
+// entering a Chat Room from an external bridge, webhook, or federated room.
+type ExternalIngressProof struct {
+	OriginVerified bool
+	ConnectorID    string
+	TenantID       string
+}
 
 // ParticipantKind distinguishes human operators from Marlin AI agent roles.
 type ParticipantKind string
@@ -112,8 +126,9 @@ type RoomMessage struct {
 	Mentions     []string
 	Reactions    map[string][]string // tag -> sorted/ordered participant IDs
 	Pinned       bool
-	GateID       string                   // optional link to a Tier-0 PromptGate authorization
-	Delivery     resilience.DeliveryState // empty/ACKED for confirmed, QUEUED/FAILED when offline
+	GateID          string                   // optional link to a Tier-0 PromptGate authorization
+	TaintedExternal bool                     // true when ingested from an external connector/bridge
+	Delivery        resilience.DeliveryState // empty/ACKED for confirmed, QUEUED/FAILED when offline
 	SubmissionID string                   // stable client idempotency key for reconnect flush
 	CreatedAt    time.Time
 }
@@ -140,6 +155,8 @@ type Controller struct {
 	promptGates     *promptgate.Queue
 	gateReceipts    map[string]GateReceiptRecord
 	gateSeq         uint64
+	tenantID        string
+	channelTainted  map[string]bool
 	Resilience      *resilience.SessionResilience
 	channels        []Channel
 	participants    map[string]Participant
@@ -166,13 +183,29 @@ type Controller struct {
 // NewController constructs a governed Multi-Role Agent Chat Room controller.
 func NewController(ledger *features.GovernanceLedger) *Controller {
 	c := &Controller{
-		ledger:       ledger,
-		gateReceipts: make(map[string]GateReceiptRecord),
-		Resilience:   resilience.NewSessionResilience(),
-		participants: make(map[string]Participant),
+		ledger:         ledger,
+		gateReceipts:   make(map[string]GateReceiptRecord),
+		channelTainted: make(map[string]bool),
+		Resilience:     resilience.NewSessionResilience(),
+		participants:   make(map[string]Participant),
 	}
 	c.SeedDefaultWorkspace()
 	return c
+}
+
+// SetTenant binds this Chat Room controller to a specific tenant boundary so
+// external ingress and cross-tenant operations fail closed on mismatch.
+func (c *Controller) SetTenant(tenantID string) {
+	c.mu.Lock()
+	c.tenantID = strings.TrimSpace(tenantID)
+	c.mu.Unlock()
+}
+
+// TenantID returns the bound tenant identifier (empty when unbound).
+func (c *Controller) TenantID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tenantID
 }
 
 // SetGovernanceLedger attaches or updates the Tier-0 GovernanceLedger.
@@ -357,11 +390,23 @@ func (c *Controller) PostMessage(channelID, authorID, body, threadRootID string)
 }
 
 // IngestRemoteMessage idempotently applies a backend-pushed room message using
-// eventID deduplication and sequence-gap detection (triggering OnNeedResync).
+// eventID deduplication, channel/thread affinity validation, submission
+// author/channel pinning, and sequence-gap detection (triggering OnNeedResync).
 func (c *Controller) IngestRemoteMessage(eventID string, seq uint64, msg RoomMessage) (duplicate bool, gap bool) {
+	c.mu.RLock()
 	if msg.ChannelID == "" {
 		msg.ChannelID = c.activeChannelID
 	}
+	if !c.hasChannelLocked(msg.ChannelID) {
+		c.mu.RUnlock()
+		return false, false
+	}
+	if msg.ThreadRootID != "" && !c.threadBelongsToChannelLocked(msg.ThreadRootID, msg.ChannelID) {
+		c.mu.RUnlock()
+		return false, false
+	}
+	c.mu.RUnlock()
+
 	scope := "room:" + msg.ChannelID
 	if c.Resilience != nil {
 		dup, detectedGap := c.Resilience.AdmitEvent(scope, eventID, 0, seq)
@@ -372,6 +417,11 @@ func (c *Controller) IngestRemoteMessage(eventID string, seq uint64, msg RoomMes
 	}
 
 	c.mu.Lock()
+	if !c.hasChannelLocked(msg.ChannelID) ||
+		(msg.ThreadRootID != "" && !c.threadBelongsToChannelLocked(msg.ThreadRootID, msg.ChannelID)) {
+		c.mu.Unlock()
+		return false, false
+	}
 	if msg.ID == "" {
 		c.msgSeq++
 		msg.ID = fmt.Sprintf("msg-%d", c.msgSeq)
@@ -383,11 +433,13 @@ func (c *Controller) IngestRemoteMessage(eventID string, seq uint64, msg RoomMes
 	if len(msg.Mentions) == 0 {
 		msg.Mentions = extractHandles(msg.Body)
 	}
-	// Replace matching optimistic queued message by SubmissionID if present.
+	// Replace matching optimistic queued message ONLY within the same channel and author.
 	replaced := false
 	if msg.SubmissionID != "" {
 		for i := range c.messages {
-			if c.messages[i].SubmissionID == msg.SubmissionID {
+			if c.messages[i].SubmissionID == msg.SubmissionID &&
+				c.messages[i].ChannelID == msg.ChannelID &&
+				c.messages[i].AuthorID == msg.AuthorID {
 				c.messages[i] = msg
 				replaced = true
 				break
@@ -408,6 +460,83 @@ func (c *Controller) IngestRemoteMessage(eventID string, seq uint64, msg RoomMes
 		resyncCB(msg.ChannelID, after)
 	}
 	return false, gap
+}
+
+// IngestExternalMessage enforces fail-closed provenance, tenant isolation,
+// anti-impersonation/anti-spoofed-gate checks, channel-thread affinity, and
+// CaMeL-style taint marking for messages arriving from external chat connectors.
+func (c *Controller) IngestExternalMessage(
+	eventID string,
+	seq uint64,
+	msg RoomMessage,
+	proof ExternalIngressProof,
+) (duplicate bool, gap bool, err error) {
+	if !proof.OriginVerified {
+		return false, false, ErrUntrustedExternalIngress
+	}
+	if strings.TrimSpace(msg.GateID) != "" {
+		return false, false, ErrSpoofedGateReceipt
+	}
+	c.mu.RLock()
+	if msg.ChannelID == "" {
+		msg.ChannelID = c.activeChannelID
+	}
+	if c.tenantID != "" && proof.TenantID != c.tenantID {
+		c.mu.RUnlock()
+		return false, false, ErrCrossTenantRoom
+	}
+	if !c.hasChannelLocked(msg.ChannelID) {
+		c.mu.RUnlock()
+		return false, false, ErrChannelNotFound
+	}
+	if msg.ThreadRootID != "" && !c.threadBelongsToChannelLocked(msg.ThreadRootID, msg.ChannelID) {
+		c.mu.RUnlock()
+		return false, false, ErrCrossChannelReference
+	}
+	if existing, ok := c.participants[msg.AuthorID]; ok && (existing.Kind == ParticipantHuman || existing.Permissions.CanApproveGates) {
+		c.mu.RUnlock()
+		return false, false, ErrSpoofedGateReceipt
+	}
+	c.mu.RUnlock()
+
+	msg.TaintedExternal = true
+	dup, detectedGap := c.IngestRemoteMessage(eventID, seq, msg)
+	if !dup {
+		c.mu.Lock()
+		if c.channelTainted == nil {
+			c.channelTainted = make(map[string]bool)
+		}
+		c.channelTainted[msg.ChannelID] = true
+		c.mu.Unlock()
+	}
+	return dup, detectedGap, nil
+}
+
+func (c *Controller) hasChannelLocked(channelID string) bool {
+	for i := range c.channels {
+		if c.channels[i].ID == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Controller) threadBelongsToChannelLocked(threadRootID, channelID string) bool {
+	for i := range c.messages {
+		if c.messages[i].ID == threadRootID && c.messages[i].ChannelID == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Controller) matterHasBlockingGateLocked(itemID string) bool {
+	for _, rec := range c.gateReceipts {
+		if rec.MatterID == itemID && (rec.Status == GateStatusPending || rec.Status == GateStatusRejected) {
+			return true
+		}
+	}
+	return false
 }
 
 // FlushOutbox delivers all queued/failed offline messages for channelID using
@@ -561,6 +690,16 @@ func (c *Controller) TransitionItem(itemID, actorID string, next ItemStatus) err
 	}
 	for i := range c.items {
 		if c.items[i].ID == itemID {
+			if actor.Kind == ParticipantAgent && c.items[i].Status == ItemBlocked && next != ItemBlocked && c.matterHasBlockingGateLocked(itemID) {
+				reason := fmt.Sprintf("%s cannot unblock gate-blocked matter %s without human gate approval", actor.Handle, itemID)
+				c.lastError = reason
+				ledger := c.ledger
+				c.mu.Unlock()
+				if ledger != nil {
+					ledger.RecordAudit(actor.Handle, itemID, "chatroom.item.unblock", features.AuditDenied, reason)
+				}
+				return fmt.Errorf("%w: %s", ErrMatterGateBlocked, reason)
+			}
 			c.items[i].Status = next
 			c.items[i].UpdatedBy = actorID
 			updated := c.items[i]

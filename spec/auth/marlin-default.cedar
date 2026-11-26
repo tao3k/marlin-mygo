@@ -49,3 +49,26 @@ forbid (
 when {
     !context.email_verified
 };
+
+@id("forbid-cross-tenant-access")
+forbid (
+    principal is Marlin::Account,
+    action,
+    resource is Marlin::Resource
+)
+when {
+    context has resource_tenant_id &&
+    context.resource_tenant_id != "" &&
+    (!(context has tenant_id) || context.tenant_id != context.resource_tenant_id)
+};
+
+@id("forbid-delegated-agent-human-gate")
+forbid (
+    principal is Marlin::Account,
+    action == Marlin::Action::"approve_gate",
+    resource is Marlin::Resource
+)
+when {
+    context has delegated &&
+    context.delegated
+};

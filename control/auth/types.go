@@ -79,8 +79,13 @@ var (
 	ErrAZPMismatch         = errors.New("auth: OIDC ID token azp mismatch on multi-audience token")
 	ErrSubjectMismatch     = errors.New("auth: OIDC UserInfo sub does not match verified ID token sub")
 	ErrJWKSRefreshCooldown = errors.New("auth: JWKS force-refresh cooldown active")
-	ErrVaultRollback       = errors.New("auth: encrypted vault rollback detected (stale revision)")
-	ErrRedirectBlocked     = errors.New("auth: HTTP redirects are forbidden on OAuth/OIDC security endpoints")
+	ErrVaultRollback               = errors.New("auth: encrypted vault rollback detected (stale revision)")
+	ErrRedirectBlocked             = errors.New("auth: HTTP redirects are forbidden on OAuth/OIDC security endpoints")
+	ErrCrossTenantAccess           = errors.New("auth: cross-tenant authorization denied")
+	ErrTenantRevoked               = errors.New("auth: tenant membership has been revoked")
+	ErrDelegationScopeAmplified    = errors.New("auth: delegated agent scope exceeds delegating human scopes")
+	ErrStepUpRequired              = errors.New("auth: fresh human step-up authentication with verified email is required")
+	ErrDelegatedHumanGateForbidden = errors.New("auth: delegated agent token cannot approve human-only gate")
 )
 
 // ProviderConfig defines one registered authentication provider.
@@ -254,6 +259,7 @@ type AccountProfile struct {
 	DisplayName   string
 	AvatarURL     string
 	EmailVerified bool
+	TenantID      string
 	Scopes        []string
 	SignedInAt    time.Time
 	ExpiresAt     time.Time

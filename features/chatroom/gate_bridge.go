@@ -97,6 +97,27 @@ func (c *Controller) RequestAgentGate(
 		c.mu.Unlock()
 		return GateReceiptRecord{}, promptgate.PromptRequest{}, ErrChannelNotFound
 	}
+	if threadRootID != "" && !c.threadBelongsToChannelLocked(threadRootID, channelID) {
+		c.mu.Unlock()
+		return GateReceiptRecord{}, promptgate.PromptRequest{}, ErrCrossChannelReference
+	}
+	if matterID != "" {
+		matterMatch := false
+		for i := range c.items {
+			if c.items[i].ID == matterID {
+				if c.items[i].ChannelID != channelID {
+					c.mu.Unlock()
+					return GateReceiptRecord{}, promptgate.PromptRequest{}, ErrCrossChannelReference
+				}
+				matterMatch = true
+				break
+			}
+		}
+		if !matterMatch {
+			c.mu.Unlock()
+			return GateReceiptRecord{}, promptgate.PromptRequest{}, ErrItemNotFound
+		}
+	}
 
 	c.gateSeq++
 	gateID := fmt.Sprintf("room-gate-%d", c.gateSeq)
@@ -207,6 +228,16 @@ func (c *Controller) ApplyGateDecision(
 		}
 		return GateReceiptRecord{}, true, fmt.Errorf("%w: %s", ErrAgentCannotApproveGate, reason)
 	}
+	if rec.Status != GateStatusPending {
+		reason := fmt.Sprintf("gate %s already resolved with status %s", req.ID, rec.Status)
+		c.lastError = reason
+		ledger := c.ledger
+		c.mu.Unlock()
+		if ledger != nil {
+			ledger.RecordAudit(human.Handle, req.ID, "chatroom.gate.replay", features.AuditDenied, reason)
+		}
+		return rec, true, fmt.Errorf("%w: %s", ErrGateAlreadyResolved, reason)
+	}
 
 	status := GateStatusRejected
 	matterNext := ItemBlocked
@@ -307,4 +338,50 @@ func (c *Controller) PendingGateCount() int {
 		}
 	}
 	return n
+}
+
+// InvokeAgentTool enforces CaMeL-style external taint containment inside a Chat
+// Room: if channelID contains untrusted external ingress, privileged agent tool
+// invocation fails closed unless backed by a human-APPROVED gate receipt for
+// that exact channel.
+func (c *Controller) InvokeAgentTool(channelID, actorID, toolName, approvedGateID string) error {
+	c.mu.Lock()
+	actor, ok := c.participants[actorID]
+	if !ok {
+		c.mu.Unlock()
+		return ErrParticipantNotFound
+	}
+	if !actor.Permissions.CanInvokeTools {
+		reason := fmt.Sprintf("%s lacks CanInvokeTools permission", actor.Handle)
+		c.lastError = reason
+		ledger := c.ledger
+		c.mu.Unlock()
+		if ledger != nil {
+			ledger.RecordAudit(actor.Handle, toolName, "chatroom.tool.invoke", features.AuditDenied, reason)
+		}
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, reason)
+	}
+	if !c.hasChannelLocked(channelID) {
+		c.mu.Unlock()
+		return ErrChannelNotFound
+	}
+	if c.channelTainted[channelID] {
+		rec, exists := c.gateReceipts[approvedGateID]
+		if !exists || rec.ChannelID != channelID || rec.Status != GateStatusApproved {
+			reason := fmt.Sprintf("channel %s has tainted external ingress; human-approved gate required before invoking %s", channelID, toolName)
+			c.lastError = reason
+			ledger := c.ledger
+			c.mu.Unlock()
+			if ledger != nil {
+				ledger.RecordAudit(actor.Handle, toolName, "chatroom.tool.taint_blocked", features.AuditDenied, reason)
+			}
+			return fmt.Errorf("%w: %s", ErrPermissionDenied, reason)
+		}
+	}
+	ledger := c.ledger
+	c.mu.Unlock()
+	if ledger != nil {
+		ledger.RecordAudit(actor.Handle, toolName, "chatroom.tool.invoke", features.AuditAdmitted, approvedGateID)
+	}
+	return nil
 }

@@ -59,6 +59,9 @@ type AuthManager struct {
 	flights           map[AccountID]*refreshFlight
 	flowEpoch         uint64
 	accountEpoch      map[AccountID]uint64
+	tenantEpoch       map[string]uint64
+	revokedTenants    map[string]bool
+	stepUpFresh       map[AccountID]bool
 	nextSub           uint64
 	subs              map[uint64]func(AuthSnapshot)
 }
@@ -92,10 +95,13 @@ func NewManager(cfg ManagerConfig) *AuthManager {
 		providers:     make(map[ProviderID]ProviderConfig),
 		accounts:      make(map[AccountID]AccountProfile),
 		oauthAttempts: make(map[string]*oauthAttempt),
-		flights:       make(map[AccountID]*refreshFlight),
-		accountEpoch:  make(map[AccountID]uint64),
-		phase:         PhaseSignedOut,
-		subs:          make(map[uint64]func(AuthSnapshot)),
+		flights:        make(map[AccountID]*refreshFlight),
+		accountEpoch:   make(map[AccountID]uint64),
+		tenantEpoch:    make(map[string]uint64),
+		revokedTenants: make(map[string]bool),
+		stepUpFresh:    make(map[AccountID]bool),
+		phase:          PhaseSignedOut,
+		subs:           make(map[uint64]func(AuthSnapshot)),
 	}
 }
 
@@ -464,6 +470,7 @@ func (m *AuthManager) SignOut(ctx context.Context, accountID AccountID) error {
 	if ok {
 		// Advance account epoch immediately so any in-flight refresh cannot resurrect the vault entry.
 		m.accountEpoch[accountID]++
+		delete(m.stepUpFresh, accountID)
 		delete(m.accounts, accountID)
 	}
 	m.mu.Unlock()
@@ -683,6 +690,10 @@ func (m *AuthManager) admitSignedInAccount(
 		m.accountOrder = append(m.accountOrder, profile.ID)
 	}
 	m.accountEpoch[profile.ID]++
+	delete(m.stepUpFresh, profile.ID)
+	if profile.TenantID != "" && m.tenantEpoch[profile.TenantID] == 0 {
+		m.tenantEpoch[profile.TenantID] = 1
+	}
 	m.accounts[profile.ID] = profile
 	m.activeAccountID = profile.ID
 	m.pendingOAuth = nil
@@ -717,6 +728,109 @@ func (m *AuthManager) isAccountEpochCurrent(accountID AccountID, epoch uint64) b
 	defer m.mu.RUnlock()
 	_, ok := m.accounts[accountID]
 	return ok && m.accountEpoch[accountID] == epoch
+}
+
+// SetAccountTenant binds accountID to tenantID and ensures its monotonic tenant
+// epoch is initialized so cross-tenant PEP/PDP enforcement can isolate resources.
+func (m *AuthManager) SetAccountTenant(accountID AccountID, tenantID string) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return ErrCrossTenantAccess
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	if !ok {
+		return ErrAccountNotFound
+	}
+	if m.revokedTenants[tenantID] {
+		return ErrTenantRevoked
+	}
+	if m.tenantEpoch[tenantID] == 0 {
+		m.tenantEpoch[tenantID] = 1
+	}
+	acc.TenantID = tenantID
+	m.accounts[accountID] = acc
+	return nil
+}
+
+// RevokeTenant marks tenantID revoked and bumps its monotonic tenant epoch so
+// every previously issued authorization ticket for that tenant fails closed.
+func (m *AuthManager) RevokeTenant(tenantID string) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.revokedTenants[tenantID] = true
+	m.tenantEpoch[tenantID]++
+	m.mu.Unlock()
+}
+
+func (m *AuthManager) tenantStanding(tenantID string) (uint64, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if tenantID == "" || m.revokedTenants[tenantID] {
+		return 0, false
+	}
+	ep := m.tenantEpoch[tenantID]
+	if ep == 0 {
+		ep = 1
+	}
+	return ep, true
+}
+
+func (m *AuthManager) isTenantEpochCurrent(tenantID string, epoch uint64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if tenantID == "" || m.revokedTenants[tenantID] {
+		return false
+	}
+	cur := m.tenantEpoch[tenantID]
+	if cur == 0 {
+		cur = 1
+	}
+	return cur == epoch
+}
+
+// RecordStepUp records a fresh RFC 9470 step-up verification for a signed-in
+// account whose email identity has been verified.
+func (m *AuthManager) RecordStepUp(accountID AccountID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	if !ok {
+		return ErrAccountNotFound
+	}
+	if !acc.EmailVerified {
+		return ErrStepUpRequired
+	}
+	m.stepUpFresh[accountID] = true
+	return nil
+}
+
+// ConsumeStepUp atomically verifies and consumes a one-shot step-up authentication.
+func (m *AuthManager) ConsumeStepUp(accountID AccountID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if accountID == "" {
+		accountID = m.activeAccountID
+	}
+	acc, ok := m.accounts[accountID]
+	if !ok {
+		return ErrAccountNotFound
+	}
+	if !acc.EmailVerified || !m.stepUpFresh[accountID] {
+		return ErrStepUpRequired
+	}
+	delete(m.stepUpFresh, accountID)
+	return nil
 }
 
 func (m *AuthManager) isVaultLocked() bool {

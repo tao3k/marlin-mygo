@@ -150,6 +150,14 @@ func generateMBTTraces(t *testing.T, bunBin, cliPath, modelPath, mainMod string,
 		"--json",
 	)
 	cmd.Dir = repoRoot
+	if localDE := strings.TrimSpace(os.Getenv("DE_LOCAL_ROOT")); localDE != "" {
+		resolveRoot := t.TempDir()
+		scopeDir := filepath.Join(resolveRoot, "node_modules", "@deterministic-engineering")
+		if mkErr := os.MkdirAll(scopeDir, 0o755); mkErr == nil {
+			_ = os.Symlink(filepath.Join(localDE, "packages/quint-models"), filepath.Join(scopeDir, "quint-models"))
+			cmd.Env = append(os.Environ(), "QUINT_RESOLVE_ROOT="+resolveRoot)
+		}
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("quint-modules-resolver mbt-audit (%s) failed: %v\n%s", mainMod, err, string(out))
