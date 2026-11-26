@@ -39,6 +39,24 @@ type GovernanceDerivationSpec struct {
 	ParentDerivations []string `json:"parent_derivations"`
 }
 
+// GovernanceTaintEdge mirrors one live CaMeL taint-flow edge persisted in MGF1 v2.
+type GovernanceTaintEdge struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
+// GovernanceCedarProbeResult mirrors the authoritative compiled-Cedar evaluation result
+// returned by `marlin-scheme-host` (`scheme:governance-check-cedar`).
+type GovernanceCedarProbeResult struct {
+	Seq              uint64   `json:"seq"`
+	Actor            string   `json:"actor"`
+	Action           string   `json:"action"`
+	Resource         string   `json:"resource"`
+	StepUpFresh      bool     `json:"step_up_fresh"`
+	Decision         string   `json:"decision"`
+	MatchedPolicyIDs []string `json:"matched_policy_ids"`
+}
+
 // BackendGovernanceSnapshot mirrors the authoritative 14-slot Rust+Scheme
 // GovernanceProofEnvelope, ExecutionCircuitBreaker, and MGF1 v2 fact-graph state
 // projected from `marlin-agent-core`.
@@ -68,6 +86,11 @@ type BackendGovernanceSnapshot struct {
 	FactDeclassifiedEntries []string
 	FactRetractedSubjects   []string
 	FactDerivations         []GovernanceDerivationSpec
+	FactTaintEdges          []GovernanceTaintEdge
+	FactTaintSources        []string
+	FactTaintSinks          []string
+	FactTaintSanitizers     []string
+	LastCedarProbe          *GovernanceCedarProbeResult
 }
 
 // BackendGovernanceAuthority is the thin-client boundary between `marlin-mygo`'s
@@ -90,6 +113,9 @@ type BackendGovernanceMutator interface {
 	DeclassifyContext(entry string) (BackendGovernanceSnapshot, error)
 	RegisterDerivation(derivationID, policyID string, subjectPremises, parentDerivations []string) (BackendGovernanceSnapshot, error)
 	RetractPremise(subject string) (BackendGovernanceSnapshot, error)
+	AddTaintEdge(src, dst, role string) (BackendGovernanceSnapshot, error)
+	AddTaintSanitizer(node string) (BackendGovernanceSnapshot, error)
+	CheckCedar(actor, action, resource string, stepUpFresh bool) (BackendGovernanceSnapshot, error)
 }
 
 // LocalBackendAuthorityBridge provides a thread-safe in-memory implementation of
@@ -329,6 +355,62 @@ func (b *LocalBackendAuthorityBridge) RetractPremise(subject string) (BackendGov
 	return cloneBackendSnapshot(b.snap), nil
 }
 
+func (b *LocalBackendAuthorityBridge) AddTaintEdge(src, dst, role string) (BackendGovernanceSnapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.snap.PolicyRevision++
+	b.snap.FactTaintEdges = append(b.snap.FactTaintEdges, GovernanceTaintEdge{Src: src, Dst: dst})
+	if role == "source" || role == "both" {
+		b.snap.FactTaintSources = appendUniqueString(b.snap.FactTaintSources, src)
+	}
+	if role == "sink" || role == "both" {
+		b.snap.FactTaintSinks = appendUniqueString(b.snap.FactTaintSinks, dst)
+	}
+	b.snap.LastEventNote = fmt.Sprintf("recorded taint edge %s -> %s", src, dst)
+	return cloneBackendSnapshot(b.snap), nil
+}
+
+func (b *LocalBackendAuthorityBridge) AddTaintSanitizer(node string) (BackendGovernanceSnapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.snap.PolicyRevision++
+	b.snap.FactTaintSanitizers = appendUniqueString(b.snap.FactTaintSanitizers, node)
+	b.snap.LastEventNote = "sanitized taint node " + node
+	return cloneBackendSnapshot(b.snap), nil
+}
+
+func (b *LocalBackendAuthorityBridge) CheckCedar(actor, action, resource string, stepUpFresh bool) (BackendGovernanceSnapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	seq := uint64(1)
+	if b.snap.LastCedarProbe != nil {
+		seq = b.snap.LastCedarProbe.Seq + 1
+	}
+	decision := "implicit_deny"
+	var matched []string
+	if sliceContainsString(b.snap.FencedActors, actor) {
+		decision = "deny"
+		matched = []string{"marlin.ascent.forbid.fenced." + actor}
+	} else if (action == "rearm_breaker" || action == "promote_context_scope") && len(actor) >= 5 && actor[:5] == "agent" {
+		decision = "deny"
+		matched = []string{"marlin.forbid.agent-privileged-governance"}
+	} else if action == "rearm_breaker" && stepUpFresh {
+		decision = "allow"
+		matched = []string{"marlin.permit.verified-human-governance"}
+	}
+	b.snap.LastCedarProbe = &GovernanceCedarProbeResult{
+		Seq:              seq,
+		Actor:            actor,
+		Action:           action,
+		Resource:         resource,
+		StepUpFresh:      stepUpFresh,
+		Decision:         decision,
+		MatchedPolicyIDs: matched,
+	}
+	b.snap.LastEventNote = fmt.Sprintf("cedar probe #%d -> %s", seq, decision)
+	return cloneBackendSnapshot(b.snap), nil
+}
+
 func appendUniqueString(items []string, value string) []string {
 	if sliceContainsString(items, value) {
 		return items
@@ -367,6 +449,15 @@ func cloneBackendSnapshot(in BackendGovernanceSnapshot) BackendGovernanceSnapsho
 				ParentDerivations: append([]string(nil), d.ParentDerivations...),
 			}
 		}
+	}
+	out.FactTaintEdges = append([]GovernanceTaintEdge(nil), in.FactTaintEdges...)
+	out.FactTaintSources = append([]string(nil), in.FactTaintSources...)
+	out.FactTaintSinks = append([]string(nil), in.FactTaintSinks...)
+	out.FactTaintSanitizers = append([]string(nil), in.FactTaintSanitizers...)
+	if in.LastCedarProbe != nil {
+		cp := *in.LastCedarProbe
+		cp.MatchedPolicyIDs = append([]string(nil), in.LastCedarProbe.MatchedPolicyIDs...)
+		out.LastCedarProbe = &cp
 	}
 	return out
 }

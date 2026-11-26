@@ -332,6 +332,12 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 			{DerivationID: "D-TOKEN", PolicyID: "pol.cert", SubjectPremises: []string{"token-cert-v1"}},
 			{DerivationID: "D-DEPLOY", PolicyID: "pol.deploy", SubjectPremises: []string{"approval-sig"}, ParentDerivations: []string{"D-TOKEN"}},
 		},
+		FactTaintEdges: []mygoshell.GovernanceTaintEdge{
+			{Src: "chat-ext", Dst: "shared-ctx"},
+			{Src: "shared-ctx", Dst: "os-shell"},
+		},
+		FactTaintSources: []string{"chat-ext"},
+		FactTaintSinks:   []string{"os-shell"},
 	})
 
 	govUI := mygoshell.NewGovernanceController(features.NewRegistry(), ledger, features.NewHost())
@@ -346,13 +352,35 @@ func TestTier0GovernanceConsoleInteractiveFactGraphRevokeAndDeclassify(t *testin
 		"Flows: 1",
 		"Declassified: 0",
 		"Derivations: 2",
+		"Taint Edges: 2",
+		"Sanitizers: 0",
 		"Revoke agent-lead",
 		"Declassify vault-secret",
 		"Retract token-cert-v1",
+		"Sanitize shared-ctx",
+		"Probe Cedar",
 	} {
 		if !tt.HasText(want) {
 			t.Fatalf("expected interactive fact-graph control %q, got %q", want, strings.Join(tt.Texts(), " | "))
 		}
+	}
+
+	// Click Sanitize shared-ctx -> registers CaMeL sanitizer & records audit receipt!
+	if err := tt.Click("Sanitize shared-ctx"); err != nil {
+		t.Fatalf("click Sanitize shared-ctx: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("Sanitizers: 1") {
+		t.Fatalf("expected Sanitizers: 1 after clicking Sanitize shared-ctx, got %q", strings.Join(tt.Texts(), " | "))
+	}
+
+	// Click Probe Cedar -> renders compiled Cedar decision badge and matched forbid policy ID!
+	if err := tt.Click("Probe Cedar"); err != nil {
+		t.Fatalf("click Probe Cedar: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("CEDAR DENY") || !tt.HasText("marlin.forbid.agent-privileged-governance") {
+		t.Fatalf("expected live Cedar probe denial rendered, got %q", strings.Join(tt.Texts(), " | "))
 	}
 
 	// Click Revoke agent-lead -> transitively fences agent-lead AND agent-worker & records audit receipt!

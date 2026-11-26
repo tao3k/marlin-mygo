@@ -372,6 +372,58 @@ func (a *RustGovernanceAuthority) RetractPremise(subject string) (mygoshell.Back
 	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-retract %s", strings.TrimSpace(subject)))
 }
 
+// AddTaintEdge records a live CaMeL taint-flow edge (`role` may be "", "source", "sink", or "both")
+// and triggers immediate stratified Datalog ASCENT re-evaluation.
+func (a *RustGovernanceAuthority) AddTaintEdge(src, dst, role string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	roleClean := strings.TrimSpace(role)
+	cmd := fmt.Sprintf("scheme:governance-taint-edge %s %s", strings.TrimSpace(src), strings.TrimSpace(dst))
+	if roleClean != "" {
+		cmd += " " + roleClean
+	}
+	return a.triggerSchemeEval(ctx, cmd)
+}
+
+// AddTaintSanitizer registers a verified human/sanitizer node cutting CaMeL taint paths in ASCENT.
+func (a *RustGovernanceAuthority) AddTaintSanitizer(node string) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	return a.triggerSchemeEval(ctx, fmt.Sprintf("scheme:governance-sanitize %s", strings.TrimSpace(node)))
+}
+
+// CheckCedar executes a live compiled-Cedar authorization probe against the Rust kernel's
+// synchronized Cedar policy set (`forbid`-overrides-`permit`) and awaits the authoritative decision.
+func (a *RustGovernanceAuthority) CheckCedar(
+	actor, action, resource string,
+	stepUpFresh bool,
+) (mygoshell.BackendGovernanceSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Timeout)
+	defer cancel()
+	target, _ := a.activeTarget()
+	if target == nil {
+		return a.Snapshot(), errors.New("grpcwire: no active Rust backend target")
+	}
+	before := a.Snapshot()
+	beforeSeq := uint64(0)
+	if before.LastCedarProbe != nil {
+		beforeSeq = before.LastCedarProbe.Seq
+	}
+	cmd := fmt.Sprintf(
+		"scheme:governance-check-cedar %s %s %s %t",
+		strings.TrimSpace(actor),
+		strings.TrimSpace(action),
+		strings.TrimSpace(resource),
+		stepUpFresh,
+	)
+	if err := a.dispatchUiCommand(ctx, target, cmd); err != nil {
+		return before, err
+	}
+	return a.awaitSnapshotCondition(ctx, func(s mygoshell.BackendGovernanceSnapshot) bool {
+		return s.LastCedarProbe != nil && s.LastCedarProbe.Seq > beforeSeq
+	})
+}
+
 func (a *RustGovernanceAuthority) triggerSchemeEval(
 	ctx context.Context,
 	cmd string,
@@ -579,6 +631,17 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 	if raw := strings.TrimSpace(facets["fact_derivations_json"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &factDerivations)
 	}
+	var factTaintEdges []mygoshell.GovernanceTaintEdge
+	if raw := strings.TrimSpace(facets["fact_taint_edges_json"]); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &factTaintEdges)
+	}
+	var lastCedarProbe *mygoshell.GovernanceCedarProbeResult
+	if raw := strings.TrimSpace(facets["last_cedar_probe_json"]); raw != "" {
+		var decoded mygoshell.GovernanceCedarProbeResult
+		if err := json.Unmarshal([]byte(raw), &decoded); err == nil && decoded.Seq > 0 {
+			lastCedarProbe = &decoded
+		}
+	}
 
 	return mygoshell.BackendGovernanceSnapshot{
 		Admitted:                parseBool("admitted"),
@@ -606,6 +669,11 @@ func DecodeGovernanceSnapshotFromFacets(facets map[string]string) mygoshell.Back
 		FactDeclassifiedEntries: parseStringSlice("fact_declassified_entries_json"),
 		FactRetractedSubjects:   parseStringSlice("fact_retracted_subjects_json"),
 		FactDerivations:         factDerivations,
+		FactTaintEdges:          factTaintEdges,
+		FactTaintSources:        parseStringSlice("fact_taint_sources_json"),
+		FactTaintSinks:          parseStringSlice("fact_taint_sinks_json"),
+		FactTaintSanitizers:     parseStringSlice("fact_taint_sanitizers_json"),
+		LastCedarProbe:          lastCedarProbe,
 	}
 }
 
@@ -631,6 +699,15 @@ func cloneGovernanceSnapshot(in mygoshell.BackendGovernanceSnapshot) mygoshell.B
 				ParentDerivations: append([]string(nil), d.ParentDerivations...),
 			}
 		}
+	}
+	out.FactTaintEdges = append([]mygoshell.GovernanceTaintEdge(nil), in.FactTaintEdges...)
+	out.FactTaintSources = append([]string(nil), in.FactTaintSources...)
+	out.FactTaintSinks = append([]string(nil), in.FactTaintSinks...)
+	out.FactTaintSanitizers = append([]string(nil), in.FactTaintSanitizers...)
+	if in.LastCedarProbe != nil {
+		cp := *in.LastCedarProbe
+		cp.MatchedPolicyIDs = append([]string(nil), in.LastCedarProbe.MatchedPolicyIDs...)
+		out.LastCedarProbe = &cp
 	}
 	return out
 }

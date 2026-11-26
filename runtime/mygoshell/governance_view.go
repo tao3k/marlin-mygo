@@ -127,6 +127,8 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 		revokeActor     string
 		declassifyEntry string
 		retractPremise  string
+		sanitizeNode    string
+		probeCedar      bool
 		nextFilter      = filter
 	)
 
@@ -236,7 +238,7 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 					ui.Text(c, "Proof Digests: "+digests).
 						FontSize(10.5).TextColor(toColor(dt.InkMuted))
 				}
-				if len(bsnap.FactDelegations) > 0 || len(bsnap.FactContextFlows) > 0 || len(bsnap.FactDeclassifiedEntries) > 0 || len(bsnap.FactDerivations) > 0 {
+				if len(bsnap.FactDelegations) > 0 || len(bsnap.FactContextFlows) > 0 || len(bsnap.FactDeclassifiedEntries) > 0 || len(bsnap.FactDerivations) > 0 || len(bsnap.FactTaintEdges) > 0 {
 					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 						AppleBadgePill(c, fmt.Sprintf("Delegations: %d", len(bsnap.FactDelegations)), dt.Info, dt)
 						AppleBadgePill(c, fmt.Sprintf("Flows: %d", len(bsnap.FactContextFlows)), dt.Accent, dt)
@@ -244,6 +246,30 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 						if len(bsnap.FactDerivations) > 0 {
 							AppleBadgePill(c, fmt.Sprintf("Derivations: %d", len(bsnap.FactDerivations)), dt.Warning, dt)
 						}
+						if len(bsnap.FactTaintEdges) > 0 || len(bsnap.FactTaintSanitizers) > 0 {
+							AppleBadgePill(c, fmt.Sprintf("Taint Edges: %d", len(bsnap.FactTaintEdges)), dt.Danger, dt)
+							AppleBadgePill(c, fmt.Sprintf("Sanitizers: %d", len(bsnap.FactTaintSanitizers)), dt.Success, dt)
+						}
+					})
+				}
+				if probe := bsnap.LastCedarProbe; probe != nil {
+					ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+						tone := dt.Warning
+						label := "CEDAR IMPLICIT DENY"
+						switch probe.Decision {
+						case "allow":
+							tone = dt.Success
+							label = "CEDAR ALLOW"
+						case "deny":
+							tone = dt.Danger
+							label = "CEDAR DENY"
+						}
+						AppleBadgePill(c, label, tone, dt)
+						detail := fmt.Sprintf("(%s, %s, %s)", probe.Actor, probe.Action, probe.Resource)
+						if len(probe.MatchedPolicyIDs) > 0 {
+							detail += " -> " + strings.Join(probe.MatchedPolicyIDs, ", ")
+						}
+						ui.Text(c, detail).FontSize(10.5).TextColor(toColor(dt.InkSecondary))
 					})
 				}
 				if _, ok := backendAuth.(BackendGovernanceMutator); ok {
@@ -254,7 +280,10 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 						if ApplePillButton(c, "gov-scheme-eval-clean", "Eval Clean", BtnGlass, dt, nil, true).Clicked() {
 							evalClean = true
 						}
-						for _, actor := range activeRevocableActors(bsnap, 3) {
+						if ApplePillButton(c, "gov-probe-cedar", "Probe Cedar", BtnGlass, dt, nil, true).Clicked() {
+							probeCedar = true
+						}
+						for _, actor := range activeRevocableActors(bsnap, 2) {
 							a := actor
 							if ApplePillButton(c, "gov-revoke-"+a, "Revoke "+a, BtnDestructive, dt, nil, true).Clicked() {
 								revokeActor = a
@@ -266,10 +295,16 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 								declassifyEntry = e
 							}
 						}
-						for _, premise := range activeRetractablePremises(bsnap, 2) {
+						for _, premise := range activeRetractablePremises(bsnap, 1) {
 							p := premise
 							if ApplePillButton(c, "gov-retract-"+p, "Retract "+p, BtnDestructive, dt, nil, true).Clicked() {
 								retractPremise = p
+							}
+						}
+						for _, node := range activeSanitizableTaintNodes(bsnap, 1) {
+							n := node
+							if ApplePillButton(c, "gov-sanitize-"+n, "Sanitize "+n, BtnTinted, dt, nil, true).Clicked() {
+								sanitizeNode = n
 							}
 						}
 					})
@@ -534,6 +569,32 @@ func (g *GovernanceController) Render(c *ui.Context, t *ui.Theme, onClose func()
 				ledger.RecordAudit("human-console", retractPremise, "retract-premise", features.AuditAdmitted, fmt.Sprintf("retracted-%d", len(snap.RetractedConclusions)))
 			}
 		}
+		if sanitizeNode != "" {
+			snap, err := mut.AddTaintSanitizer(sanitizeNode)
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil {
+				ledger.RecordAudit("human-console", sanitizeNode, "sanitize-taint", features.AuditAdmitted, fmt.Sprintf("sanitizers-%d", len(snap.FactTaintSanitizers)))
+			}
+		}
+		if probeCedar {
+			snap, err := mut.CheckCedar("agent-worker", "rearm_breaker", "workspace", true)
+			g.mu.Lock()
+			if err != nil {
+				g.lastErr = err.Error()
+			} else {
+				g.lastErr = ""
+			}
+			g.mu.Unlock()
+			if err == nil && snap.LastCedarProbe != nil {
+				ledger.RecordAudit("human-console", "cedar.probe", snap.LastCedarProbe.Decision, features.AuditAdmitted, strings.Join(snap.LastCedarProbe.MatchedPolicyIDs, ","))
+			}
+		}
 	}
 
 	if tripEStop && breaker != nil {
@@ -690,6 +751,37 @@ func activeRetractablePremises(snap BackendGovernanceSnapshot, maxItems int) []s
 			}
 			seen[p] = struct{}{}
 			out = append(out, p)
+			if len(out) >= maxItems {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func activeSanitizableTaintNodes(snap BackendGovernanceSnapshot, maxItems int) []string {
+	out := make([]string, 0, maxItems)
+	blocked := make(map[string]struct{}, len(snap.FactTaintSanitizers)+len(snap.FactTaintSources)+len(snap.FactTaintSinks))
+	for _, s := range snap.FactTaintSanitizers {
+		blocked[s] = struct{}{}
+	}
+	for _, s := range snap.FactTaintSources {
+		blocked[s] = struct{}{}
+	}
+	for _, s := range snap.FactTaintSinks {
+		blocked[s] = struct{}{}
+	}
+	for _, edge := range snap.FactTaintEdges {
+		for _, candidate := range []string{edge.Dst, edge.Src} {
+			n := strings.TrimSpace(candidate)
+			if n == "" {
+				continue
+			}
+			if _, skip := blocked[n]; skip {
+				continue
+			}
+			blocked[n] = struct{}{}
+			out = append(out, n)
 			if len(out) >= maxItems {
 				return out
 			}

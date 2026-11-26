@@ -666,6 +666,30 @@ func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
 	if !hasCedarPolicyID(exfilSnap.SynthesizedCedarRules, "marlin.ascent.forbid.exfil.payroll-csv.public-webhook") {
 		t.Fatalf("expected ASCENT resource-scoped exfil Cedar forbid rule, got %+v", exfilSnap.SynthesizedCedarRules)
 	}
+	// Live compiled-Cedar probe checks:
+	//  (a) Agent attempting rearm_breaker -> DENY by role forbid;
+	//  (b) VerifiedHuman with fresh step-up on workspace -> ALLOW by human permit;
+	//  (c) VerifiedHuman without fresh step-up -> IMPLICIT DENY;
+	//  (d) VerifiedHuman targeting exfil-forbid resource `public-webhook` -> DENY (forbid overrides permit)!
+	probeAgent, err := govAuth.CheckCedar("agent-worker", "rearm_breaker", "workspace", true)
+	if err != nil || probeAgent.LastCedarProbe == nil || probeAgent.LastCedarProbe.Decision != "deny" ||
+		!containsString(probeAgent.LastCedarProbe.MatchedPolicyIDs, "marlin.forbid.agent-privileged-governance") {
+		t.Fatalf("expected live Cedar probe to deny agent rearm_breaker, err=%v probe=%+v", err, probeAgent.LastCedarProbe)
+	}
+	probeHumanAllow, err := govAuth.CheckCedar("ops-alice", "rearm_breaker", "workspace", true)
+	if err != nil || probeHumanAllow.LastCedarProbe == nil || probeHumanAllow.LastCedarProbe.Decision != "allow" ||
+		!containsString(probeHumanAllow.LastCedarProbe.MatchedPolicyIDs, "marlin.permit.verified-human-governance") {
+		t.Fatalf("expected live Cedar probe to allow VerifiedHuman step-up rearm_breaker, err=%v probe=%+v", err, probeHumanAllow.LastCedarProbe)
+	}
+	probeHumanStale, err := govAuth.CheckCedar("ops-alice", "rearm_breaker", "workspace", false)
+	if err != nil || probeHumanStale.LastCedarProbe == nil || probeHumanStale.LastCedarProbe.Decision != "implicit_deny" {
+		t.Fatalf("expected live Cedar probe implicit_deny without fresh step-up, err=%v probe=%+v", err, probeHumanStale.LastCedarProbe)
+	}
+	probeExfil, err := govAuth.CheckCedar("ops-alice", "rearm_breaker", "public-webhook", true)
+	if err != nil || probeExfil.LastCedarProbe == nil || probeExfil.LastCedarProbe.Decision != "deny" ||
+		!containsString(probeExfil.LastCedarProbe.MatchedPolicyIDs, "marlin.ascent.forbid.exfil.payroll-csv.public-webhook") {
+		t.Fatalf("expected live Cedar resource exfil forbid to override VerifiedHuman permit, err=%v probe=%+v", err, probeExfil.LastCedarProbe)
+	}
 	if !strings.HasPrefix(exfilSnap.RearmGateID, grpcwire.GovernanceRearmGatePrefix) {
 		t.Fatalf("expected one-shot re-arm gate after scope-escalation trip, got %q", exfilSnap.RearmGateID)
 	}
@@ -690,6 +714,29 @@ func TestLiveCrossProcessDynamicRuntimeEventGovernanceE2E(t *testing.T) {
 	}
 	if !containsString(rearmed.FencedActors, "agent-shell") {
 		t.Fatalf("expected revoked agent-shell to remain fenced after breaker re-arm, got %v", rearmed.FencedActors)
+	}
+
+	// 4B. Live CaMeL taint edge injection -> stratified Datalog auto-trips breaker fail-closed;
+	//     then registering a sanitizer cuts the taint path cleanly!
+	if _, err := govAuth.AddTaintEdge("ext-chat", "prompt-buf", "source"); err != nil {
+		t.Fatalf("AddTaintEdge source: %v", err)
+	}
+	taintedSnap, err := govAuth.AddTaintEdge("prompt-buf", "exec-sink", "sink")
+	if err != nil {
+		t.Fatalf("AddTaintEdge sink: %v", err)
+	}
+	if taintedSnap.Admitted || !taintedSnap.BreakerTripped || !containsString(taintedSnap.RejectionReasons, "ascent-camel-taint-alert") {
+		t.Fatalf("expected unsanitized live CaMeL taint path to auto-trip breaker, got %+v", taintedSnap)
+	}
+	sanitizedSnap, err := govAuth.AddTaintSanitizer("prompt-buf")
+	if err != nil {
+		t.Fatalf("AddTaintSanitizer: %v", err)
+	}
+	if !containsString(sanitizedSnap.FactTaintSanitizers, "prompt-buf") || containsString(sanitizedSnap.RejectionReasons, "ascent-camel-taint-alert") {
+		t.Fatalf("expected sanitizer prompt-buf to cut CaMeL taint path cleanly, got %+v", sanitizedSnap)
+	}
+	if _, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true); err != nil {
+		t.Fatalf("Rearm after taint sanitization: %v", err)
 	}
 
 	// 5. Live Bi-Temporal premise retraction -> Truth Maintenance invalidates D-OBO-TICKET & D-TOOL-EXEC!
