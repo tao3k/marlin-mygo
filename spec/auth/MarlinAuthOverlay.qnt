@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 tao3k team and Contributors
 // SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+// @quint-extends "@deterministic-engineering/quint-models/threat/identity/oauth-token-lifecycle/OAuthTokenLifecycle"
 
-// Marlin downstream-specific pure .qnt overlay composed structurally via
-// quint-modules-resolver AST on top of @deterministic-engineering/quint-models
-// OAuthTokenLifecycle.qnt. Extends State, init, step, and monotonically
-// strengthens safety for Vault Lock, Cedar Policy Epoch, Anti-Rollback, and
-// OIDC UserInfo sub binding.
+// Marlin downstream-specific pure .qnt extension resolved transparently via
+// quint-modules-resolver on top of @deterministic-engineering/quint-models
+// OAuthTokenLifecycle.qnt (zero intermediate composed file). Extends State,
+// init, step, and monotonically strengthens safety for Vault Lock, Cedar Policy
+// Epoch, Anti-Rollback, and OIDC UserInfo sub binding.
 module marlin_auth_composed {
   type State = { vaultLocked: bool, cedarPolicyEpoch: int, vaultRevision: int, minVaultRevision: int, oidcSubBound: bool }
   action init = h' = { vaultLocked: false, cedarPolicyEpoch: 1, vaultRevision: 1, minVaultRevision: 1, oidcSubBound: true }
