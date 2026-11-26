@@ -473,6 +473,105 @@ func TestLiveCrossProcessSchemeHigherOrderGovernanceE2E(t *testing.T) {
 	}
 }
 
+// TestLiveCrossProcessGovernanceSurvivesOSRestartE2E verifies the Anti-Restart-Reset
+// invariant across two sequential OS processes of `marlin-scheme-host` sharing one
+// Turso SQLite WAL database:
+//   - Phase 1 (MARLIN_SCHEME_HOST_RESTART_PHASE=1): live Gambit VM evaluates incident
+//     -> human RFC 9470 step-up re-arms (trip_epoch 1->2, rev_epoch 2->3) -> operator
+//     trips E-Stop ("pre-restart-halt") -> durably persisted to Turso CAS/WAL.
+//   - Phase 2 (MARLIN_SCHEME_HOST_RESTART_PHASE=2, after SIGTERM + fresh Process #2
+//     launched with MARLIN_SCHEME_GOVERNANCE_MODE=clean on the SAME Turso WAL):
+//     verifies Process #2 refuses to wipe E-Stop/epochs/ASCENT fences/Cedar rules,
+//     restores tripped=true at trip_epoch=2 & rev_epoch=3 with gov-rearm-epoch-2,
+//     and advances to trip_epoch=3 after verified human RFC 9470 step-up re-arm.
+func TestLiveCrossProcessGovernanceSurvivesOSRestartE2E(t *testing.T) {
+	phase := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_RESTART_PHASE"))
+	addr := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_ADDR"))
+	if phase == "" || addr == "" {
+		t.Skip("set MARLIN_SCHEME_HOST_ADDR and MARLIN_SCHEME_HOST_RESTART_PHASE=1|2 to run cross-OS-restart E2E")
+	}
+	token := strings.TrimSpace(os.Getenv("MARLIN_SCHEME_HOST_TOKEN"))
+	authHeader := ""
+	if token != "" {
+		authHeader = "Bearer " + token
+	}
+	target, err := grpcwire.Dial(grpcwire.DialConfig{
+		ID:          "live-scheme-host-restart-" + phase,
+		DisplayName: "Live Rust+Scheme Restart Host Phase " + phase,
+		Mode:        transport.ModeLocalSidecar,
+		Address:     addr,
+		AuthToken:   authHeader,
+	})
+	if err != nil {
+		t.Fatalf("Dial phase %s host %s: %v", phase, addr, err)
+	}
+	defer target.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	govAuth := grpcwire.NewRustGovernanceAuthority(grpcwire.RustGovernanceAuthorityConfig{
+		Target:    target,
+		ProjectID: "default",
+		SessionID: "e2e-restart-" + phase,
+		Timeout:   10 * time.Second,
+	})
+
+	switch phase {
+	case "1":
+		s0, err := govAuth.Hydrate(ctx)
+		if err != nil {
+			t.Fatalf("Phase 1 Hydrate: %v", err)
+		}
+		if !s0.BreakerTripped || s0.BreakerTripEpoch != 1 || s0.RevocationEpoch != 2 {
+			t.Fatalf("Phase 1 expected incident boot tripped=true trip_epoch=1 rev_epoch=2, got %+v", s0)
+		}
+		rearmed, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true)
+		if err != nil {
+			t.Fatalf("Phase 1 Step-Up Re-Arm: %v", err)
+		}
+		if rearmed.BreakerTripped || rearmed.BreakerTripEpoch != 2 || rearmed.RevocationEpoch != 3 {
+			t.Fatalf("Phase 1 expected armed trip_epoch=2 rev_epoch=3, got %+v", rearmed)
+		}
+		tripped, err := govAuth.TripBackendBreaker("ops-alice", "pre-restart-halt")
+		if err != nil {
+			t.Fatalf("Phase 1 TripBackendBreaker: %v", err)
+		}
+		if !tripped.BreakerTripped || tripped.BreakerTripEpoch != 2 {
+			t.Fatalf("Phase 1 expected tripped at epoch 2 before crash/restart, got %+v", tripped)
+		}
+	case "2":
+		restored, err := govAuth.Hydrate(ctx)
+		if err != nil {
+			t.Fatalf("Phase 2 Hydrate after OS restart: %v", err)
+		}
+		if !restored.BreakerTripped {
+			t.Fatalf("RESTART-RESET VIOLATION: breaker failed open after OS restart: %+v", restored)
+		}
+		if restored.BreakerTripEpoch != 2 || restored.RevocationEpoch != 3 {
+			t.Fatalf("EPOCH AMNESIA VIOLATION: expected trip_epoch=2 rev_epoch=3 after OS restart, got %+v", restored)
+		}
+		if !containsString(restored.FencedActors, "agent-sub") || !containsString(restored.FencedActors, "agent-lead") {
+			t.Fatalf("ASCENT FENCE LOST ON RESTART: got %v", restored.FencedActors)
+		}
+		if len(restored.SynthesizedCedarRules) == 0 {
+			t.Fatalf("CEDAR POLICIES LOST ON RESTART")
+		}
+		if !strings.HasPrefix(restored.RearmGateID, "gov-rearm-epoch-2") {
+			t.Fatalf("expected restored one-shot gate gov-rearm-epoch-2*, got %q", restored.RearmGateID)
+		}
+		rearmed2, err := govAuth.RearmBackendBreakerWithStepUp("ops-alice", true)
+		if err != nil {
+			t.Fatalf("Phase 2 post-restart Step-Up Re-Arm failed: %v", err)
+		}
+		if rearmed2.BreakerTripped || rearmed2.BreakerTripEpoch != 3 || rearmed2.RevocationEpoch != 4 {
+			t.Fatalf("Phase 2 expected armed trip_epoch=3 rev_epoch=4, got %+v", rearmed2)
+		}
+	default:
+		t.Fatalf("unknown MARLIN_SCHEME_HOST_RESTART_PHASE=%q", phase)
+	}
+}
+
 func containsString(items []string, needle string) bool {
 	for _, item := range items {
 		if item == needle {
