@@ -244,3 +244,19 @@ publish dir publisher key pub out="./dist/marketplace":
 check: proto-descriptor model-gate test-ts test-go
     CGO_ENABLED=0 go vet ./...
     CGO_ENABLED=0 go build -o /tmp/marlin-app-check ./cmd/marlin-app && rm -f /tmp/marlin-app-check
+
+# Run cross-language G2 AI anti-defensive-programming audit across all production Go files.
+audit-g2 *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CLI="${DE_AGENT_DEFENSE_AUDIT_CLI:-$HOME/ghq/github.com/hardenedlinux/deterministic-engineering-qnt/packages/agent-defense-audit/src/agent-defense-audit.ts}"
+    if [ ! -f "$CLI" ]; then
+      echo "ERROR: agent-defense-audit CLI not found at $CLI (set DE_AGENT_DEFENSE_AUDIT_CLI)" >&2
+      exit 2
+    fi
+    if [ "$#" -gt 0 ]; then
+      exec bun "$CLI" "$@"
+    fi
+    go_files=()
+    while IFS= read -r f; do go_files+=("$f"); done < <(find . -type f -name '*.go' ! -name '*_test.go' ! -path './.*' ! -path './vendor/*' ! -path './node_modules/*' ! -path './dist/*' ! -path './build/*' | sort)
+    exec bun "$CLI" --files "${go_files[@]}"
