@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+name: Publish Signed Official Marketplace Examples
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-signed-catalog:
+    name: Build, Certify & Sign Official Marketplace Catalog (9 Examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install build-time TS/React 19 dependencies (bundled into zero-runtime .marlinpkg)
+        run: bun install --frozen-lockfile
+
+      - name: Certify, build, pack, and Ed25519-sign all 9 canonical example plugins
+        run: |
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
+          test -s ./dist/marketplace/catalog.json
+          test -s ./dist/marketplace/catalog.json.sig
+          test -s ./dist/marketplace/publisher.pub
+          test -s ./dist/marketplace/trust-ring.toml
+
+      - name: Enforce per-plugin performance budgets across flagship React 19, Go WASI & Declarative plugins
+        run: |
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/ts-org-agenda-planner -scale 2.5
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/react-ai-memory-inbox -scale 2.5
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/react-ai-workflow-cockpit -scale 2.5
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/go-focus-clock-reactor -scale 2.5
+          CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir ./examples/plugins/declarative-daily-planner-pack -scale 2.5
+
+      - name: Upload signed Marketplace catalog artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: marlin-official-marketplace-catalog
+          path: ./dist/marketplace/
+          retention-days: 30
+
+      - name: Publish signed catalog & trust-ring.toml to GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" ./dist/marketplace/* \
+            --title "Marlin Official Plugin Catalog $TAG" \
+            --notes "Certified & Ed25519-signed Marketplace catalog (React 19, Go 1.27 WASI GPU Reactor, and App-Store-safe Declarative packs) + trust-ring.toml." \
+            || gh release upload "$TAG" ./dist/marketplace/* --clobber

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Complex Reference Use Case (Case 1 — Desktop Preferred Interactive Plugin):
+# Personal Org Agenda, AI Daily Planning, Time-Block Schedule & Focus Alarm
+# built on React 19 + @tao3k/marlin-panel-sdk/react + bun build.
+# Consumes canonical tao3k/orgize (and orgize-wasm) DTO projections with ZERO
+# hand-rolled Org syntax parsing in JavaScript.
+id = "tao3k.org-agenda-planner"
+version = "0.2.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_agenda]
+kind = "projection.read"
+surface = "org.agenda"
+
+[capabilities.read_clock]
+kind = "projection.read"
+surface = "org.clock"
+
+[capabilities.read_session]
+kind = "projection.read"
+surface = "session.summary"
+
+[contributions.agenda_panel]
+kind = "ui-panel"
+requires = ["read_agenda", "read_clock", "read_session"]
+
+[contributions.agenda_panel.panel]
+runtime = "webview-untrusted"
+slot_id = "workbench.main"
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = ["org.agenda", "org.clock", "session.summary"]
+declared_actions = [
+  "org.capture.plan",
+  "org.todo.toggle",
+  "org.clock.in",
+  "org.clock.out",
+  "agenda.alarm.trigger",
+  "agent.workflow.plan-day",
+]
+activation = "on-command"
+triggers = ["agenda.open", "planner.today"]
+idle_unload_sec = 600

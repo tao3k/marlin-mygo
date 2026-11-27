@@ -1,0 +1,773 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+// Command marlin-mygo-tool replaces ad-hoc shell scripts with typed,
+// cross-platform Go tooling for descriptor compilation, stub generation,
+// upstream Protobuf compatibility verification, Quint formal security model
+// gating, and downstream Marketplace plugin scaffolding.
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+)
+
+var canonicalProtos = []string{
+	"proto/marlin/common/v1/common.proto",
+	"proto/marlin/app/v1/app_server.proto",
+	"proto/marlin/gate/v1/gate.proto",
+	"proto/marlin/ui/v1/ui.proto",
+	"proto/marlin/plugin/v1/plugin.proto",
+	"proto/marlin/device/v1/device.proto",
+	"proto/marlin/projection/v1/projection.proto",
+}
+
+var upstreamAppV1RPCs = []string{
+	"GetCapabilities",
+	"StreamTurn",
+	"StartSessionTurn",
+	"WatchSessionTurn",
+	"CancelSessionTurn",
+	"OpenSession",
+	"GetSessionSummary",
+	"GetSessionTurnStatus",
+	"GetSessionTurnCancellation",
+}
+
+var quintNegativeControls = []string{
+	"badStepOriginSpoof",
+	"badStepRestrictedSlotHijack",
+	"badStepDeviceWriteNoReceipt",
+	"badStepBreakerForgetsFallback",
+	"badStepTamperedPluginActive",
+	"badStepSecretTopicLeak",
+	"badStepDeviceWriteReplay",
+	"badStepPinMismatchWake",
+	"badStepDormantForgetsFallback",
+	"badStepLRUCapExceeded",
+	"badStepSilentPrivilegeEscalation",
+	"badStepAgentSelfApproveGate",
+	"badStepRoomGateDoubleResolve",
+}
+
+var restrictedSlots = []string{
+	"approval.gate",
+	"host.auth",
+	"host.secrets",
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "descriptor":
+		err = runDescriptor(os.Args[2:])
+	case "gen":
+		err = runGen(os.Args[2:])
+	case "gen-ts":
+		err = runGenTS(os.Args[2:])
+	case "compat-check":
+		err = runCompatCheck(os.Args[2:])
+	case "wire-sync":
+		err = runWireSync(os.Args[2:])
+	case "model-gate":
+		err = runModelGate(os.Args[2:])
+	case "init-plugin":
+		err = runInitPlugin(os.Args[2:])
+	case "keygen":
+		err = runKeygen(os.Args[2:])
+	case "pack":
+		err = runPack(os.Args[2:])
+	case "verify":
+		err = runVerify(os.Args[2:])
+	case "catalog":
+		err = runCatalog(os.Args[2:])
+	case "build-examples":
+		err = runBuildExamples(os.Args[2:])
+	case "validate-registry":
+		err = runValidateRegistry(os.Args[2:])
+	case "e2e-rust":
+		err = runE2ERust(os.Args[2:])
+	case "perf-gate":
+		err = runPerfGate(os.Args[2:])
+	case "serve-catalog":
+		err = runServeCatalog(os.Args[2:])
+	case "dev-plugin":
+		err = runDevPlugin(os.Args[2:])
+	case "doctor":
+		err = runDoctor(os.Args[2:])
+	case "bench-plugin":
+		err = runBenchPlugin(os.Args[2:])
+	case "publish":
+		err = runPublish(os.Args[2:])
+	default:
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "marlin-mygo-tool %s: %v\n", os.Args[1], err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: go run ./cmd/marlin-mygo-tool <descriptor|gen|gen-ts|compat-check|model-gate|init-plugin|keygen|pack|verify|catalog|build-examples|e2e-rust|perf-gate|serve-catalog|dev-plugin|doctor|bench-plugin|publish> [flags]")
+}
+
+func runDescriptor(args []string) error {
+	fs := flag.NewFlagSet("descriptor", flag.ContinueOnError)
+	out := fs.String("out", "proto/marlin-wire-v1.bin", "output FileDescriptorSet path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	protocPath, err := exec.LookPath("protoc")
+	if err != nil {
+		return errors.New("protoc not found in PATH")
+	}
+	cmdArgs := []string{
+		"--proto_path=proto",
+		"--include_imports",
+		"--include_source_info",
+		"--descriptor_set_out=" + *out,
+	}
+	cmdArgs = append(cmdArgs, canonicalProtos...)
+	cmd := exec.Command(protocPath, cmdArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*out)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(raw)
+	fmt.Printf("%s  %s (%d bytes)\n", hex.EncodeToString(sum[:]), *out, len(raw))
+	return nil
+}
+
+func runGen(args []string) error {
+	fs := flag.NewFlagSet("gen", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	for _, tool := range []string{"buf", "protoc-gen-go", "protoc-gen-go-grpc"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			return fmt.Errorf("%s not found in PATH", tool)
+		}
+	}
+	for _, sub := range [][]string{{"lint"}, {"generate"}} {
+		cmd := exec.Command("buf", sub...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("buf %s failed: %w", strings.Join(sub, " "), err)
+		}
+	}
+	return nil
+}
+
+func runCompatCheck(args []string) error {
+	fs := flag.NewFlagSet("compat-check", flag.ContinueOnError)
+	coreDir := fs.String("core", "../..", "path to marlin-agent-core checkout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	upstreamPath := filepath.Join(*coreDir, "crates", "marlin-agent-app-server", "proto", "marlin", "app", "v1", "app_server.proto")
+	if _, err := os.Stat(upstreamPath); err != nil {
+		return fmt.Errorf("upstream proto missing at %s: %w", upstreamPath, err)
+	}
+	localRaw, err := os.ReadFile(filepath.Join("proto", "marlin", "app", "v1", "app_server.proto"))
+	if err != nil {
+		return err
+	}
+	localText := string(localRaw)
+	for _, rpc := range upstreamAppV1RPCs {
+		if !strings.Contains(localText, "rpc "+rpc+"(") {
+			return fmt.Errorf("missing upstream marlin.app.v1 RPC %q", rpc)
+		}
+	}
+	fmt.Printf("Verified all %d upstream marlin.app.v1 RPCs against %s.\n", len(upstreamAppV1RPCs), upstreamPath)
+	return nil
+}
+
+func runModelGate(args []string) error {
+	fs := flag.NewFlagSet("model-gate", flag.ContinueOnError)
+	specPath := fs.String("spec", "spec/quint/frontend-security.qnt", "path to Quint security specification")
+	samples := fs.Int("samples", 1000, "number of random simulation traces for safe model")
+	steps := fs.Int("steps", 25, "max steps per simulation trace")
+	seed := fs.Int("seed", 42, "deterministic simulation PRNG seed")
+	backend := fs.String("backend", "rust", "quint simulator backend: rust | typescript")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	quintBin, err := exec.LookPath("quint")
+	if err != nil {
+		return errors.New("quint not found in PATH (install @informalsystems/quint)")
+	}
+	if _, err := os.Stat(*specPath); err != nil {
+		return fmt.Errorf("quint spec not found at %s: %w", *specPath, err)
+	}
+
+	fmt.Printf("[1/4] quint typecheck %s\n", *specPath)
+	if out, err := exec.Command(quintBin, "typecheck", *specPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("typecheck failed: %w\n%s", err, string(out))
+	}
+
+	fmt.Printf("[2/4] quint test --main=frontendPluginSecurity --backend=%s %s\n", *backend, *specPath)
+	if out, err := exec.Command(quintBin, "test", "--main=frontendPluginSecurity", "--backend="+*backend, *specPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("quint test failed: %w\n%s", err, string(out))
+	} else {
+		fmt.Print(string(out))
+	}
+
+	fmt.Printf("[3/4] quint run (%d samples x %d steps, backend=%s, invariant=safe)\n", *samples, *steps, *backend)
+	runCmd := exec.Command(
+		quintBin, "run",
+		"--main=frontendPluginSecurity",
+		"--backend="+*backend,
+		"--seed="+strconv.Itoa(*seed),
+		"--max-samples="+strconv.Itoa(*samples),
+		"--max-steps="+strconv.Itoa(*steps),
+		"--invariant=safe",
+		"--verbosity=1",
+		*specPath,
+	)
+	if out, err := runCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("safe invariant run failed: %w\n%s", err, string(out))
+	} else {
+		text := string(out)
+		if !strings.Contains(text, "No violation found") {
+			return fmt.Errorf("unexpected quint run output without 'No violation found':\n%s", text)
+		}
+		fmt.Println("  ok: No violation found across", *samples, "traces")
+	}
+
+	fmt.Printf("[4/4] checking %d adversarial negative controls (each MUST violate safe)\n", len(quintNegativeControls))
+	for _, badStep := range quintNegativeControls {
+		negCmd := exec.Command(
+			quintBin, "run",
+			"--main=frontendPluginSecurity",
+			"--backend="+*backend,
+			"--seed="+strconv.Itoa(*seed),
+			"--max-samples=300",
+			"--max-steps="+strconv.Itoa(*steps),
+			"--step="+badStep,
+			"--invariant=safe",
+			"--verbosity=1",
+			*specPath,
+		)
+		out, err := negCmd.CombinedOutput()
+		text := string(out)
+		if err == nil || !strings.Contains(text, "Invariant violated") {
+			return fmt.Errorf("negative control %q failed to trigger Invariant violated (err=%v):\n%s", badStep, err, text)
+		}
+		fmt.Printf("  ok: %s -> Invariant violated (caught as expected)\n", badStep)
+	}
+	fmt.Println("Quint formal security model gate PASSED.")
+	return nil
+}
+
+func runInitPlugin(args []string) error {
+	fs := flag.NewFlagSet("init-plugin", flag.ContinueOnError)
+	idStr := fs.String("id", "", "namespaced plugin ID (e.g. acme.sprint-board)")
+	runtimeKind := fs.String("runtime", "react", "plugin runtime: react | ts | go-wasm | declarative")
+	slotStr := fs.String("slot", "workbench.main", "target UI slot ID")
+	outDir := fs.String("out", "", "output directory (defaults to ./<plugin-short-name>)")
+	force := fs.Bool("force", false, "allow writing into an existing directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	pluginID, err := schema.ParsePluginID(*idStr)
+	if err != nil {
+		return fmt.Errorf("invalid -id: %w", err)
+	}
+	if err := schema.ValidateDotIdentifier(*slotStr); err != nil {
+		return fmt.Errorf("invalid -slot: %w", err)
+	}
+	if slices.Contains(restrictedSlots, *slotStr) {
+		return fmt.Errorf("slot %q is host-restricted and cannot mount untrusted plugins", *slotStr)
+	}
+
+	parts := strings.Split(string(pluginID), ".")
+	shortName := parts[len(parts)-1]
+	targetDir := *outDir
+	if targetDir == "" {
+		targetDir = shortName
+	}
+	if entries, err := os.ReadDir(targetDir); err == nil && len(entries) > 0 && !*force {
+		return fmt.Errorf("output directory %q already exists and is non-empty (pass -force to overwrite)", targetDir)
+	}
+
+	files, err := renderPluginScaffold(pluginID, *runtimeKind, schema.SlotID(*slotStr), shortName)
+	if err != nil {
+		return err
+	}
+	for rel, content := range files {
+		fullPath := filepath.Join(targetDir, rel)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("Scaffolded %s plugin %q (%d files) in %s\n", *runtimeKind, pluginID, len(files), targetDir)
+	return nil
+}
+
+func renderPluginScaffold(pluginID schema.PluginID, runtimeFlag string, slotID schema.SlotID, shortName string) (map[string]string, error) {
+	actionName := shortName + ".refresh"
+	topicName := shortName + ".state"
+	agentCard := fmt.Sprintf(`# Marlin Plugin Agent Contract (%s)
+
+Runtime: %s | Slot: %s
+
+## Hard Rules (Enforced by doctor & publish)
+- Never target host-restricted slots (approval.gate, host.auth, host.secrets).
+- Only read declared read_scopes and invoke declared_actions.
+- WebView index.html MUST include Content-Security-Policy with zero remote http(s) script src and zero eval()/new Function().
+- Go WASI plugins use uiir.RenderResult(tree) or uiir.DrawListResult(cmds) (zero unsafe boilerplate).
+- Declarative packs MUST contain zero executable/script files (.wasm, .js, .ts, .sh).
+
+## Self-Healing Security & Performance Loop (For Humans & AI Agents)
+After any edit, run both gates in JSON mode. If any security check or performance
+budget fails, inspect the measured value, budget, and remediation hint and fix it:
+- Security + Perf : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir . -perf -json
+- Perf Gate Only  : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool bench-plugin -dir . -json
+- Hot-Dev         : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool dev-plugin -dir .
+- Publish         : CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish -dir . -publisher <pub-id> -key <priv.key> -pub <pub.key> -out ./dist/marketplace
+`, pluginID, runtimeFlag, slotID)
+
+	switch runtimeFlag {
+	case "react":
+		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = %q
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_state]
+kind = "projection.read"
+surface = %q
+
+[contributions.%s_panel]
+kind = "ui-panel"
+requires = ["read_state"]
+
+[contributions.%s_panel.panel]
+runtime = "webview-untrusted"
+slot_id = %q
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = [%q]
+declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
+`, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
+
+		pkgJSON := fmt.Sprintf(`{
+  "name": "@marlin-plugin/%s",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tao3k/marlin-panel-sdk": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
+`, shortName)
+
+		indexHTML := fmt.Sprintf(`<!-- SPDX-FileCopyrightText: 2026 tao3k team and Contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' marlin-plugin:; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+    <title>%s</title>
+    <style>
+      body { margin: 0; background: var(--marlin-canvas, #282c34); color: var(--marlin-ink, #bbc2cf); font-family: system-ui, -apple-system, sans-serif; padding: 16px; }
+      button { background: var(--marlin-accent, #c678dd); color: #1c1f24; border: 0; border-radius: 6px; padding: 8px 14px; font-weight: 600; cursor: pointer; }
+      pre { background: var(--marlin-bar, #1c1f24); padding: 10px; border-radius: 8px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>
+`, pluginID)
+
+		mainTSX := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { createRoot } from "react-dom/client";
+import {
+  MarlinPanelProvider,
+  useMarlinAction,
+  useMarlinProjection,
+} from "@tao3k/marlin-panel-sdk/react";
+
+function PanelView() {
+  const { data, eventCount } = useMarlinProjection<Record<string, unknown>>(%q, { status: "ready" });
+  const refresh = useMarlinAction<{ source: string }>(%q);
+
+  return (
+    <main>
+      <h1>%s (React 19)</h1>
+      <p>Events synced: {eventCount}</p>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+      <button type="button" disabled={refresh.pending} onClick={() => void refresh.submit({ source: "react-click" })}>
+        {refresh.pending ? "Submitting..." : "Trigger Scoped Action"}
+      </button>
+      {refresh.lastReceipt && <p>Receipt: {refresh.lastReceipt.receiptId ?? refresh.lastReceipt.denial}</p>}
+    </main>
+  );
+}
+
+const el = document.getElementById("root");
+if (el) {
+  createRoot(el).render(
+    <MarlinPanelProvider pluginId=%q>
+      <PanelView />
+    </MarlinPanelProvider>,
+  );
+}
+`, topicName, actionName, pluginID, pluginID)
+
+		perfTS := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { definePluginPerfSuite, runPluginPerfCLI } from "@tao3k/marlin-panel-sdk";
+
+export const perfSuite = definePluginPerfSuite({
+  pluginId: %q,
+  cases: [
+    {
+      name: "state.projection.smoke",
+      budgetUs: 250,
+      remediation: "Keep selector/projection transforms O(N) and memoize expensive derived lists in React 19.",
+      run: () => {
+        const items = [1, 2, 3, 4, 5, 6, 7, 8];
+        let sum = 0;
+        for (let i = 0; i < items.length; i++) sum += items[i];
+        if (sum < 0) throw new Error("unreachable");
+      },
+    },
+  ],
+});
+
+if (import.meta.main) {
+  runPluginPerfCLI(perfSuite);
+}
+`, pluginID)
+
+		readme := fmt.Sprintf("# %s (React 19 Untrusted WebView Plugin)\n\nSlot: `%s`\nRuntime: `webview-untrusted` (React 19 + `bun build`)\n", pluginID, slotID)
+		return map[string]string{
+			"marlin-plugin.toml": manifest,
+			"package.json":       pkgJSON,
+			"index.html":         indexHTML,
+			"src/main.tsx":       mainTSX,
+			"src/perf.ts":        perfTS,
+			"README.md":          readme,
+			"AGENT.md":           agentCard,
+		}, nil
+
+	case "ts":
+		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = %q
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_state]
+kind = "projection.read"
+surface = %q
+
+[contributions.%s_panel]
+kind = "ui-panel"
+requires = ["read_state"]
+
+[contributions.%s_panel.panel]
+runtime = "webview-untrusted"
+slot_id = %q
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = [%q]
+declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
+`, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
+
+		pkgJSON := fmt.Sprintf(`{
+  "name": "@marlin-plugin/%s",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tao3k/marlin-panel-sdk": "workspace:*"
+  }
+}
+`, shortName)
+
+		indexHTML := fmt.Sprintf(`<!-- SPDX-FileCopyrightText: 2026 tao3k team and Contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' marlin-plugin:; style-src 'self' 'unsafe-inline';" />
+    <title>%s</title>
+    <style>
+      body { background: var(--marlin-canvas, #282c34); color: var(--marlin-ink, #bbc2cf); font-family: system-ui, sans-serif; padding: 16px; }
+      button { background: var(--marlin-accent, #c678dd); color: #1c1f24; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">%s</h1>
+    <pre id="state">Waiting for scoped events...</pre>
+    <button id="refresh" type="button">Trigger Scoped Action</button>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
+`, pluginID, pluginID)
+
+		mainTS := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { defineMarlinPanel } from "@tao3k/marlin-panel-sdk";
+
+const stateEl = document.getElementById("state");
+const panel = defineMarlinPanel({
+  pluginId: %q,
+  events: {
+    %q: (ev) => {
+      if (stateEl) stateEl.textContent = JSON.stringify(ev.payload, null, 2);
+    },
+  },
+});
+
+document.getElementById("refresh")?.addEventListener("click", () => {
+  void panel.submit(%q, { source: "ui-click" });
+});
+`, pluginID, topicName, actionName)
+
+		perfTS := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+import { definePluginPerfSuite, runPluginPerfCLI } from "@tao3k/marlin-panel-sdk";
+
+// Add your plugin's state transformation, filtering, or layout hot paths here.
+// Run directly via: marlin-mygo-tool bench-plugin -dir . -json
+export const perfSuite = definePluginPerfSuite({
+  pluginId: %q,
+  cases: [
+    {
+      name: "state.projection.smoke",
+      budgetUs: 250,
+      remediation: "Avoid O(N^2) loops and repeated object cloning inside your state projection handler.",
+      run: () => {
+        const items = [1, 2, 3, 4, 5, 6, 7, 8];
+        let sum = 0;
+        for (let i = 0; i < items.length; i++) sum += items[i];
+        if (sum < 0) throw new Error("unreachable");
+      },
+    },
+  ],
+});
+
+if (import.meta.main) {
+  runPluginPerfCLI(perfSuite);
+}
+`, pluginID)
+
+		readme := fmt.Sprintf("# %s (TypeScript Untrusted WebView Plugin)\n\nSlot: `%s`\nRuntime: `webview-untrusted`\n", pluginID, slotID)
+		return map[string]string{
+			"marlin-plugin.toml": manifest,
+			"package.json":       pkgJSON,
+			"index.html":         indexHTML,
+			"src/main.ts":        mainTS,
+			"src/perf.ts":        perfTS,
+			"README.md":          readme,
+			"AGENT.md":           agentCard,
+		}, nil
+
+	case "go-wasm":
+		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = %q
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "wasm-ui-ir-v1"]
+
+[capabilities.read_state]
+kind = "projection.read"
+surface = %q
+
+[contributions.%s_ir]
+kind = "ui-panel"
+requires = ["read_state"]
+
+[contributions.%s_ir.panel]
+runtime = "wasm-ui-ir"
+slot_id = %q
+cardinality = "single"
+entry_path = "plugin.wasm"
+read_scopes = [%q]
+declared_actions = [%q]
+activation = "on-slot"
+idle_unload_sec = 300
+`, pluginID, topicName, shortName, shortName, slotID, topicName, actionName)
+
+		mainGo := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+//go:build wasip1
+
+// Build as a resident Go 1.27+ WASI reactor (sub-millisecond per-frame Render):
+//   GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -buildmode=c-shared -o plugin.wasm .
+package main
+
+import (
+	"fmt"
+
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+	uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
+)
+
+var frameCount uint64
+
+//go:wasmexport marlin_ui_render
+func marlinUIRender() uint64 {
+	frameCount++
+	return uiir.RenderResult(uiir.Panel(%q, schema.ToneAccent,
+		uiir.Rows(
+			uiir.Text(uiir.Span(fmt.Sprintf("Resident WASM-IR frame %%d", frameCount), schema.ToneInfo)),
+		),
+	))
+}
+
+func main() {}
+`, pluginID)
+
+		perfTestGo := fmt.Sprintf(`// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+//go:build !wasip1
+
+package main
+
+import (
+	"testing"
+	"time"
+
+	"github.com/tao3k/marlin-mygo/pkg/schema"
+	uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
+)
+
+func TestPluginPerfBudget(t *testing.T) {
+	uiir.AssertPerfCase(t, uiir.PerfCase{
+		Name:        "build_ui_tree",
+		MaxP50:      200 * time.Microsecond,
+		MaxAllocs:   20,
+		Remediation: "Avoid heavy formatting or O(N^2) work inside your UIElement builder.",
+		Run: func() {
+			tree := uiir.Panel(%q, schema.ToneAccent,
+				uiir.Rows(uiir.Text(uiir.Span("ok", schema.ToneInfo))),
+			)
+			_, _ = uiir.Encode(tree)
+		},
+	})
+}
+`, pluginID)
+
+		readme := fmt.Sprintf("# %s (Go Resident WASM-IR Plugin)\n\nSlot: `%s`\nBuild:\n```shell\nGOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build -buildmode=c-shared -o plugin.wasm .\n```\n", pluginID, slotID)
+		return map[string]string{
+			"marlin-plugin.toml": manifest,
+			"main.go":            mainGo,
+			"perf_test.go":       perfTestGo,
+			"README.md":          readme,
+			"AGENT.md":           agentCard,
+		}, nil
+
+	case "declarative":
+		manifest := fmt.Sprintf(`# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+id = %q
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1"]
+
+[contributions.%s_pack]
+kind = "theme-pack"
+
+[contributions.%s_pack.panel]
+runtime = "declarative"
+slot_id = %q
+cardinality = "single"
+entry_path = "theme.toml"
+activation = "on-slot"
+idle_unload_sec = 300
+`, pluginID, shortName, shortName, slotID)
+
+		themeTOML := `# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+[theme]
+canvas = "#282c34"
+ink = "#bbc2cf"
+bar = "#1c1f24"
+accent = "#c678dd"
+info = "#51afef"
+success = "#98be65"
+warning = "#ecbe7b"
+muted = "#73797e"
+`
+		readme := fmt.Sprintf("# %s (Declarative Pack — Desktop + iOS/Android App Store Safe)\n\nSlot: `%s`\n", pluginID, slotID)
+		return map[string]string{
+			"marlin-plugin.toml": manifest,
+			"theme.toml":         themeTOML,
+			"README.md":          readme,
+			"AGENT.md":           agentCard,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported -runtime %q (want react, ts, go-wasm, or declarative)", runtimeFlag)
+	}
+}

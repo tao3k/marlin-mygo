@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# AI Workflow Use Case (React 19 TSX + tao3k/orgize OrgizeMemoryResponseDto):
+# Review, verify evidence/authority, and triage AI-extracted knowledge & memory
+# candidates into Org Datetree or Supersede/Dismiss with scoped receipts.
+id = "tao3k.ai-memory-inbox"
+version = "0.1.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "scoped-panel-v1"]
+
+[capabilities.read_memory]
+kind = "projection.read"
+surface = "org.memory"
+
+[capabilities.read_session]
+kind = "projection.read"
+surface = "session.summary"
+
+[contributions.memory_inbox_panel]
+kind = "ui-panel"
+requires = ["read_memory", "read_session"]
+
+[contributions.memory_inbox_panel.panel]
+runtime = "webview-untrusted"
+slot_id = "workbench.main"
+cardinality = "single"
+entry_path = "index.html"
+read_scopes = ["org.memory", "session.summary"]
+declared_actions = [
+  "org.memory.accept",
+  "org.memory.supersede",
+  "org.memory.dismiss",
+  "org.capture.plan",
+]
+activation = "on-command"
+triggers = ["memory.inbox", "ai.triage"]
+idle_unload_sec = 600

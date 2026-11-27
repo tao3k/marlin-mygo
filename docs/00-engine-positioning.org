@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 00 — Frontend Engine Positioning, Organization & Performance SLOs
+#+filetags: :tao3k:marlin:mygo:engine:architecture:benchmark:
+
+* 1. Positioning: High-Performance Modular UI Engine
+
+=marlin-mygo= is a *high-performance, modular, hot-pluggable UI engine and
+plugin host* paired symmetrically with =marlin-agent-core='s *Authority Kernel
+and Policy Engine (Rust + Gerbil Scheme)*:
+
+- *Backend Authority Engine (=marlin-agent-core=)*: owns execution authority,
+  durable Org & Session journals, Graph-Loop state machines, capability catalogs,
+  Scheme policy composition, and cryptographic receipts.
+- *Frontend Presentation Engine (=marlin-mygo=)*: owns deterministic frame
+  scheduling, incremental UI IR reconciliation, lock-free plugin event routing
+  with backpressure & fault isolation, compiled key-chord & fuzzy command
+  dispatch, 100k-row virtualized viewport indexing, GPU rendering (MyGo Metal /
+  D3D11 / OpenGL), and dual-stack sandboxed plugin runtimes (TS Untrusted
+  WebView + Go =wazero= WASM-IR + Go =js/wasm=).
+
+Unlike a thin UI shell or component library, a Frontend Engine guarantees
+*bounded frame latency (120Hz / 8.33ms budget)* even when dozens of third-party
+TS/Go Marketplace plugins, multiple remote gRPC streams, and 100,000-line
+transcripts run concurrently.
+
+* 2. Layered Organization Architecture (Strict Acyclic Planes)
+
+#+begin_example
+Plane 5 [Verification]  bench/                  Go + TS E2E Benchmark Harness & SLO Gates
+                           │
+Plane 4 [Ecosystem]     packages/panel-sdk/     @tao3k/marlin-panel-sdk (TS Untrusted WebView)
+                        sdk/go-ui-ir/           Go WASM-IR Builder SDK (GOOS=wasip1)
+                           │
+Plane 3 [Control Plane] control/transport/      Multi-target Registry (Sidecar / Embedded / Remote)
+                        control/grpcwire/       HTTP/2 gRPC 6-service adapters
+                        control/marketplace/    Ed25519 + CAS staging & transactional rollback
+                           │
+Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy + CallerPage protocol + WASM ABI
+                        runtime/wazeroir/       AOT-cached pure-Go wazero WASM-IR sandbox
+                        runtime/mygoshell/      MyGo GPU renderer + Untrusted WebView host
+                        runtime/device/         device.* capability bridge (platform.ios / platform.android / platform.desktop)
+                           │
+Plane 1 [Engine Core]   engine/arena/           Flat UI IR Arena + Merkle dual-hash incremental Diff
+                        engine/bus/             COW lock-free topic bus + 2^k coalescing ring + breaker
+                        engine/input/           Compiled KeyTrie (Meow/Hydra) + zero-alloc Fuzzy scorer
+                        engine/viewport/        Fenwick BIT virtual height index (O(log N) scroll & fold)
+                        engine/scheduler/       P0/P1/P2 frame-budget scheduler (input never starved)
+                           │
+Plane 0 [Contract]      proto/ & gen/           7 orthogonal marlin.*.v1 Protobuf packages (buf STANDARD)
+                        pkg/schema/             Zero-dependency semantic IDs, Ed25519 trust, UI IR bounds
+#+end_example
+
+Dependency direction is strictly downward:
+- =engine/*= depends ONLY on =pkg/schema= and Go stdlib (zero GUI, zero gRPC,
+  zero third-party runtime dependencies) so algorithmic microbenchmarks and
+  property tests run deterministically in milliseconds.
+- =runtime/*= binds =engine/*= to MyGo GPU rendering, Untrusted WebViews,
+  =wazero=, and =platform.*= / =device.*= capability providers.
+- =control/*= owns remote/local gRPC transport and Marketplace distribution.
+
+* 3. Core Engine Algorithms & Complexity Guarantees
+
+| Subsystem | Data Structure / Algorithm | Time Complexity | Allocation / Isolation Property |
+|-----------+----------------------------+-----------------+---------------------------------|
+| =engine/arena= | Contiguous flat =[]Node= arena + iterative post-order FNV-1a 64-bit dual Merkle hash (=ContentHash=, =StyleHash=) + pruned tree diff | Build =O(N)=; incremental diff =O(k log N)= (skips unchanged subtrees in =O(1)=) | Zero recursive stack risk; distinguishes =OpRestyleOnly= (theme change) from structural rebuild |
+| =engine/bus= | =atomic.Pointer= Copy-on-Write lock-free routing table + per-subscriber mutex-guarded power-of-two =CoalescingRing= + 3-state =CircuitBreaker= | Publish routing =O(S)= (no global bus lock); enqueue =O(1)= | Zero bus-level mutex contention; slow/hung plugins coalesce or trip breaker without stalling gRPC |
+| =engine/input= | Compiled multi-key =KeyTrie= (scope-aware) + stack-buffered subsequence =FuzzyScore= with boundary & consecutive run bonuses | Key lookup =O(chord_len)=; command filter =O(C * len)= | Rejects key conflicts at snapshot admission; zero per-candidate heap allocs |
+| =engine/viewport= | Fenwick Tree (Binary Indexed Tree) with binary lifting =FindRowAtY= | Append / Fold / Scroll-to-row =O(log N)= | Handles 100k+ transcript rows & thinking-block fold toggles without =O(N)= rescans |
+| =engine/scheduler= | P0/P1/P2 priority ring queues with strict monotonic frame budget & latency histogram | Enqueue/Drain =O(1)= per task | Control input & Approval Gates (P0) are never starved by background plugins (P2) |
+| =control/marketplace= | Emacs-style declarative =marlin-plugins.toml= + lock-free COW =atomic.Pointer[triggerTable]= + singleflight =Wake= + intrusive doubly-linked LRU working-set eviction & oldest-first =ReapIdle= | Hook/trigger dispatch =O(1)=; LRU touch/evict/reap-check =O(1)= | 100+ installed plugins stay dormant at 0 MB RAM; =0 allocs= on steady-state hook dispatch; idle plugins automatically unload and restore =host.*= fallback |
+| =runtime/wazeroir= | SHA-256 keyed =wazero.CompiledModule= AOT cache + bounded linear memory pages | Cold compile once; cached instantiate sub-ms | Enforces =CGO_ENABLED=0= and hard per-plugin memory ceiling |
+
+* 4. Tightened Performance SLO Budgets & Automated Perf-Gate (=DefaultCPUWorkBudget = 2ms=, 240Hz Ready)
+
+All ceilings below are hard-enforced by =marlin-mygo-tool perf-gate= (local
+strict =1.0x= via =just perf-gate= and CI via =-latency-scale=2.5=; heap
+allocation and byte budgets are *never* relaxed in CI):
+
+| Subsystem / Benchmark | Strict Latency Budget | Hard Max Allocs | Hard Max Bytes |
+|-------------------------------------------------------+-----------------------+-----------------+----------------|
+| =engine/arena= 1,000-node incremental diff (1 leaf)   | *<= 500 ns*           | *0*             | *0 B*          |
+| =engine/arena= 1,000-node pure theme restyle          | *<= 50 ns*            | *0*             | *0 B*          |
+| =engine/arena= 1,000-node full compile                | *<= 450 µs*           | <= 24           | <= 640 KB      |
+| =engine/bus= lock-free fan-out (16 plugins coalesced) | *<= 1.5 µs*           | *0*             | *0 B*          |
+| =engine/input= 3-key Meow/Hydra =KeyTrie= lookup      | *<= 75 ns*            | *0*             | *0 B*          |
+| =engine/input= 1,000-command =Cmd+K= fuzzy ranking    | *<= 130 µs*           | *0*             | *0 B*          |
+| =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT) | *<= 200 ns*           | *0*             | *0 B*          |
+| =engine/viewport= 100k-row fold/unfold height update  | *<= 15 ns*            | *0*             | *0 B*          |
+| =control/marketplace= 100-plugin lazy hook dispatch   | *<= 60 ns*            | *0*             | *0 B*          |
+| =control/marketplace= 100-plugin O(1) idle-reap check | *<= 60 ns*            | *0*             | *0 B*          |
+| =runtime/wazeroir= resident WASM =DrawList= (64 cmds) | *<= 75 µs*            | <= 6            | <= 512 B       |
+| =runtime/wazeroir= resident WASM JSON UI-IR render    | *<= 300 µs*           | <= 18           | <= 20 KB       |
+| =runtime/mygoshell= headless workbench GPU frame      | *<= 90 µs*            | <= 24           | <= 2.5 KB      |
+| =runtime/mygoshell= 100k-row virtualized live frame   | *<= 250 µs*           | <= 24 (mac)     | <= 1.5 KB      |
+| =control/grpcwire= loopback HTTP/2 scoped action      | *<= 250 µs*           | <= 220          | <= 20 KB       |
+| =@tao3k/marlin-panel-sdk= event match / drop / theme  | *<= 60 / 30 / 50 ns*  | —               | —              |

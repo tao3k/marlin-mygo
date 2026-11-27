@@ -1,0 +1,94 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+//go:build !js
+
+// Command marlin-app launches the modular Marlin MyGo GPU workbench with
+// multi-machine federated sidebar switching (FederationSupervisor), live
+// HTTP/2 gRPC SessionDriver support, Scheme UI-IR rendering, Emacs composable
+// windows, Approval Gate overlays, and all 3 plugin runtimes.
+package main
+
+import (
+	"context"
+	"flag"
+	"log"
+	"time"
+)
+
+type appConfig struct {
+	appServerBin     string
+	sidecarBin       string
+	standalone       bool
+	loginWindow      bool
+	realSession      bool
+	tursoPath        string
+	pubKeyFile       string
+	hostAddr         string
+	token            string
+	caFile           string
+	certFile         string
+	keyFile          string
+	sessionID        string
+	catalogURL       string
+	catalogDir       string
+	catalogPub       string
+	trustRingFile    string
+	catalogPublisher string
+	pluginsProfile   string
+	maxActiveLazy    int
+	idleReapInterval time.Duration
+	wasmCacheDir     string
+	devPluginDir     string
+	showcase         bool
+	showcasePlugin   string
+	featuresSpec     string
+	schemeHostBin    string
+	schemeGovMode    string
+	schemeGovDB      string
+}
+
+func parseFlags() appConfig {
+	var cfg appConfig
+	flag.StringVar(&cfg.appServerBin, "app-server", "", "local Rust marlin-app-server binary to spawn automatically (auto-discovered if omitted)")
+	flag.StringVar(&cfg.sidecarBin, "sidecar", "", "alias for -app-server: explicit local Rust App Server sidecar binary path")
+	flag.BoolVar(&cfg.standalone, "standalone", false, "run UI-only offline preview without auto-launching the local Rust App Server sidecar")
+	flag.BoolVar(&cfg.loginWindow, "login-window", false, "open the dedicated standalone Tier-0 Login & Security window before/alongside the workbench")
+	flag.BoolVar(&cfg.realSession, "real-session", true, "enable MARLIN_BRIDGE_REAL_SESSION=1 durable ConversationJournal streaming on supervised Rust App Server")
+	flag.StringVar(&cfg.tursoPath, "turso", "", "optional Turso SQLite file path for crash-resilient session persistence (MARLIN_BRIDGE_TURSO_PATH)")
+	flag.StringVar(&cfg.pubKeyFile, "pubkey", "", "optional hex Ed25519 publisher pubkey file passed to supervised sidecar")
+	flag.StringVar(&cfg.hostAddr, "host", "", "optional already-running Rust marlin-agent-app-server gRPC address (e.g. 127.0.0.1:50051)")
+	flag.StringVar(&cfg.token, "token", "marlin-dev-token", "Bearer token for live Rust host")
+	flag.StringVar(&cfg.caFile, "ca", "", "optional TLS CA PEM file for remote gRPC hosts")
+	flag.StringVar(&cfg.certFile, "cert", "", "optional mTLS client certificate PEM file")
+	flag.StringVar(&cfg.keyFile, "key", "", "optional mTLS client private key PEM file")
+	flag.StringVar(&cfg.sessionID, "session", "gui-session", "Marlin session ID")
+	flag.StringVar(&cfg.catalogURL, "catalog-url", "", "optional HTTP/HTTPS signed Marketplace catalog URL (e.g. http://127.0.0.1:8787)")
+	flag.StringVar(&cfg.catalogDir, "catalog-dir", "", "optional local directory containing signed catalog.json and .marlinpkg archives")
+	flag.StringVar(&cfg.catalogPub, "catalog-pub", "", "optional hex Ed25519 public key file verifying the Marketplace catalog")
+	flag.StringVar(&cfg.trustRingFile, "trust-ring", "", "optional multi-publisher trust-ring.toml overriding single -catalog-pub key")
+	flag.StringVar(&cfg.catalogPublisher, "catalog-publisher", "tao3k.official", "trusted Marketplace publisher identifier")
+	flag.StringVar(&cfg.pluginsProfile, "plugins-profile", "", "optional declarative marlin-plugins.toml lockfile persisted across restarts (Emacs-style lazy loading)")
+	flag.IntVar(&cfg.maxActiveLazy, "max-active-lazy", 8, "maximum simultaneously active lazy plugins in O(1) LRU working set (0 = unbounded)")
+	flag.DurationVar(&cfg.idleReapInterval, "idle-reap-interval", 15*time.Second, "background O(1) idle plugin reclamation check interval")
+	flag.StringVar(&cfg.wasmCacheDir, "wasm-cache-dir", "", "optional persistent disk directory for wazero AOT compiled WASM cache (defaults to user cache dir)")
+	flag.StringVar(&cfg.devPluginDir, "dev-plugin", "", "optional local plugin directory to watch and hot-reload live into the GPU workbench")
+	flag.BoolVar(&cfg.showcase, "showcase", false, "one-command macOS/desktop showcase: auto-build & mount React 19 UI + Go WASI GPU Focus Clock")
+	flag.StringVar(&cfg.showcasePlugin, "showcase-plugin", "agenda", "initial showcase main plugin: agenda | memory | workflow | git | github")
+	flag.StringVar(&cfg.featuresSpec, "features", "default", "opt-in UI feature profile: default | all | none | chatroom,compare,canvas | +chatroom,-canvas")
+	flag.StringVar(&cfg.schemeHostBin, "scheme-host", "", "local Rust+Scheme governance daemon binary (`marlin-scheme-host-aot` auto-discovered if omitted, or `off` to disable)")
+	flag.StringVar(&cfg.schemeGovMode, "scheme-gov-mode", "clean", "initial Scheme governance boot mode for auto-launched sidecar: clean | incident | armed")
+	flag.StringVar(&cfg.schemeGovDB, "scheme-gov-db", "", "optional Turso SQLite WAL path for durable MGV1+MGF1 governance persistence (defaults to user cache dir)")
+	flag.Parse()
+	return cfg
+}
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := runStudio(ctx, parseFlags()); err != nil {
+		log.Fatal(err)
+	}
+}

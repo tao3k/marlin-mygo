@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Pure Declarative Personal Daily Planner Pack (Zero Executable Code)
+# Hot-loadable across macOS, Linux, Windows, iOS, and Android.
+
+schema_version = 1
+pack_name = "Calm Deep-Work Daily Planner"
+
+[theme]
+canvas = "#232730"
+bar = "#1a1d24"
+ink = "#d5dde8"
+accent = "#c678dd"
+info = "#51afef"
+success = "#98be65"
+warning = "#ecbe7b"
+muted = "#7b8494"
+
+[agenda_blocks]
+# Declarative orgize AgendaBlockView sections consumed by the Rust kernel / orgize-wasm.
+sections = [
+  "Overdue & High-Urgency Deadlines",
+  "Today's Time-Blocked Schedule",
+  "Blocked & Waiting Follow-ups",
+  "Tomorrow Preparation Queue",
+]
+urgent_threshold = 80
+show_blockers = true
+show_clock_effort = true
+
+[focus_alarms]
+default_work_minutes = 25
+deep_sprint_minutes = 50
+short_break_minutes = 5
+long_break_minutes = 15
+auto_clock_out_on_ring = true
+
+[capture_templates.quick_task]
+kind = "task"
+target_kind = "inbox"
+insert_position = "append"
+default_tags = ["inbox", "today"]
+
+[capture_templates.daily_journal]
+kind = "note"
+target_kind = "datetree"
+insert_position = "append"
+default_tags = ["journal"]
+
+[capture_templates.decision_log]
+kind = "decision"
+target_kind = "datetree"
+insert_position = "append"
+default_tags = ["decision", "arch"]
+
+[keymaps]
+# Emacs / Meow / Hydra leader chords mapped strictly to host-owned commands.
+"SPC a d" = "agenda.open"
+"SPC a c" = "org.capture.plan"
+"SPC a t" = "org.clock.in"
+"SPC a o" = "org.clock.out"
+"SPC a r" = "planner.today"

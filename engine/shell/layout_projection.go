@@ -1,0 +1,544 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+package shell
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/tao3k/marlin-mygo/engine/input"
+)
+
+// Canonical Emacs / Meow composable window command identifiers projected from
+// Scheme keymaps and the Cmd+K Command Palette onto WindowTree.
+const (
+	CmdWindowSplitRight    = "window.split-right"
+	CmdWindowSplitBelow    = "window.split-below"
+	CmdWindowDelete        = "window.delete"
+	CmdWindowToggleZoom    = "window.toggle-zoom"
+	CmdWindowFocusNext     = "window.focus-next"
+	CmdWindowFocusLeft     = "window.focus-left"
+	CmdWindowFocusDown     = "window.focus-down"
+	CmdWindowFocusUp       = "window.focus-up"
+	CmdWindowFocusRight    = "window.focus-right"
+	CmdWindowWiden         = "window.widen"
+	CmdWindowShrink        = "window.shrink"
+	CmdWindowRotate        = "window.rotate"
+	CmdWindowUndo          = "window.undo"
+	CmdWindowRedo          = "window.redo"
+	CmdWindowBalance       = "window.balance"
+	CmdWindowCycleBuffer   = "window.cycle-buffer"
+	CmdWindowSwapNext      = "window.swap-next"
+	CmdBufferPick          = "buffer.pick"
+	CmdTabNew              = "tab.new"
+	CmdTabNext             = "tab.next"
+	CmdTabPrev             = "tab.prev"
+	CmdTabClose            = "tab.close"
+	CmdTabHibernate        = "tab.hibernate"
+	CmdTabTogglePin        = "tab.toggle-pin"
+	CmdTabMoveNextPane     = "tab.move-next-pane"
+	CmdTabTearOffRight     = "tab.tear-off-right"
+	CmdPerspectiveFocus    = "window.perspective.focus"
+	CmdPerspectiveSplit    = "window.perspective.split"
+	CmdPerspectiveCockpit  = "window.perspective.cockpit"
+	CmdPerspectiveZen      = "window.perspective.zen"
+)
+
+// LayoutTabSpec describes one stacked tab inside a declarative LayoutNodeSpec
+// received from or exported to the Rust durable session backend. On restore,
+// only ActiveTab mounts as TabActive; all other tabs start in TabHibernated
+// (0MB runtime RAM) for sub-millisecond cold start.
+type LayoutTabSpec struct {
+	BufferID string `json:"bufferId"`
+	Title    string `json:"title,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Pinned   bool   `json:"pinned,omitempty"`
+}
+
+// LayoutNodeSpec describes one node in a declarative Scheme layout projection
+// (either a leaf buffer/tab-stack binding or a binary split container with ratio).
+type LayoutNodeSpec struct {
+	Axis      SplitAxis       `json:"axis,omitempty"`      // "row" | "column" (empty for leaf)
+	Ratio     float32         `json:"ratio,omitempty"`     // clamped to [0.20, 0.80]
+	BufferID  string          `json:"bufferId,omitempty"`  // active leaf buffer identifier
+	Title     string          `json:"title,omitempty"`     // optional override title
+	Kind      string          `json:"kind,omitempty"`      // optional override kind
+	Tabs      []LayoutTabSpec `json:"tabs,omitempty"`      // optional stacked tabs (non-active restore as TabHibernated 0MB)
+	ActiveTab int             `json:"activeTab,omitempty"` // index into Tabs
+	First     *LayoutNodeSpec `json:"first,omitempty"`
+	Second    *LayoutNodeSpec `json:"second,omitempty"`
+}
+
+// LayoutSpec is a typed, Scheme-authored Emacs workspace layout projection.
+type LayoutSpec struct {
+	Perspective string          `json:"perspective"`
+	Root        *LayoutNodeSpec `json:"root"`
+}
+
+var ErrInvalidLayoutSpec = errors.New("shell: invalid declarative layout spec")
+
+// ApplyLayoutSpec atomically projects a declarative Scheme LayoutSpec onto tree,
+// resolving BufferIDs against catalog while enforcing MaxOpenWindows and ratio bounds.
+func ApplyLayoutSpec(tree *WindowTree, spec LayoutSpec, catalog map[string]PaneBuffer) error {
+	if tree == nil || spec.Root == nil {
+		return ErrInvalidLayoutSpec
+	}
+	leafCount := countSpecLeaves(spec.Root)
+	if leafCount <= 0 {
+		return ErrInvalidLayoutSpec
+	}
+	if leafCount > MaxOpenWindows {
+		return ErrMaxWindowsReached
+	}
+
+	tree.mu.Lock()
+	defer tree.mu.Unlock()
+
+	var firstLeafID WindowID
+	built, err := buildNodeFromSpec(tree, spec.Root, catalog, &firstLeafID)
+	if err != nil {
+		return err
+	}
+	persp := strings.TrimSpace(spec.Perspective)
+	if persp == "" {
+		persp = "custom"
+	}
+	tree.pushUndoLocked("")
+	tree.perspective = persp
+	tree.root = built
+	tree.focusedID = firstLeafID
+	tree.zoomed = false
+	tree.markDirtyLocked()
+	return nil
+}
+
+func countSpecLeaves(n *LayoutNodeSpec) int {
+	if n == nil {
+		return 0
+	}
+	if n.First != nil || n.Second != nil {
+		if n.First == nil || n.Second == nil {
+			return -1
+		}
+		a := countSpecLeaves(n.First)
+		b := countSpecLeaves(n.Second)
+		if a <= 0 || b <= 0 {
+			return -1
+		}
+		return a + b
+	}
+	if strings.TrimSpace(n.BufferID) == "" && len(n.Tabs) == 0 {
+		return -1
+	}
+	return 1
+}
+
+func buildNodeFromSpec(
+	tree *WindowTree,
+	spec *LayoutNodeSpec,
+	catalog map[string]PaneBuffer,
+	firstLeaf *WindowID,
+) (*WindowNode, error) {
+	if spec.First != nil && spec.Second != nil {
+		axis := spec.Axis
+		if axis != SplitRow && axis != SplitColumn {
+			axis = SplitRow
+		}
+		ratio := spec.Ratio
+		if ratio < 0.20 || ratio > 0.80 {
+			ratio = 0.50
+		}
+		first, err := buildNodeFromSpec(tree, spec.First, catalog, firstLeaf)
+		if err != nil {
+			return nil, err
+		}
+		second, err := buildNodeFromSpec(tree, spec.Second, catalog, firstLeaf)
+		if err != nil {
+			return nil, err
+		}
+		return &WindowNode{
+			ID:      tree.allocIDLocked("split"),
+			IsSplit: true,
+			Axis:    axis,
+			Ratio:   ratio,
+			First:   first,
+			Second:  second,
+		}, nil
+	}
+	resolveBuf := func(rawID, title, kind string) PaneBuffer {
+		bid := strings.TrimSpace(rawID)
+		buf, ok := catalog[bid]
+		if !ok {
+			buf = PaneBuffer{BufferID: bid, Title: bid, Kind: "native-gpu"}
+		}
+		if title != "" {
+			buf.Title = title
+		}
+		if kind != "" {
+			buf.Kind = kind
+		}
+		return buf
+	}
+
+	now := tree.nowLocked()
+	var tabs []PaneTab
+	activeIdx := 0
+	if len(spec.Tabs) > 0 {
+		maxTabs := tree.tabPolicy.MaxTabsPerPane
+		if maxTabs <= 0 {
+			maxTabs = DefaultMaxTabsPerPane
+		}
+		limit := min(len(spec.Tabs), maxTabs)
+		activeIdx = spec.ActiveTab
+		if activeIdx < 0 || activeIdx >= limit {
+			activeIdx = 0
+		}
+		tabs = make([]PaneTab, 0, limit)
+		for i := 0; i < limit; i++ {
+			ts := spec.Tabs[i]
+			if strings.TrimSpace(ts.BufferID) == "" {
+				continue
+			}
+			// Lazy 0MB restore: only ActiveTab mounts live; all background tabs
+			// start directly in TabHibernated (0MB RAM) until focused!
+			state := TabHibernated
+			if i == activeIdx {
+				state = TabActive
+			}
+			tabs = append(tabs, PaneTab{
+				Buffer:       resolveBuf(ts.BufferID, ts.Title, ts.Kind),
+				State:        state,
+				Pinned:       ts.Pinned,
+				LastActiveAt: now,
+			})
+		}
+		if len(tabs) == 0 {
+			return nil, fmt.Errorf("%w: empty tabs in leaf", ErrInvalidLayoutSpec)
+		}
+		if activeIdx >= len(tabs) {
+			activeIdx = 0
+			tabs[0].State = TabActive
+		}
+	} else {
+		bufID := strings.TrimSpace(spec.BufferID)
+		if bufID == "" {
+			return nil, fmt.Errorf("%w: empty leaf bufferId", ErrInvalidLayoutSpec)
+		}
+		buf := resolveBuf(bufID, spec.Title, spec.Kind)
+		tabs = []PaneTab{{Buffer: buf, State: TabActive, LastActiveAt: now}}
+		activeIdx = 0
+	}
+
+	id := tree.allocIDLocked("win")
+	if *firstLeaf == "" {
+		*firstLeaf = id
+	}
+	return &WindowNode{
+		ID:        id,
+		Buffer:    tabs[activeIdx].Buffer,
+		Tabs:      tabs,
+		ActiveTab: activeIdx,
+	}, nil
+}
+
+// ExecuteWindowCommand dispatches a canonical Emacs/Meow window command onto tree.
+// Returns handled=true if cmdName was a recognized window command.
+func ExecuteWindowCommand(tree *WindowTree, cmdName string, buffers []PaneBuffer) (handled bool, err error) {
+	if tree == nil {
+		return false, nil
+	}
+	primary := PaneBuffer{BufferID: "slot:workbench.main", Title: "Workspace", Kind: "webview"}
+	secondary := PaneBuffer{BufferID: "builtin:transcript", Title: "AI Transcript", Kind: "native-gpu"}
+	projection := PaneBuffer{BufferID: "builtin:projection", Title: "Projection Inspector", Kind: "native-gpu"}
+	dock := PaneBuffer{BufferID: "slot:workbench.inspector", Title: "Focus Clock", Kind: "wasm-gpu"}
+	if len(buffers) > 0 {
+		primary = buffers[0]
+	}
+	if len(buffers) > 1 {
+		secondary = buffers[1]
+	}
+	if len(buffers) > 2 {
+		projection = buffers[2]
+	}
+	if len(buffers) > 3 {
+		dock = buffers[3]
+	}
+
+	switch strings.TrimSpace(cmdName) {
+	case CmdWindowSplitRight:
+		_, err = tree.SplitRight(secondary)
+		return true, err
+	case CmdWindowSplitBelow:
+		_, err = tree.SplitBelow(secondary)
+		return true, err
+	case CmdWindowDelete:
+		return true, tree.DeleteFocused()
+	case CmdWindowToggleZoom:
+		tree.ToggleZoom()
+		return true, nil
+	case CmdWindowFocusNext:
+		tree.FocusNext()
+		return true, nil
+	case CmdWindowFocusLeft:
+		tree.FocusDirection(DirLeft)
+		return true, nil
+	case CmdWindowFocusDown:
+		tree.FocusDirection(DirDown)
+		return true, nil
+	case CmdWindowFocusUp:
+		tree.FocusDirection(DirUp)
+		return true, nil
+	case CmdWindowFocusRight:
+		tree.FocusDirection(DirRight)
+		return true, nil
+	case CmdWindowWiden:
+		tree.ResizeFocusedSplit(0.05)
+		return true, nil
+	case CmdWindowShrink:
+		tree.ResizeFocusedSplit(-0.05)
+		return true, nil
+	case CmdWindowRotate:
+		tree.RotateFocusedSplit()
+		return true, nil
+	case CmdWindowUndo:
+		tree.Undo()
+		return true, nil
+	case CmdWindowRedo:
+		tree.Redo()
+		return true, nil
+	case CmdWindowBalance:
+		tree.Balance()
+		return true, nil
+	case CmdWindowCycleBuffer:
+		if len(buffers) == 0 {
+			return true, nil
+		}
+		winID, cur := tree.FocusedBuffer()
+		next := buffers[0]
+		for i, b := range buffers {
+			if b.BufferID == cur.BufferID {
+				next = buffers[(i+1)%len(buffers)]
+				break
+			}
+		}
+		tree.SetWindowBuffer(winID, next)
+		return true, nil
+	case CmdWindowSwapNext:
+		tree.SwapWithNext()
+		return true, nil
+	case CmdTabNew:
+		nextBuf := secondary
+		if len(buffers) > 0 {
+			_, cur := tree.FocusedBuffer()
+			for i, b := range buffers {
+				if b.BufferID == cur.BufferID {
+					nextBuf = buffers[(i+1)%len(buffers)]
+					break
+				}
+			}
+		}
+		_, err = tree.OpenTabInFocused(nextBuf)
+		return true, err
+	case CmdTabNext:
+		tree.NextTab()
+		return true, nil
+	case CmdTabPrev:
+		tree.PrevTab()
+		return true, nil
+	case CmdTabClose:
+		return true, tree.CloseFocusedTab()
+	case CmdTabHibernate:
+		tree.HibernateFocusedTab()
+		return true, nil
+	case CmdTabTogglePin:
+		tree.TogglePinFocusedTab()
+		return true, nil
+	case CmdTabMoveNextPane:
+		return true, tree.MoveFocusedTabToNextPane()
+	case CmdTabTearOffRight:
+		_, err = tree.TearOffFocusedTabRight()
+		return true, err
+	case CmdPerspectiveFocus:
+		tree.ApplyBuiltinPerspective("focus", primary, dock, secondary, projection)
+		return true, nil
+	case CmdPerspectiveSplit:
+		tree.ApplyBuiltinPerspective("split", primary, dock, secondary, projection)
+		return true, nil
+	case CmdPerspectiveCockpit:
+		tree.ApplyBuiltinPerspective("cockpit", primary, dock, secondary, projection)
+		return true, nil
+	case CmdPerspectiveZen:
+		tree.ApplyBuiltinPerspective("zen", primary, dock, secondary, projection)
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// DefaultEmacsWindowBindings returns conflict-free Emacs (`C-x ...`) and
+// Meow/Spacemacs (`SPC w ...`) chord bindings for composable WindowTree control.
+func DefaultEmacsWindowBindings() []input.Binding {
+	return []input.Binding{
+		// Spacemacs / Meow leader chords (SPC w ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "v"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "s"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "d"}, ActionKind: "window", CommandName: CmdWindowDelete},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "z"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "="}, ActionKind: "window", CommandName: CmdWindowBalance},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+		// Classic Emacs chords (C-x ...)
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "3"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "2"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "0"}, ActionKind: "window", CommandName: CmdWindowDelete},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "1"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "+"}, ActionKind: "window", CommandName: CmdWindowBalance},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+	}
+}
+
+// DefaultEmacsWindowCommands returns Command Palette entries for composable window management.
+func DefaultEmacsWindowCommands() []input.CommandEntry {
+	return []input.CommandEntry{
+		{Name: CmdWindowSplitRight, Description: "Split focused window right (SPC w v / C-x 3)"},
+		{Name: CmdWindowSplitBelow, Description: "Split focused window below (SPC w s / C-x 2)"},
+		{Name: CmdWindowDelete, Description: "Delete focused window (SPC w d / C-x 0)"},
+		{Name: CmdWindowToggleZoom, Description: "Toggle zoom on focused window (SPC w z / C-x 1)"},
+		{Name: CmdWindowFocusNext, Description: "Focus next window pane (SPC w o / C-x o)"},
+		{Name: CmdWindowFocusLeft, Description: "Focus window pane to the left (SPC w h)"},
+		{Name: CmdWindowFocusDown, Description: "Focus window pane below (SPC w j)"},
+		{Name: CmdWindowFocusUp, Description: "Focus window pane above (SPC w k)"},
+		{Name: CmdWindowFocusRight, Description: "Focus window pane to the right (SPC w l)"},
+		{Name: CmdWindowWiden, Description: "Widen focused window split by 5% (SPC w >)"},
+		{Name: CmdWindowShrink, Description: "Shrink focused window split by 5% (SPC w <)"},
+		{Name: CmdWindowRotate, Description: "Rotate focused split row/column axis (SPC w R)"},
+		{Name: CmdWindowUndo, Description: "Undo last window layout change (SPC w u / C-x u)"},
+		{Name: CmdWindowRedo, Description: "Redo window layout change (SPC w r)"},
+		{Name: CmdWindowBalance, Description: "Balance split ratios (SPC w = / C-x +)"},
+		{Name: CmdWindowCycleBuffer, Description: "Cycle buffer in focused window (SPC w b)"},
+		{Name: CmdWindowSwapNext, Description: "Swap focused window buffer with next pane (SPC w x / C-x x)"},
+		{Name: CmdBufferPick, Description: "Open Emacs Minibuffer Buffer/Tab Picker (SPC b b)"},
+		{Name: CmdTabNew, Description: "Stack a new tab in focused pane (SPC b +)"},
+		{Name: CmdTabNext, Description: "Switch to next stacked tab (SPC b n)"},
+		{Name: CmdTabPrev, Description: "Switch to previous stacked tab (SPC b p)"},
+		{Name: CmdTabClose, Description: "Close active tab in focused pane (SPC b d)"},
+		{Name: CmdTabHibernate, Description: "Hibernate tab to 0MB RAM (SPC b s)"},
+		{Name: CmdTabTogglePin, Description: "Pin/unpin active tab against hibernation (SPC b P)"},
+		{Name: CmdTabMoveNextPane, Description: "Move active tab to next split pane (SPC b m)"},
+		{Name: CmdTabTearOffRight, Description: "Detach active tab into a new right split (SPC b t)"},
+		{Name: CmdPerspectiveFocus, Description: "Apply Focus 2-pane perspective"},
+		{Name: CmdPerspectiveSplit, Description: "Apply Split 2-pane perspective"},
+		{Name: CmdPerspectiveCockpit, Description: "Apply Cockpit 3-pane perspective"},
+		{Name: CmdPerspectiveZen, Description: "Apply Zen single-pane perspective"},
+	}
+}
+
+const maxLayoutSpecBytes = 64 * 1024
+
+// ExportLayoutSpec serializes the current WindowTree state into a declarative
+// LayoutSpec suitable for workspace persistence or Scheme projection round-trips.
+func ExportLayoutSpec(tree *WindowTree) LayoutSpec {
+	if tree == nil {
+		return LayoutSpec{}
+	}
+	snap := tree.Snapshot()
+	return LayoutSpec{
+		Perspective: snap.Perspective,
+		Root:        exportNodeSpec(snap.Root),
+	}
+}
+
+func exportNodeSpec(n *WindowNode) *LayoutNodeSpec {
+	if n == nil {
+		return nil
+	}
+	if n.IsSplit {
+		return &LayoutNodeSpec{
+			Axis:   n.Axis,
+			Ratio:  n.Ratio,
+			First:  exportNodeSpec(n.First),
+			Second: exportNodeSpec(n.Second),
+		}
+	}
+	spec := &LayoutNodeSpec{
+		BufferID: n.Buffer.BufferID,
+		Title:    n.Buffer.Title,
+		Kind:     n.Buffer.Kind,
+	}
+	if len(n.Tabs) > 1 {
+		spec.Tabs = make([]LayoutTabSpec, len(n.Tabs))
+		for i, tab := range n.Tabs {
+			spec.Tabs[i] = LayoutTabSpec{
+				BufferID: tab.Buffer.BufferID,
+				Title:    tab.Buffer.Title,
+				Kind:     tab.Buffer.Kind,
+				Pinned:   tab.Pinned,
+			}
+		}
+		spec.ActiveTab = n.ActiveTab
+	}
+	return spec
+}
+
+// MarshalLayoutSpecJSON encodes spec into deterministic formatted JSON.
+func MarshalLayoutSpecJSON(spec LayoutSpec) ([]byte, error) {
+	if spec.Root == nil || countSpecLeaves(spec.Root) <= 0 {
+		return nil, ErrInvalidLayoutSpec
+	}
+	return json.MarshalIndent(spec, "", "  ")
+}
+
+// UnmarshalLayoutSpecJSON decodes and validates a bounded LayoutSpec JSON blob.
+func UnmarshalLayoutSpecJSON(raw []byte) (LayoutSpec, error) {
+	if len(raw) == 0 || len(raw) > maxLayoutSpecBytes {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	var spec LayoutSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return LayoutSpec{}, fmt.Errorf("%w: %v", ErrInvalidLayoutSpec, err)
+	}
+	if spec.Root == nil {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	leaves := countSpecLeaves(spec.Root)
+	if leaves <= 0 {
+		return LayoutSpec{}, ErrInvalidLayoutSpec
+	}
+	if leaves > MaxOpenWindows {
+		return LayoutSpec{}, ErrMaxWindowsReached
+	}
+	return spec, nil
+}
+
+// SaveLayoutSpecFile atomically persists tree's current layout perspective to disk.
+func SaveLayoutSpecFile(path string, tree *WindowTree) error {
+	raw, err := MarshalLayoutSpecJSON(ExportLayoutSpec(tree))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+// LoadLayoutSpecFile restores a persisted workspace LayoutSpec onto tree.
+func LoadLayoutSpecFile(path string, tree *WindowTree, catalog map[string]PaneBuffer) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	spec, err := UnmarshalLayoutSpecJSON(raw)
+	if err != nil {
+		return err
+	}
+	return ApplyLayoutSpec(tree, spec, catalog)
+}

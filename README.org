@@ -1,0 +1,183 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: Marlin MyGo — High-Performance, Modular Agent UI Engine & Plugin Ecosystem
+#+filetags: :tao3k:marlin:mygo:ui:grpc:plugins:wasm:
+
+=marlin-mygo= is a *high-performance, modular, hot-pluggable UI engine and
+plugin ecosystem* for [[https://github.com/tao3k/marlin-agent-core][Marlin Agent CORE]]
+(Rust Authority Kernel + Gerbil Scheme Policy Engine), built on
+[[https://github.com/egoist/mygo][MyGo]] (pure Go, zero cgo on desktop, native
+Metal / Direct3D 11 / OpenGL GPU rendering, isolated OS WebViews, and native
+iOS/Android bridges).
+
+* Why Marlin MyGo?
+
+- *120Hz Native GPU Performance (Zero CGO)*: Pure-Go native GPU rendering backed
+  by a flat BFS UI-IR arena with dual Merkle incremental diffing (=0 allocs=),
+  lock-free Copy-on-Write event fan-out with power-of-two coalescing rings,
+  compiled Meow/Hydra =KeyTrie= lookup, and a Fenwick BIT virtual height index
+  built for 100k+ row streaming transcripts.
+- *Modular & Extensible by Construction*: Every workbench surface is composed
+  of hot-pluggable slots (=single= / =list= / =keyed=) with automatic =host.*=
+  fallback, unified multi-machine federated gRPC sidebar switching, and
+  single-source Protobuf + =BoundedSchema= contracts that derive Go stubs,
+  TypeScript SDK types, and zero-WebView GPU forms without drift.
+- *Open, Sandboxed Plugin Ecosystem (Marketplace & Emacs-Grade Lazy Loader)*:
+  Downstream developers and coding LLMs can build hot-pluggable panels in
+  *TypeScript* (=webview-untrusted= via =defineMarlinPanel= in
+  =@tao3k/marlin-panel-sdk=), *Go 1.27 WASI Reactors* (=wasm-ui-ir= & zero-JSON
+  binary =DrawList= via zero-=unsafe= =uiir.RenderResult= on =wazero=), or
+  *Declarative Packs* (App Store–safe over-the-air themes, layouts, and
+  overlays). Installed plugins are managed declaratively via
+  =marlin-plugins.toml= with *zero startup RAM* for 100+ dormant plugins,
+  lock-free COW hook/command dispatch (=0 allocs=), singleflight on-demand
+  waking, O(1) intrusive LRU working-set eviction, idle memory reclamation, and
+  1-command security-certified =doctor= / =publish= into Ed25519-signed
+  =catalog.json= registries.
+- *Rust-Cargo-Style Compile-Time Feature Pruning & Tier-0 Governance*: Optional
+  interaction paradigms (=features/chatroom= Multi-Role Agent Room,
+  =features/compare= Parallel Model Arena & Branch Tree, and =features/canvas=
+  Live Artifact Canvas) are strictly gated by Go build tags (=marlin_minimal=,
+  =marlin_feat_*=, =marlin_full=) with zero dead code in minimal Desktop or Web
+  WASM builds (=just check-feature-pruning=), governed by the Tier-0 UI
+  Governance Console (=SPC G=), ESC-unbypassable =engine/promptgate= human
+  approval modals, and fail-closed RBAC where AI agents never hold
+  =CanApproveGates=.
+- *Power-Loss Durability & Reconnect Continuity*: Unsent drafts, =@= context
+  mentions, pending offline outbox turns, and =LastEventID= stream cursors are
+  persisted atomically via =0600= + =fsync= + =os.Rename= on Desktop and
+  =window.localStorage= on Web WASM (=engine/resilience= +
+  =grpcwire.ContinuityCoordinator=), with automatic exponential-backoff
+  reconnect, replay deduplication, and FIFO idempotent outbox draining across
+  Chat, Mobile Companion, Agent Room, Compare, and Canvas.
+- *Formally Verified Security Boundaries*: Twelve core isolation invariants
+  (restricted =approval.gate= protection, Ed25519 release integrity,
+  =CallerPage == Host= WebView origin pinning + MyGo WebKit =ContentRules=
+  egress blocking, =read_scopes= isolation, one-shot Rust =GateReceipt= device
+  writes, circuit-breaker fallback, lockfile =pinned_sha256= lazy wake,
+  dormant slot isolation, bounded LRU working-set cap, anti-silent upgrade
+  privilege escalation confirmation, human-only Agent Room =CanApproveGates=,
+  and one-shot room PromptGate receipt uniqueness) are formally challenged in
+  Quint with *13 adversarial negative controls*, *9,000+ combined randomized
+  adversarial state-machine steps* across =pluginhost=, =marketplace=,
+  =resilience=, and =chatroom=, and *16 Go fuzzers*.
+
+* Measured Engine Benchmarks & Hard Perf-Gate Ceilings (Apple M2 Pro Baseline, Zero CGO)
+
+All 22 Go + 3 TypeScript benchmarks are hard-gated in CI via =marlin-mygo-tool perf-gate=
+(strict =0 allocs/op= on all 15 core engine, Helm search, WindowTree, resilience, promptgate, and 100-plugin lazy-loader hot paths, tightened 240Hz / 2ms CPU budget).
+Reference measurements below were recorded on Apple M2 Pro (=darwin/arm64=, Go 1.27.3);
+newer silicon (e.g. M3 Pro / M4) typically runs 20-40% faster — run =just perf-gate= to print your local host hardware and measurements:
+
+| Subsystem / Path | Measured | Strict Budget | Allocs |
+|-----------------------------------------------------------+----------+---------------+--------|
+| =engine/arena= incremental diff (1 leaf of 1,000 nodes)   | *157 ns* | <= 500 ns     | *0*    |
+| =engine/arena= pure theme restyle (1,000 nodes)           | *13.6 ns*| <= 50 ns      | *0*    |
+| =engine/viewport= 100k-row =FindRowAtY= (Fenwick BIT)     | *69.2 ns*| <= 200 ns     | *0*    |
+| =engine/viewport= 100k-row fold/unfold height update      | *2.6 ns* | <= 15 ns      | *0*    |
+| =engine/input= 3-key Meow/Hydra =KeyTrie= chord lookup    | *28.3 ns*| <= 75 ns      | *0*    |
+| =engine/bus= COW route fan-out (16 plugins, per-ring lock)| *483 ns* | <= 1.5 µs     | *0*    |
+| =control/marketplace= 100-plugin lazy hook dispatch (COW) | *12.4 ns*| <= 60 ns      | *0*    |
+| =control/marketplace= 100-plugin O(1) idle-reap check     | *20.4 ns*| <= 60 ns      | *0*    |
+| =engine/resilience= stream event replay dedup (=AdmitEvent=) | *36.1 ns*| <= 150 ns  | *0*    |
+| =engine/promptgate= Tier-0 active gate lookup (=Active=)  | *29.8 ns*| <= 120 ns     | *0*    |
+| =engine/search= 100k-hit Helm =VisibleWindow= (16 rows)   | *231 ns* | <= 600 ns     | *0*    |
+| =engine/search= 100k-hit Helm =Scroll= / =MoveSelection=  | *34.5 ns*| <= 200 ns     | *0*    |
+| =engine/search= stale =QueryGen= batch preemption drop    | *29.6 ns*| <= 80 ns      | *0*    |
+| =engine/shell= 8-pane =WindowTree.Snapshot= steady frame  | *22.4 ns*| <= 100 ns     | *0*    |
+| =runtime/wazeroir= resident Go WASM =DrawList= (64 cmds)  | *23.2 µs*| <= 75 µs      | <= 6   |
+| =runtime/wazeroir= resident Go WASM JSON UI-IR render     | *112 µs* | <= 300 µs     | <= 18  |
+| =runtime/mygoshell= full headless workbench GPU frame     | *37.9 µs*| <= 90 µs      | <= 24  |
+| =runtime/mygoshell= 100k-row virtualized transcript frame | *124 µs* | <= 250 µs     | <= 24  |
+| =control/grpcwire= HTTP/2 loopback scoped panel action    | *61.6 µs*| <= 250 µs     | <= 220 |
+| =@tao3k/marlin-panel-sdk= TS event match / drop / theme   | *20/5/10ns*| <= 60/30/50ns | —    |
+
+* Layered Architecture (Strict Acyclic Planes)
+
+#+begin_example
+Plane 5 [Verification]  spec/quint/             Quint formal adversarial security model (7 negative controls)
+                        bench/                  Go + TS E2E Engine Benchmark Harness
+Plane 4 [Ecosystem]     packages/panel-sdk/     @tao3k/marlin-panel-sdk (TS Untrusted WebView + defineMarlinPanel + generated wire types)
+                        sdk/go-ui-ir/           Go WASM-IR & DrawList SDK (GOOS=wasip1 reactor + zero-unsafe RenderResult/DrawListResult)
+                        cmd/marlin-mygo-tool/   Pure-Go CLI (descriptor, gen, gen-ts, model-gate, init-plugin, doctor, publish, keygen, pack, verify, catalog, serve-catalog, dev-plugin, e2e-rust, perf-gate)
+Plane 3 [Control Plane] control/transport/      TargetRegistry + FederationSupervisor + SidecarSupervisor (ephemeral token)
+                        control/grpcwire/       HTTP/2 6-service adapters + TLS 1.3/mTLS + SessionDriver + TurnStreamController + ResilientSidecarTarget (SIGKILL auto-heal)
+                        control/marketplace/    Deterministic .marlinpkg + signed HTTP/CAS RegistryClient + DevReloader + Emacs-style LazyLoader (O(1) COW/LRU) + Audit/Publish gate
+Plane 2 [Runtimes]      runtime/pluginhost/     ScopedProxy (atomic Revoke) + CallerPage protocol + fuzz/prop tests
+                        runtime/wazeroir/       SHA-256 AOT-cached wazero + bidirectional Resident Reactor & DrawList
+                        runtime/mygoshell/      MyGo GPU workbench, Tier-0 built-in Marketplace drawer, Fenwick 100k-row live transcript, UI-IR + BoundedSchema forms + WebView host
+                        runtime/device/         device.* protocol bridge + platform.* adapters (iOS/Android/Desktop) + one-shot receipts
+                        platform/ios/           platform.ios Swift device capability adapter (Photos/Vision/Speech/Share)
+Plane 1 [Engine Core]   engine/arena/           Flat BFS UI IR Arena + non-commutative dual Merkle incremental Diff
+                        engine/bus/             Lock-free COW TopicBus + 2^k CoalescingRing + CircuitBreaker
+                        engine/input/           Compiled KeyTrie (Meow/Hydra) + zero-alloc Fuzzy scorer
+                        engine/viewport/        Fenwick BIT virtual height index (100k+ rows, O(log N))
+                        engine/scheduler/       P0/P1/P2 frame-budget scheduler (input never starved)
+                        engine/shell/           SlotRegistry (single/list/keyed) + WorkbenchController
+Plane 0 [Contract]      proto/ & gen/           7 orthogonal marlin.*.v1 Protobuf packages (buf STANDARD)
+                        pkg/schema/             Zero-dependency semantic IDs, Ed25519 trust, BoundedSchema, DrawList, UI IR bounds
+#+end_example
+
+* Quick Start
+
+#+begin_src shell
+# Enter reproducible Go 1.27.3 + Buf + Protoc + Bun environment
+direnv allow
+
+# Validate Protobuf contracts, Quint formal security gate, tests, race detector & build
+just check
+
+# Regenerate Go gRPC stubs + zero-drift TypeScript wire types
+just proto-gen
+
+# Run native Go fuzz smoke tests across schema, drawlist, protocol, arena & input boundaries
+just fuzz-smoke
+
+# Scaffold, audit (doctor), certify-and-publish (1 command) a new Marketplace plugin (ts | go-wasm | declarative)
+just init-plugin acme.sprint-board ts workbench.main ./tmp-plugin
+just doctor ./tmp-plugin
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool keygen -out ./tmp-keys/acme
+just publish ./tmp-plugin acme.dev ./tmp-keys/acme.key ./tmp-keys/acme.pub ./dist/marketplace
+
+# Verify Rust-Cargo-style compile-time feature pruning across Desktop & Web WASM
+just check-feature-pruning
+just build-core
+just build-features "marlin_feat_chatroom"
+just build-full
+
+# Enforce strict Go + TypeScript latency, byte, and zero-allocation performance gate
+just perf-gate
+
+# Run 5-test real cross-process Rust <-> Go E2E suite (TLS 1.3, WASI Reactor, Turso crash-restart, SIGKILL self-healing)
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool e2e-rust -core /path/to/marlin-agent-core
+
+# Host signed example Marketplace catalog locally & run plugin author hot-reload dev loop
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool build-examples -out ./dist/marketplace
+just serve-catalog ./dist/marketplace 127.0.0.1:8787
+just dev-plugin ./examples/plugins/go-graph-inspector-reactor
+
+# Launch zero-cgo GPU workbench (standalone, signed Marketplace + persistent Emacs lazy profile, live dev-plugin, OR auto-healing Rust sidecar)
+CGO_ENABLED=0 go run ./cmd/marlin-app
+CGO_ENABLED=0 go run ./cmd/marlin-app -catalog-url http://127.0.0.1:8787 -catalog-pub ./dist/marketplace/publisher.pub -plugins-profile ./marlin-plugins.toml
+CGO_ENABLED=0 go run ./cmd/marlin-app -dev-plugin ./examples/plugins/go-graph-inspector-reactor
+CGO_ENABLED=0 go run ./cmd/marlin-app -sidecar /path/to/marlin-mygo-host -real-session -turso ./session.turso
+#+end_src
+
+* Documentation
+
+- [[file:docs/00-engine-positioning.org][docs/00-engine-positioning.org]] — Architecture planes, core algorithms & 120Hz SLO budgets
+- [[file:docs/01-unified-schema.org][docs/01-unified-schema.org]] — 4-layer Scheme/Rust/Protobuf/Go/TS schema mapping
+- [[file:docs/02-plugin-packaging.org][docs/02-plugin-packaging.org]] — TS WebView + Go =wazero= + Go =js/wasm= plugin isolation
+- [[file:docs/03-target-overlays.org][docs/03-target-overlays.org]] — Desktop/iOS/Android target overlays, =platform.*= adapters & =device.*= bridge
+- [[file:docs/04-plugin-ecosystem.org][docs/04-plugin-ecosystem.org]] — Marketplace ecosystem design, trust tiers, lifecycle & certification gate
+- [[file:docs/05-scheme-leverage-adr.org][docs/05-scheme-leverage-adr.org]] — ADR: Why Gerbil Scheme, three-plane separation & anti-redundancy guardrails
+- [[file:docs/06-plugin-author-guide.org][docs/06-plugin-author-guide.org]] — Concise Human & LLM Plugin Author Guide (Go WASI, TS WebView, Declarative, Emacs Lazy Loader & Publish)
+- [[file:docs/07-features-resilience-architecture.org][docs/07-features-resilience-architecture.org]] — Compile-Time Feature Pruning, Tier-0 PromptGate, Multi-Role Agent Room & Power-Loss Continuity Architecture
+- [[file:spec/quint/frontend-security.qnt][spec/quint/frontend-security.qnt]] — Quint formal adversarial security specification
+
+* License
+
+Licensed under =Apache-2.0 AND LGPL-2.1-or-later=, matching =marlin-agent-core=.
+See [[file:LICENSE][LICENSE]] and [[file:LICENSES/][LICENSES/]].

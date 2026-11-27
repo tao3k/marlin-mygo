@@ -1,0 +1,147 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'"
+    />
+    <title>Marlin Org Kanban (Untrusted Plugin)</title>
+    <style>
+      :root {
+        --bg: var(--marlin-canvas, #282c34);
+        --fg: var(--marlin-ink, #bbc2cf);
+        --bar: var(--marlin-bar, #1c1f24);
+        --accent: var(--marlin-accent, #c678dd);
+        --ok: var(--marlin-success, #98be65);
+        --muted: var(--marlin-muted, #73797e);
+      }
+      body {
+        margin: 0;
+        padding: 16px;
+        font: 13px/1.5 system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .board {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .col {
+        background: var(--bar);
+        border-radius: 10px;
+        padding: 10px;
+      }
+      .col h3 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .card {
+        background: var(--bg);
+        border-left: 3px solid var(--accent);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+      }
+      button {
+        margin-top: 6px;
+        background: var(--accent);
+        color: #111;
+        border: 0;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .receipt {
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--ok);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Org Kanban (Untrusted WebView Slot)</strong>
+      <span id="status" style="color: var(--muted)">Scoped to tao3k.org-kanban</span>
+    </header>
+    <div class="board" id="board"></div>
+    <div class="receipt" id="receipt"></div>
+    <script type="module">
+      // Runs inside PageOptions{Untrusted: true} under marlin-plugin://tao3k.org-kanban/.
+      // Same-origin POST /__marlin/action is authenticated via mygo.CallerPage(ctx).
+      let tasks = [
+        { id: "ORG-101", title: "Wire marlin.gate.v1 approvals", state: "TODO" },
+        { id: "ORG-102", title: "Verify Scheme UI IR bounds", state: "DOING" },
+        { id: "ORG-103", title: "Ship marlin-wire-v1.bin descriptor", state: "DONE" },
+      ];
+
+      async function moveTask(id, nextState) {
+        const res = await fetch("/__marlin/action", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "org.task.move-state",
+            args: { id, state: nextState },
+            idempotencyKey: `kanban-${id}-${Date.now()}`,
+          }),
+        });
+        const receipt = await res.json();
+        const el = document.getElementById("receipt");
+        if (receipt.admitted) {
+          tasks = tasks.map((t) => (t.id === id ? { ...t, state: nextState } : t));
+          el.textContent = `Admitted by Marlin Rust host (receipt: ${receipt.receiptId || "ok"})`;
+          render();
+        } else {
+          el.textContent = `Denied: ${receipt.denial || res.status}`;
+        }
+      }
+
+      function render() {
+        const board = document.getElementById("board");
+        board.innerHTML = "";
+        for (const colState of ["TODO", "DOING", "DONE"]) {
+          const col = document.createElement("div");
+          col.className = "col";
+          col.innerHTML = `<h3>${colState}</h3>`;
+          for (const t of tasks.filter((x) => x.state === colState)) {
+            const card = document.createElement("div");
+            card.className = "card";
+            const next = colState === "TODO" ? "DOING" : colState === "DOING" ? "DONE" : "TODO";
+            card.innerHTML = `<div><strong>${t.id}</strong> ${t.title}</div>`;
+            const btn = document.createElement("button");
+            btn.textContent = `Move -> ${next}`;
+            btn.onclick = () => moveTask(t.id, next);
+            card.appendChild(btn);
+            col.appendChild(card);
+          }
+          board.appendChild(col);
+        }
+      }
+
+      if (window.mygo && typeof window.mygo.on === "function") {
+        window.mygo.on("marlin:panel-event", (ev) => {
+          if (ev.pluginId === "tao3k.org-kanban" && ev.topic === "org.tasks" && Array.isArray(ev.payload)) {
+            tasks = ev.payload;
+            render();
+          }
+        });
+      }
+      render();
+    </script>
+  </body>
+</html>

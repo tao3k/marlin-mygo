@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Generates Go protobuf + gRPC bindings from language-neutral marlin.*.v1 schemas.
+# Upstream-compatible proto files carry no go_package; import paths are injected here.
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-go
+    out: gen
+    opt:
+      - paths=source_relative
+      - Mmarlin/common/v1/common.proto=github.com/tao3k/marlin-mygo/gen/marlin/common/v1;commonv1
+      - Mmarlin/app/v1/app_server.proto=github.com/tao3k/marlin-mygo/gen/marlin/app/v1;appv1
+      - Mmarlin/gate/v1/gate.proto=github.com/tao3k/marlin-mygo/gen/marlin/gate/v1;gatev1
+      - Mmarlin/ui/v1/ui.proto=github.com/tao3k/marlin-mygo/gen/marlin/ui/v1;uiv1
+      - Mmarlin/plugin/v1/plugin.proto=github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1;pluginv1
+      - Mmarlin/device/v1/device.proto=github.com/tao3k/marlin-mygo/gen/marlin/device/v1;devicev1
+      - Mmarlin/projection/v1/projection.proto=github.com/tao3k/marlin-mygo/gen/marlin/projection/v1;projectionv1
+  - local: protoc-gen-go-grpc
+    out: gen
+    opt:
+      - paths=source_relative
+      - Mmarlin/common/v1/common.proto=github.com/tao3k/marlin-mygo/gen/marlin/common/v1;commonv1
+      - Mmarlin/app/v1/app_server.proto=github.com/tao3k/marlin-mygo/gen/marlin/app/v1;appv1
+      - Mmarlin/gate/v1/gate.proto=github.com/tao3k/marlin-mygo/gen/marlin/gate/v1;gatev1
+      - Mmarlin/ui/v1/ui.proto=github.com/tao3k/marlin-mygo/gen/marlin/ui/v1;uiv1
+      - Mmarlin/plugin/v1/plugin.proto=github.com/tao3k/marlin-mygo/gen/marlin/plugin/v1;pluginv1
+      - Mmarlin/device/v1/device.proto=github.com/tao3k/marlin-mygo/gen/marlin/device/v1;devicev1
+      - Mmarlin/projection/v1/projection.proto=github.com/tao3k/marlin-mygo/gen/marlin/projection/v1;projectionv1

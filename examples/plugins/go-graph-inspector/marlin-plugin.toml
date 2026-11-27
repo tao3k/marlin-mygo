@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+# Reference Marketplace manifest: Go WASM-IR plugin (wazero, zero-cgo)
+id = "tao3k.graph-inspector-oneshot"
+version = "0.2.0"
+contract_major = 1
+requires_features = ["ui-slot-v1", "wasm-ui-ir-v1"]
+
+[capabilities.read_topology]
+kind = "projection.read"
+surface = "graph.trajectory"
+
+[contributions.graph_panel]
+kind = "ui-panel"
+requires = ["read_topology"]
+
+[contributions.graph_panel.panel]
+runtime = "wasm-ui-ir"
+slot_id = "workbench.inspector"
+cardinality = "single"
+entry_path = "graph-inspector.wasm"
+read_scopes = ["graph.trajectory", "graph.receipts"]
+declared_actions = ["graph.replay.select-node"]

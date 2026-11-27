@@ -1,0 +1,134 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+name: Release Zero-CGO Desktop Binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      include_scheme_aot:
+        description: "Also build native Linux/macOS desktop bundles shipping zero-.ss marlin-scheme-host-aot"
+        required: false
+        default: false
+        type: boolean
+      core_ref:
+        description: "Branch or tag of tao3k/marlin-agent-core for Linked-AOT marlin-scheme-host-aot"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-matrix:
+    name: Build Zero-CGO Desktop Archive (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just release build-desktop ${{ matrix.goos }} ${{ matrix.goarch }} ./dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marlin-desktop-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ./dist/release/marlin-mygo-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+            ./dist/release/marlin-mygo-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build-governance-bundle:
+    name: Build Governance Desktop Bundle with Zero-.ss marlin-scheme-host-aot (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' && inputs.include_scheme_aot == true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout marlin-agent-core
+        uses: actions/checkout@v4
+        with:
+          repository: tao3k/marlin-agent-core
+          ref: ${{ inputs.core_ref || 'main' }}
+      - name: Checkout marlin-mygo
+        uses: actions/checkout@v4
+        with:
+          path: .data/marlin-mygo
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .data/marlin-mygo/go.mod
+      - uses: extractions/setup-just@v3
+      - name: Ensure clang and protoc are installed
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends clang protobuf-compiler
+          else
+            command -v protoc >/dev/null || brew install protobuf
+          fi
+      - uses: ./.github/actions/prepare-scheme
+      - name: Build release zero-.ss Linked-AOT marlin-scheme-host-aot
+        run: just scheme-host-aot-release
+      - name: Package desktop Studio + sibling marlin-scheme-host-aot with zero-.ss smoke check
+        working-directory: .data/marlin-mygo
+        run: |
+          just release build-desktop-bundle ./dist/governance-bundle ../../target/release/marlin-scheme-host-aot
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            just release build-macos-app ./dist/governance-bundle ../../target/release/marlin-scheme-host-aot
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marlin-governance-bundle-${{ matrix.os }}
+          path: |
+            .data/marlin-mygo/dist/governance-bundle/*.tar.gz
+            .data/marlin-mygo/dist/governance-bundle/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish Checksums & Desktop Binaries to GitHub Release
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: marlin-desktop-*
+          merge-multiple: true
+          path: ./dist/release
+      - run: just release checksums ./dist/release
+      - name: Upload desktop archives & SHA256SUMS.txt to GitHub Release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" ./dist/release/marlin-mygo-* ./dist/release/SHA256SUMS.txt \
+            --title "Marlin Studio $TAG" \
+            --notes "Pure-Go CGO_ENABLED=0 Marlin Studio desktop binaries (macOS arm64/amd64, Linux amd64/arm64, Windows amd64) + SHA256SUMS.txt." \
+            || gh release upload "$TAG" ./dist/release/marlin-mygo-* ./dist/release/SHA256SUMS.txt --clobber

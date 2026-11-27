@@ -1,0 +1,171 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 06 — Marlin Plugin Author & LLM Quick-Reference Guide
+#+filetags: :tao3k:marlin:mygo:plugins:ecosystem:guide:
+
+This concise specification lets both human developers and coding LLMs author,
+verify, hot-reload, and publish secure, high-performance Marlin plugins in
+*Go (WASI Reactor)*, *TypeScript (Untrusted WebView)*, or *Declarative Packs*.
+
+* 1. Choose the Right Runtime (Case-by-Case Matrix)
+
+| Case & Runtime | Target Platforms | Security & Performance Profile |
+|-----------------------------------------------------------+---------------------------------------------+--------------------------------------------------------------|
+| *Case 1:* =webview-untrusted= (*React 19* + TSX) ⭐ Desktop | Desktop hot-plug; curated built-in on mobile| =@tao3k/marlin-panel-sdk/react=, responsive, =<=384 KiB= cap |
+| *Case 2:* =wasm-ui-ir= (*Go 1.27* zero-=unsafe= Reactor)    | Desktop hot-plug (native GPU)               | =6.6 µs= GPU =DrawList=, *0 MB* WebView RAM                  |
+| *Case 3:* =webview-untrusted= (*Zero-dep TS*)               | Desktop hot-plug                            | ~2–11 KB single-file bundle, 13 ms =bun build=               |
+| *Case 4:* =declarative= (*TOML*)                            | *Desktop + iOS + Android* OTA sync          | Zero executable code (Apple App Store 2.5.2 compliant)       |
+
+* 2. Minimal Go 1.27 WASI Reactor Plugin (100% Zero =unsafe= + Interactive GPU Button)
+
+#+begin_src go
+//go:build wasip1
+
+package main
+
+import (
+    "github.com/tao3k/marlin-mygo/pkg/schema"
+    uiir "github.com/tao3k/marlin-mygo/sdk/go-ui-ir"
+)
+
+//go:wasmexport marlin_alloc
+func marlinAlloc(size uint32) uint32 { return uiir.AllocBuffer(size) }
+
+//go:wasmexport marlin_ui_on_event
+func marlinUIOnEvent(ptr, size uint32) int32 {
+    return uiir.DispatchEvent(ptr, size, func(ev uiir.Event) error { return nil })
+}
+
+//go:wasmexport marlin_ui_render
+func marlinUIRender() uint64 {
+    return uiir.RenderResult(uiir.Panel("My Panel", schema.ToneAccent,
+        uiir.Rows(
+            uiir.Text(uiir.Span("Live GPU metrics", schema.ToneSuccess)),
+            uiir.ActionButton("Inspect", "graph.node.inspect", `{"nodeId":"n1"}`, schema.ToneAccent),
+        ),
+    ))
+}
+
+func main() {}
+#+end_src
+
+* 3. Minimal TypeScript Untrusted WebView Plugin (Auto-Bundled by =bun build=)
+
+Write normal modern TypeScript (React, Preact, D3, Tailwind, or vanilla DOM +
+=@tao3k/marlin-panel-sdk=). During =dev-plugin=, =doctor=, and =publish=,
+=marlin-mygo-tool= automatically runs =bun build= into a self-contained browser
+=bundle.js= with *zero runtime Bun/Node dependency* inside the signed =.marlinpkg=:
+
+#+begin_src typescript
+import { defineMarlinPanel } from "@tao3k/marlin-panel-sdk";
+
+const panel = defineMarlinPanel({
+  pluginId: "acme.sprint-board",
+  events: {
+    "org.tasks": (ev) => {
+      document.getElementById("state")!.textContent = JSON.stringify(ev.payload);
+    },
+  },
+});
+
+document.getElementById("refresh")?.addEventListener("click", () => {
+  void panel.submit("sprint.refresh", { source: "click" });
+});
+#+end_src
+
+* 4. Emacs-Style Lazy Loading (=marlin-plugins.toml=)
+
+Install 100+ plugins with *0 MB startup RAM* and *O(1) zero-alloc* dispatch:
+
+#+begin_src toml
+schema_version = 1
+
+[plugins."acme.sprint-board"]
+version = "0.2.0"
+publisher = "acme.dev"
+pinned_sha256 = "<sha256-of-.marlinpkg>"
+enabled = true
+activation = "on-command"          # eager | on-command | on-slot | on-topic | manual
+slot_id = "workbench.main"
+triggers = ["sprint.open"]
+hooks = ["after-turn-complete"]    # Emacs-style lifecycle hook
+idle_unload_sec = 300              # auto-reclaim memory & restore host.* fallback
+#+end_src
+
+* 5. Hard Security Rules Enforced by =doctor= & =publish=
+
+1. Never target host-restricted slots (=approval.gate=, =host.auth=, =host.secrets=).
+2. WebView =index.html= MUST declare a =Content-Security-Policy= meta tag with zero remote =http(s)://= =<script src>= and zero =eval(= / =new Function(=.
+3. Declarative packs MUST contain zero executable or script files (=.wasm=, =.js=, =.ts=, =.sh=, =.so=, =.dylib=).
+4. Every published bundle is Ed25519-signed and SHA-256 pinned in =catalog.json=.
+
+* 6. End-to-End Author Workflow
+
+#+begin_src shell
+# 1. Scaffold a clean plugin + embedded AGENT.md contract
+just init-plugin acme.sprint-board go-wasm workbench.inspector ./sprint-board
+
+# 2. Live transactional hot-reload (auto-compiles, auto-rolls back broken saves)
+just dev-plugin ./sprint-board
+
+# 3. Run automated fail-closed security certification audit (add -json for LLMs/CI)
+just doctor ./sprint-board
+
+# 4. Certify, sign, verify, and atomically merge into catalog.json in one command
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool keygen -out ./keys/acme
+CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool publish \
+  -dir ./sprint-board -publisher acme.dev \
+  -key ./keys/acme.key -pub ./keys/acme.pub -out ./dist/marketplace
+#+end_src
+
+* 7. Complex Reference Use Cases (Personal Planning, Schedule, Focus Alarm)
+
+Upstream (=marlin-mygo= + =tao3k/orgize=) owns the high-performance GPU renderer,
+lazy loader, sandboxed execution, and authoritative Org parsing (=tao3k/orgize=
+Rust kernel / =tao3k/orgize-wasm=). Downstream users and LLMs never duplicate
+Org syntax parsing — they consume canonical =orgize= DTO projections
+(=org.agenda=, =org.clock=) and customize views, alarms, capture templates, and
+keybindings across all three runtimes:
+
+| Example Directory | Plugin ID | Runtime / Stack | Personal & AI Workflow Case |
+|--------------------------------------------------+------------------------------+----------------------+------------------------------------------------------------------------|
+| =examples/plugins/ts-org-agenda-planner=         | =tao3k.org-agenda-planner=   | React 19 + TSX       | Org Agenda queue, AI Auto-Plan, time-block conflict detector, alarm    |
+| =examples/plugins/react-ai-memory-inbox=         | =tao3k.ai-memory-inbox=      | React 19 + TSX       | AI Knowledge & Memory triage (=orgize= =OrgizeMemoryResponseDto=)      |
+| =examples/plugins/react-ai-workflow-cockpit=     | =tao3k.ai-workflow-cockpit=  | React 19 + TSX       | Multi-Agent workflow run cockpit + receipts + Tier-0 Gate handoff      |
+| =examples/plugins/go-focus-clock-reactor=        | =tao3k.focus-clock-reactor=  | Go 1.27 WASI GPU     | 120Hz GPU focus countdown, next agenda card, quick log, binary sparkline |
+| =examples/plugins/declarative-daily-planner-pack=| =tao3k.daily-planner-pack=   | Declarative TOML     | Zero-code calm theme, agenda blocks, capture templates, Meow/Hydra keys |
+
+Launch the explicit, Tab-completable macOS/desktop studio showcase (mounts React 19 + Go WASI GPU Dock with live cross-runtime sync):
+
+#+begin_src shell
+just plugin show-agenda      # Org Agenda & AI Daily Planner (React 19) + GPU Focus Clock
+just plugin show-memory      # AI Memory & Knowledge Triage Inbox (React 19)
+just plugin show-workflow    # Multi-Agent AI Workflow Cockpit (React 19)
+just plugin bench-all        # Run performance gates on all 5 flagship plugins
+just plugin build-all        # Build, certify & Ed25519-sign all 9 canonical plugins
+#+end_src
+
+* 8. Per-Plugin Performance Gate & LLM Self-Healing Loop
+
+Even with a zero-allocation upstream engine, downstream user or AI-generated
+plugins can accidentally introduce O(N^2) filters, bloated JS bundles, or
+allocation-heavy WASI frames. Marlin ships first-class performance test macros
+and a single-command diagnostic gate (=bench-plugin= / =doctor -perf -json=)
+that emits measured latencies, budgets, and concrete =remediation= hints so
+coding agents automatically diagnose and optimize regressions:
+
+- *TypeScript (=src/perf.ts=)*: use =definePluginPerfSuite= + =runPluginPerfCLI=
+  (or one-line =assertPerfBudget=) from =@tao3k/marlin-panel-sdk=.
+- *Go WASI (=*_test.go=)*: use =gouir.AssertPerfCase= + =gouir.AssertUITreeBudget=
+  from =github.com/tao3k/marlin-mygo/sdk/go-ui-ir= (guarded by =//go:build !wasip1=
+  so zero =testing= bytes ever link into =panel.wasm=).
+- *Unified Gate CLI*:
+  #+begin_src shell
+  # Human-readable table
+  just bench-plugin ./examples/plugins/ts-org-agenda-planner
+
+  # Machine-readable JSON with remediation hints for coding LLMs & CI
+  CGO_ENABLED=0 go run ./cmd/marlin-mygo-tool doctor -dir ./examples/plugins/go-focus-clock-reactor -perf -json
+  #+end_src

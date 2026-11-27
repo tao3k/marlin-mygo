@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+#+title: 03 — Target Separation, Platform Device Adapters, and Scheme Profile Overlays
+#+filetags: :tao3k:marlin:mygo:mobile:ios:android:scheme:
+
+* Separation Principle
+
+Complex agent capabilities live in the backend and per-target =platform.*= device
+adapters; the UI shell remains a thin, uniform projection over =marlin.*.v1= gRPC.
+
+- *Shared Base Profile (Gerbil Scheme / Yuanxu POO)*: owns cross-device user
+  intent, Org archival rules, memory projection, approval governance, and
+  host-neutral UI IR.
+- *Target Profile Overlays (=+macos=, =+linux=, =+ios=, =+android=, =+remote=)*:
+  select target-specific =device.*= capabilities compiled into each target binary
+  and bind governance policies (=allow= / =ask= / =deny=) per capability.
+
+* Transport Parity Across Targets
+
+| Target | Local Host Packaging | Platform Device Layer (=device.*=) | Remote Machines |
+|--------+----------------------+------------------------------------+-----------------|
+| Desktop (macOS / Linux / Windows) | Spawned =marlin-host= sidecar over loopback HTTP/2 + one-time env token | =platform.desktop= (=device.desktop.clipboard=, =device.desktop.notify=, =device.desktop.files=) | Sidebar =FederationSupervisor= (=ModeRemoteGRPC=) |
+| iOS (=.ipa=) | Embedded Rust/Gambit-C =.xcframework= via C ABI (no =fork/exec= sidecar) | =platform.ios= (=device.ios.photos=, =device.ios.ocr=, =device.ios.voice=, =device.ios.contacts=, =device.ios.share=) | Same sidebar =FederationSupervisor= (=ModeRemoteGRPC=) |
+| Android (=.apk= / =.aab=) | Embedded NDK =.so= (or =extractNativeLibs= executable with 16 KB page alignment) | =platform.android= (=device.android.media=, =device.android.contacts=, =device.android.share=) | Same sidebar =FederationSupervisor= (=ModeRemoteGRPC=) |
+
+* Gated Device Invocation Flow
+
+1. Client target starts up and registers OS-authorized =device.*= capabilities via
+   =DeviceBridgeService.RegisterDeviceNode= and =OpenDeviceChannel=.
+2. Host Scheme Profile Overlay evaluates whether a requested =device.*= capability
+   requires human approval.
+3. For any mutating capability (=read_only == false=), =runtime/device.Bridge=
+   refuses execution unless the host invocation carries a valid Rust-minted
+   one-shot =GateReceipt=.
+4. Proactive user triggers (e.g., iOS Back-Tap Shortcut, Voice Capture, or Share
+   Extension App Group queue) drain via =Bridge.SyncCaptures= and push bounded
+   metadata plus =ArtifactRef= digests via =DeviceBridgeService.IngestCapture=.

@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+name: Cross-Repo Rust Authority Core + Go MyGo E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: "Branch or commit of tao3k/marlin-agent-core to test against"
+        required: false
+        default: "main"
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  rust-go-tls-e2e:
+    name: Real Rust marlin-mygo-host (Turso + TLS 1.3) <-> Go Client E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout marlin-mygo
+        uses: actions/checkout@v4
+        with:
+          path: marlin-mygo
+
+      - name: Checkout marlin-agent-core
+        uses: actions/checkout@v4
+        with:
+          repository: tao3k/marlin-agent-core
+          ref: ${{ inputs.core_ref || 'main' }}
+          path: marlin-agent-core
+
+      - uses: extractions/setup-just@v3
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: marlin-mygo/go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cross-process Rust Sidecar + TLS 1.3 + Turso + WASM Reactor E2E
+        working-directory: marlin-mygo
+        run: just ci e2e-rust ../marlin-agent-core
+
+  scheme-governance-aot-e2e:
+    name: Zero-.ss Linked-AOT Scheme Governance Authority <-> Go Client E2E (5 Suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout marlin-agent-core
+        uses: actions/checkout@v4
+        with:
+          repository: tao3k/marlin-agent-core
+          ref: ${{ inputs.core_ref || 'main' }}
+
+      - name: Checkout marlin-mygo
+        uses: actions/checkout@v4
+        with:
+          path: .data/marlin-mygo
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .data/marlin-mygo/go.mod
+
+      - uses: extractions/setup-just@v3
+
+      - name: Ensure clang and protoc are installed
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang protobuf-compiler
+
+      - uses: ./.github/actions/prepare-scheme
+
+      - name: Build zero-.ss Linked-AOT marlin-scheme-host-aot
+        run: just scheme-host-aot-build
+
+      - name: Run all 5 cross-process zero-.ss Linked-AOT Governance E2E suites
+        working-directory: .data/marlin-mygo
+        run: just governance-aot-e2e

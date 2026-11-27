@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  proto-contract:
+    name: Protobuf Contract & Zero Stub Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install protoc and Go protobuf plugins
+        run: |
+          sudo apt-get update && sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+      - run: just ci proto-contract
+
+  formal-security-quint:
+    name: Quint Formal Adversarial Security & MBT Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm install -g @informalsystems/quint
+      - run: bun install --frozen-lockfile
+      - run: just ci formal-security
+      - run: just ci formal-threat-mbt
+
+  go-unit-and-build:
+    name: Go Unit, WASM & Zero-CGO Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - name: Cache wazero persistent AOT compilation artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/marlin-mygo/wazero-aot-v1
+            ~/Library/Caches/marlin-mygo/wazero-aot-v1
+          key: wazero-aot-${{ runner.os }}-${{ hashFiles('go.mod', 'sdk/go-ui-ir/**', 'examples/plugins/**/*.go') }}
+          restore-keys: |
+            wazero-aot-${{ runner.os }}-
+      - run: bun install --frozen-lockfile
+      - run: just check-file-size
+      - run: just check-feature-pruning
+      - run: just ci go-unit-and-build
+
+  go-race-detector:
+    name: Go Race Detector (Concurrent Engine & Security Planes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci go-race
+
+  go-fuzz-smoke:
+    name: Go Fuzz Smoke Suite (15 Protocol & Boundary Targets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci go-fuzz
+
+  ui-stress-and-visual:
+    name: MyGo GPU Chaos Monkey, UI Perf & Visual Contrast Regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci ui-stress-and-visual
+
+  ts-sdk-and-react-chaos:
+    name: TypeScript Panel SDK & React 19 Live DOM Chaos Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci ts-and-react-chaos
+
+  perf-gate:
+    name: Go + TypeScript Strict Performance & Zero-Alloc SLO Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci perf-gate
+
+  ios-swift-bridge:
+    name: iOS Swift Native Bridge (iOS SDK Typecheck, swift test & Go<->Swift E2E)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci ios-swift-bridge
+
+  android-kotlin-bridge:
+    name: Android Kotlin Native Bridge (JVM Tests, Go<->Kotlin E2E & Android SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci android-kotlin-bridge
+
+  plugin-marketplace-admission:
+    name: Marketplace Plugin Certification, Signing & Perf Admission Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: just ci plugin-admission-gate
+
+  web-wasm-deploy-build:
+    name: Web Deploy Frontend Build (GOOS=js GOARCH=wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: just ci web-wasm-build
+
+  reuse-spdx:
+    name: REUSE SPDX License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5

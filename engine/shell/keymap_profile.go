@@ -1,0 +1,213 @@
+// SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+//
+// SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+package shell
+
+import "github.com/tao3k/marlin-mygo/engine/input"
+
+// Canonical mode transition, Studio navigation, and Emacs Insert/Edit commands.
+const (
+	// Modal transitions between Layout 1 (SPC Normal/Leader) and Layout 2 (Emacs Insert/Edit).
+	CmdModeInsert = "mode.insert"
+	CmdModeNormal = "mode.normal"
+
+	// Studio navigation commands (SPC leader layout).
+	CmdStudioOpenMarketplace   = "studio.open-marketplace"
+	CmdStudioOpenProjection    = "studio.open-projection"
+	CmdStudioOpenFederation    = "studio.open-federation"
+	CmdStudioOpenGovernance    = "studio.open-governance"
+	CmdStudioOpenHelmSearch    = "studio.open-helm-search"
+	CmdStudioOpenPalette       = "studio.open-palette"
+	CmdStudioOpenGate          = "studio.open-gate"
+	CmdStudioOpenAuth          = "studio.open-auth"
+	CmdStudioOpenNotifications = "studio.open-notifications"
+	CmdStudioOpenKeymap        = "studio.open-keymap-inspector"
+	CmdStudioOpenSearch        = "studio.open-search"
+	CmdStudioOpenModelPicker   = "studio.open-model-picker"
+	CmdStudioToggleVoice       = "studio.toggle-voice"
+	CmdStudioNewSession        = "studio.new-session"
+	CmdStudioExportLayout      = "studio.export-workspace-profile"
+	CmdStudioImportLayout      = "studio.import-workspace-profile"
+	CmdStudioCycleTheme        = "studio.cycle-theme"
+	CmdStudioToggleWhichKey    = "studio.toggle-which-key"
+	CmdStudioToggleSidebar     = "studio.toggle-sidebar"
+
+	// Classic Emacs editing & navigation commands active in Insert/Edit mode (ScopeInsert).
+	CmdEditNextLine           = "edit.next-line"
+	CmdEditPrevLine           = "edit.prev-line"
+	CmdEditForwardChar        = "edit.forward-char"
+	CmdEditBackwardChar       = "edit.backward-char"
+	CmdEditBeginningOfLine    = "edit.beginning-of-line"
+	CmdEditEndOfLine          = "edit.end-of-line"
+	CmdEditForwardWord        = "edit.forward-word"
+	CmdEditBackwardWord       = "edit.backward-word"
+	CmdEditDeleteChar         = "edit.delete-char"
+	CmdEditBackwardDeleteChar = "edit.backward-delete-char"
+	CmdEditKillLine           = "edit.kill-line"
+	CmdEditYank               = "edit.yank"
+	CmdEditBackwardKillWord   = "edit.backward-kill-word"
+	CmdEditUndo               = "edit.undo"
+)
+
+// NormalLeaderBindings returns Keymap Layout 1: SPC-guided Meow/Vim-style
+// Normal mode bindings for window composition, perspectives, and studio control.
+func NormalLeaderBindings() []input.Binding {
+	return []input.Binding{
+		// Window splits, 2D spatial navigation & Winner-Mode history (SPC w ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "v"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "s"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "d"}, ActionKind: "window", CommandName: CmdWindowDelete},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "z"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "h"}, ActionKind: "window", CommandName: CmdWindowFocusLeft},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "j"}, ActionKind: "window", CommandName: CmdWindowFocusDown},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "k"}, ActionKind: "window", CommandName: CmdWindowFocusUp},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "l"}, ActionKind: "window", CommandName: CmdWindowFocusRight},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", ">"}, ActionKind: "window", CommandName: CmdWindowWiden},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "<"}, ActionKind: "window", CommandName: CmdWindowShrink},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "R"}, ActionKind: "window", CommandName: CmdWindowRotate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "u"}, ActionKind: "window", CommandName: CmdWindowUndo},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "r"}, ActionKind: "window", CommandName: CmdWindowRedo},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "="}, ActionKind: "window", CommandName: CmdWindowBalance},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "b"}, ActionKind: "window", CommandName: CmdWindowCycleBuffer},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "w", "B"}, ActionKind: "studio", CommandName: CmdStudioToggleSidebar},
+
+		// Stacked Buffer / Tab controls & lazy hibernation (SPC b ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "b"}, ActionKind: "buffer", CommandName: CmdBufferPick},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "+"}, ActionKind: "buffer", CommandName: CmdTabNew},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "n"}, ActionKind: "buffer", CommandName: CmdTabNext},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "p"}, ActionKind: "buffer", CommandName: CmdTabPrev},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "d"}, ActionKind: "buffer", CommandName: CmdTabClose},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "s"}, ActionKind: "buffer", CommandName: CmdTabHibernate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "P"}, ActionKind: "buffer", CommandName: CmdTabTogglePin},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "m"}, ActionKind: "buffer", CommandName: CmdTabMoveNextPane},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "b", "t"}, ActionKind: "buffer", CommandName: CmdTabTearOffRight},
+
+		// Perspectives (SPC p ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "1"}, ActionKind: "perspective", CommandName: CmdPerspectiveFocus},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "2"}, ActionKind: "perspective", CommandName: CmdPerspectiveSplit},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "3"}, ActionKind: "perspective", CommandName: CmdPerspectiveCockpit},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "p", "4"}, ActionKind: "perspective", CommandName: CmdPerspectiveZen},
+
+		// Studio drawers, composer actions & theme (SPC ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "m"}, ActionKind: "studio", CommandName: CmdStudioOpenMarketplace},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "i"}, ActionKind: "studio", CommandName: CmdStudioOpenProjection},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "f"}, ActionKind: "studio", CommandName: CmdStudioOpenFederation},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "G"}, ActionKind: "studio", CommandName: CmdStudioOpenGovernance},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "g"}, ActionKind: "studio", CommandName: CmdStudioOpenGate},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "a"}, ActionKind: "studio", CommandName: CmdStudioOpenAuth},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "N"}, ActionKind: "studio", CommandName: CmdStudioOpenNotifications},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "K"}, ActionKind: "studio", CommandName: CmdStudioOpenKeymap},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "/"}, ActionKind: "studio", CommandName: CmdStudioOpenSearch},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "M"}, ActionKind: "studio", CommandName: CmdStudioOpenModelPicker},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "v"}, ActionKind: "studio", CommandName: CmdStudioToggleVoice},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "n"}, ActionKind: "studio", CommandName: CmdStudioNewSession},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "t", "t"}, ActionKind: "studio", CommandName: CmdStudioCycleTheme},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", ":"}, ActionKind: "studio", CommandName: CmdStudioOpenPalette},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "?"}, ActionKind: "studio", CommandName: CmdStudioToggleWhichKey},
+
+		// Opt-in Feature Spaces (SPC o ...; clean no-op when pruned in marlin_minimal)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "r"}, ActionKind: "feature", CommandName: "feature.open-chatroom"},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "c"}, ActionKind: "feature", CommandName: "feature.open-compare"},
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "o", "d"}, ActionKind: "feature", CommandName: "feature.open-canvas"},
+
+		// High-Throughput 120Hz Helm Live Search & Minibuffer (SPC s ...)
+		{Scope: input.ScopeNormal, Sequence: []string{"SPC", "s", "s"}, ActionKind: "search", CommandName: CmdStudioOpenHelmSearch},
+
+		// Transition from Normal/Leader mode into Emacs Insert/Edit mode
+		{Scope: input.ScopeNormal, Sequence: []string{"i"}, ActionKind: "mode", CommandName: CmdModeInsert},
+		{Scope: input.ScopeNormal, Sequence: []string{"a"}, ActionKind: "mode", CommandName: CmdModeInsert},
+	}
+}
+
+// EmacsInsertBindings returns Keymap Layout 2: authentic Emacs cursor motion
+// and line-editing bindings active in Insert / Edit mode (ScopeInsert), such
+// as C-n, C-p, C-f, C-b, C-a, C-e, C-k, C-y, plus ESC / C-g to return to Normal.
+func EmacsInsertBindings() []input.Binding {
+	return []input.Binding{
+		{Scope: input.ScopeInsert, Sequence: []string{"C-n"}, ActionKind: "edit", CommandName: CmdEditNextLine},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-p"}, ActionKind: "edit", CommandName: CmdEditPrevLine},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-f"}, ActionKind: "edit", CommandName: CmdEditForwardChar},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-b"}, ActionKind: "edit", CommandName: CmdEditBackwardChar},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-a"}, ActionKind: "edit", CommandName: CmdEditBeginningOfLine},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-e"}, ActionKind: "edit", CommandName: CmdEditEndOfLine},
+		{Scope: input.ScopeInsert, Sequence: []string{"M-f"}, ActionKind: "edit", CommandName: CmdEditForwardWord},
+		{Scope: input.ScopeInsert, Sequence: []string{"M-b"}, ActionKind: "edit", CommandName: CmdEditBackwardWord},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-d"}, ActionKind: "edit", CommandName: CmdEditDeleteChar},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-h"}, ActionKind: "edit", CommandName: CmdEditBackwardDeleteChar},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-k"}, ActionKind: "edit", CommandName: CmdEditKillLine},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-y"}, ActionKind: "edit", CommandName: CmdEditYank},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-w"}, ActionKind: "edit", CommandName: CmdEditBackwardKillWord},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-/"}, ActionKind: "edit", CommandName: CmdEditUndo},
+		// Return from Insert/Edit mode to SPC Normal mode
+		{Scope: input.ScopeInsert, Sequence: []string{"ESC"}, ActionKind: "mode", CommandName: CmdModeNormal},
+		{Scope: input.ScopeInsert, Sequence: []string{"C-g"}, ActionKind: "mode", CommandName: CmdModeNormal},
+	}
+}
+
+// GlobalEmacsBindings returns classic Emacs C-x window chords available in
+// both Normal and Insert/Edit layouts.
+func GlobalEmacsBindings() []input.Binding {
+	return []input.Binding{
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "3"}, ActionKind: "window", CommandName: CmdWindowSplitRight},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "2"}, ActionKind: "window", CommandName: CmdWindowSplitBelow},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "0"}, ActionKind: "window", CommandName: CmdWindowDelete},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "1"}, ActionKind: "window", CommandName: CmdWindowToggleZoom},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "o"}, ActionKind: "window", CommandName: CmdWindowFocusNext},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "+"}, ActionKind: "window", CommandName: CmdWindowBalance},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "x"}, ActionKind: "window", CommandName: CmdWindowSwapNext},
+		{Scope: input.ScopeGlobal, Sequence: []string{"C-x", "u"}, ActionKind: "window", CommandName: CmdWindowUndo},
+	}
+}
+
+// DualModalBindings merges Layout 1 (SPC Normal), Layout 2 (Emacs Insert/Edit),
+// and Global C-x chords into one complete conflict-free binding set.
+func DualModalBindings() []input.Binding {
+	n := NormalLeaderBindings()
+	ins := EmacsInsertBindings()
+	g := GlobalEmacsBindings()
+	out := make([]input.Binding, 0, len(n)+len(ins)+len(g))
+	out = append(out, n...)
+	out = append(out, ins...)
+	out = append(out, g...)
+	return out
+}
+
+// CompileDualModalKeymap compiles both modal keymap layouts into one O(chord_len) KeyTrie.
+func CompileDualModalKeymap() (*input.KeyTrie, error) {
+	return input.CompileKeyTrie(DualModalBindings())
+}
+
+// DualModalCommands returns Command Palette entries covering both layouts.
+func DualModalCommands() []input.CommandEntry {
+	base := DefaultEmacsWindowCommands()
+	extra := []input.CommandEntry{
+		{Name: CmdModeInsert, Description: "Enter Insert/Edit mode with Emacs keybindings (i / a)"},
+		{Name: CmdModeNormal, Description: "Return to Normal SPC leader mode (ESC / C-g)"},
+		{Name: CmdStudioOpenMarketplace, Description: "Open Official Marketplace drawer (SPC m)"},
+		{Name: CmdStudioOpenProjection, Description: "Open Projection Inspector (SPC i)"},
+		{Name: CmdStudioOpenFederation, Description: "Open Tier-0 Multi-Target Federation Cockpit (SPC f)"},
+		{Name: CmdStudioOpenGovernance, Description: "Open Tier-0 UI Governance & Feature Security Console (SPC G)"},
+		{Name: CmdStudioOpenAuth, Description: "Open Tier-0 Account & OAuth Sign-In Center (SPC a)"},
+		{Name: CmdStudioOpenNotifications, Description: "Open Tier-0 Notification & Activity Center (SPC N)"},
+		{Name: CmdStudioOpenKeymap, Description: "Open searchable Keymap Inspector (SPC K)"},
+		{Name: CmdStudioOpenSearch, Description: "Open Cmd+F Session Search bar (SPC /)"},
+		{Name: CmdStudioOpenModelPicker, Description: "Toggle Model & Reasoning Effort picker (SPC M)"},
+		{Name: CmdStudioToggleVoice, Description: "Start or attach live Voice Recording (SPC v)"},
+		{Name: CmdStudioNewSession, Description: "Start a new conversation session (SPC n)"},
+		{Name: CmdStudioExportLayout, Description: "Export WindowTree layout & theme profile JSON"},
+		{Name: CmdStudioImportLayout, Description: "Import saved WindowTree layout & theme profile JSON"},
+		{Name: CmdStudioCycleTheme, Description: "Cycle active Studio theme preset (SPC t t)"},
+		{Name: CmdStudioToggleWhichKey, Description: "Toggle dual-modal SPC / Emacs Which-Key HUD (SPC ?)"},
+		{Name: CmdStudioToggleSidebar, Description: "Collapse or expand persistent left sidebar (Cmd+B / SPC w B)"},
+		{Name: CmdEditNextLine, Description: "Emacs Insert: move to next line (C-n)"},
+		{Name: CmdEditPrevLine, Description: "Emacs Insert: move to previous line (C-p)"},
+		{Name: CmdEditBeginningOfLine, Description: "Emacs Insert: beginning of line (C-a)"},
+		{Name: CmdEditEndOfLine, Description: "Emacs Insert: end of line (C-e)"},
+		{Name: CmdEditKillLine, Description: "Emacs Insert: kill to end of line (C-k)"},
+		{Name: CmdEditYank, Description: "Emacs Insert: yank killed text (C-y)"},
+	}
+	return append(base, extra...)
+}

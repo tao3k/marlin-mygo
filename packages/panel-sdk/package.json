@@ -1,0 +1,24 @@
+{
+  "name": "@tao3k/marlin-panel-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.ts",
+    "./ai-sdk": "./src/ai_sdk.ts",
+    "./theme": "./src/theme.ts",
+    "./ui": "./src/ui.tsx"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  }
+}
