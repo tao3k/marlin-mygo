@@ -161,6 +161,15 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				})
 				if err != nil {
 					log.Printf("native file picker error: %v", err)
+					if app.Notifications != nil {
+						_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+							Severity: notify.SeverityWarning,
+							Source:   notify.SourceHost,
+							Title:    "File Picker Unavailable",
+							Message:  err.Error(),
+						})
+						win.Invalidate()
+					}
 					return
 				}
 				if len(paths) > 0 {
@@ -174,6 +183,15 @@ func runStudio(ctx context.Context, cfg appConfig) error {
 				in, ok, err := composer.ReadClipboardAttachment(ctx)
 				if err != nil {
 					log.Printf("clipboard attachment read error: %v", err)
+					if app.Notifications != nil {
+						_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+							Severity: notify.SeverityWarning,
+							Source:   notify.SourceHost,
+							Title:    "Clipboard Read Failed",
+							Message:  err.Error(),
+						})
+						win.Invalidate()
+					}
 					return
 				}
 				if ok {
@@ -654,6 +672,14 @@ func mountShowcaseStudio(
 	go func() {
 		if _, err := lazySess.InstallOrUpgrade(ctx, "tao3k.focus-clock-reactor"); err != nil {
 			log.Printf("[showcase] mount inspector focus-clock failed: %v", err)
+			if app.Notifications != nil {
+				_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+					Severity: notify.SeverityWarning,
+					Source:   notify.SourceHost,
+					Title:    "Inspector Plugin Mount Failed",
+					Message:  err.Error(),
+				})
+			}
 		}
 		syncMarketplace()
 		win.Invalidate()

@@ -78,6 +78,17 @@ func wireDurableContinuity(
 	saveNow := func() {
 		if err := transcript.Resilience.SaveFile(path); err != nil {
 			log.Printf("durable recovery snapshot save failed: %v", err)
+			if notifyCenter != nil {
+				_, _ = notifyCenter.Publish(notify.NotificationSpec{
+					Severity: notify.SeverityWarning,
+					Source:   notify.SourceHost,
+					Title:    "Recovery Snapshot Save Failed",
+					Message:  err.Error(),
+				})
+				if win != nil {
+					win.Invalidate()
+				}
+			}
 		}
 	}
 	scheduleSave := func() {

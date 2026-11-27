@@ -41,7 +41,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 func readClipboardPlatform(ctx context.Context) (AttachmentInput, bool, error) {
 	ps, err := exec.LookPath("powershell")
 	if err != nil {
-		return AttachmentInput{}, false, nil
+		return AttachmentInput{}, false, fmt.Errorf("composer: Windows clipboard requires powershell: %w", err)
 	}
 	tmp, err := os.CreateTemp("", "marlin-clip-*.png")
 	if err == nil {
@@ -65,7 +65,13 @@ if ($null -ne $img) {
 	}
 
 	out, err := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-STA", "-Command", "Get-Clipboard -Raw").Output()
-	if err == nil && len(bytes.TrimSpace(out)) > 0 {
+	if err != nil {
+		if ctx.Err() != nil {
+			return AttachmentInput{}, false, ctx.Err()
+		}
+		return AttachmentInput{}, false, fmt.Errorf("composer: Windows clipboard read failed: %w", err)
+	}
+	if len(bytes.TrimSpace(out)) > 0 {
 		return AttachmentInput{Filename: "clipboard-snippet.txt", MIMEType: "text/plain", Data: out}, true, nil
 	}
 	return AttachmentInput{}, false, nil

@@ -50,6 +50,14 @@ func wireFeaturesAndGovernance(
 	for _, mod := range compiledFeatureModules {
 		if err := reg.RegisterCompiled(mod); err != nil {
 			log.Printf("skip compiled feature registration: %v", err)
+			if notifyCenter != nil {
+				_, _ = notifyCenter.Publish(notify.NotificationSpec{
+					Severity: notify.SeverityWarning,
+					Source:   notify.SourceHost,
+					Title:    "Compiled Feature Registration Failed",
+					Message:  err.Error(),
+				})
+			}
 		}
 	}
 	ledger := features.NewGovernanceLedger(features.DefaultGovernancePolicy())

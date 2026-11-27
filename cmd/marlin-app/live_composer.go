@@ -213,6 +213,14 @@ func wireComposerWorkspaceHooks(
 					}
 				}); err != nil {
 					log.Printf("ReplayTurnHistory(%s): %v", sessionID, err)
+					if app.Notifications != nil {
+						_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+							Severity: notify.SeverityError,
+							Source:   notify.SourceHost,
+							Title:    "Session History Replay Failed",
+							Message:  err.Error(),
+						})
+					}
 				}
 				invalidate()
 			}()

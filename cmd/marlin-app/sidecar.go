@@ -22,6 +22,7 @@ import (
 	"github.com/tao3k/marlin-mygo/control/grpcwire"
 	"github.com/tao3k/marlin-mygo/control/transport"
 	"github.com/tao3k/marlin-mygo/engine/composer"
+	"github.com/tao3k/marlin-mygo/engine/notify"
 	"github.com/tao3k/marlin-mygo/engine/promptgate"
 	"github.com/tao3k/marlin-mygo/engine/shell"
 	appv1 "github.com/tao3k/marlin-mygo/gen/marlin/app/v1"
@@ -384,6 +385,14 @@ func wireLiveSession(
 	})
 	if _, err := liveDriver.Start(ctx); err != nil {
 		log.Printf("live SessionDriver start failed: %v", err)
+		if app.Notifications != nil {
+			_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityError,
+				Source:   notify.SourceHost,
+				Title:    "Live Session Driver Failed to Start",
+				Message:  err.Error(),
+			})
+		}
 	}
 	projBridge := grpcwire.NewProjectionStreamBridge(grpcwire.ProjectionBridgeConfig{
 		Provider:   provider,
@@ -394,6 +403,14 @@ func wireLiveSession(
 	})
 	if err := projBridge.Start(ctx); err != nil {
 		log.Printf("live ProjectionStreamBridge start failed: %v", err)
+		if app.Notifications != nil {
+			_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+				Severity: notify.SeverityError,
+				Source:   notify.SourceHost,
+				Title:    "Projection Stream Failed to Start",
+				Message:  err.Error(),
+			})
+		}
 	}
 	app.OnGateDecision = func(gateID string, approve bool) {
 		if approve {
@@ -410,6 +427,14 @@ func wireLiveSession(
 				case promptgate.PromptAuth:
 					if _, err := grpcwire.DispatchPromptResponseToDriver(ctx, liveDriver, req, resp); err != nil {
 						log.Printf("DispatchPromptResponseToDriver(%s): %v", req.ID, err)
+						if app.Notifications != nil {
+							_, _ = app.Notifications.Center.Publish(notify.NotificationSpec{
+								Severity: notify.SeverityError,
+								Source:   notify.SourceHost,
+								Title:    "Gate Decision Dispatch Failed",
+								Message:  err.Error(),
+							})
+						}
 					}
 				case promptgate.PromptAsk:
 					if resp.Action == promptgate.ActionSubmit && resp.TextInput != "" && app.OnSendPrompt != nil {
