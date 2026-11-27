@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 tao3k team and Contributors
+#
+# SPDX-License-Identifier: Apache-2.0 AND LGPL-2.1-or-later
+
+name: Defense Audit (Go G2 Gate)
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/marlin-mygo-frontend-engine]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  g2-defense-audit:
+    name: G2 AI Anti-Defensive Audit (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout standalone zero-dep agent-defense-audit CLI
+        uses: actions/checkout@v4
+        with:
+          repository: hardenedlinux/deterministic-engineering
+          ref: docs/quint-threat-library
+          path: .ci/de
+          sparse-checkout: |
+            packages/agent-defense-audit
+      - uses: oven-sh/setup-bun@v2
+      - name: Audit all production Go files (zero G2 findings)
+        run: |
+          bun .ci/de/packages/agent-defense-audit/src/agent-defense-audit.ts \
+            --dir . \
+            --lang=go \
+            --exclude-tests
