@@ -23,5 +23,24 @@
 
   git-hooks.hooks = {
     nixfmt.enable = true;
+    agent-defense-g2 = {
+      enable = true;
+      name = "agent-defense-g2";
+      description = "Audit staged production Go files against G2 AI anti-defensive-programming rules";
+      entry = toString (
+        pkgs.writeShellScript "marlin-mygo-agent-defense-g2" ''
+          set -euo pipefail
+          CLI="''${DE_AGENT_DEFENSE_AUDIT_CLI:-$HOME/ghq/github.com/hardenedlinux/deterministic-engineering-qnt/packages/agent-defense-audit/src/agent-defense-audit.ts}"
+          if [ ! -f "$CLI" ]; then
+            echo "SKIP agent-defense-g2: CLI not found at $CLI (set DE_AGENT_DEFENSE_AUDIT_CLI)" >&2
+            exit 0
+          fi
+          exec ${pkgs.bun}/bin/bun "$CLI" "$@"
+        ''
+      );
+      files = "\\.go$";
+      excludes = "(^gen/|/tests/|_test\\.go$|^vendor/)";
+      pass_filenames = true;
+    };
   };
 }
