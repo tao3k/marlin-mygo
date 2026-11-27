@@ -257,6 +257,4 @@ audit-g2 *args:
     if [ "$#" -gt 0 ]; then
       exec bun "$CLI" "$@"
     fi
-    go_files=()
-    while IFS= read -r f; do go_files+=("$f"); done < <(find . -type f -name '*.go' ! -name '*_test.go' ! -path './.*' ! -path './vendor/*' ! -path './node_modules/*' ! -path './dist/*' ! -path './build/*' | sort)
-    exec bun "$CLI" --files "${go_files[@]}"
+    exec bun "$CLI" --dir . --lang=go --exclude-tests
